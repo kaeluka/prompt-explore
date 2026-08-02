@@ -55,6 +55,12 @@
   textarea { font-family: var(--mono); font-size: 0.8rem; min-height: 10rem;
     resize: vertical; line-height: 1.45; }
 
+  .budget-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.8rem; margin-top: 0.4rem; }
+  .budget-row > div { display: flex; flex-direction: column; gap: 0.3rem; }
+  .budget-row span { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .budget-row input { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; font-size: 0.9rem; outline: none; transition: border-color .15s; }
+  .budget-row input:focus { border-color: var(--accent); }
+
   details summary {
     cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--text-dim);
     text-transform: uppercase; letter-spacing: 0.05em; user-select: none;
@@ -110,9 +116,34 @@
   pre {
     background: #0b0d11; border: 1px solid var(--border); border-radius: 8px;
     padding: 0.85rem 1rem; overflow-x: auto; white-space: pre-wrap;
-    font-family: var(--mono); font-size: 0.82rem; line-height: 1.5; margin: 0;
+    font-size: 0.82rem; line-height: 1.5; margin: 0;
   }
   pre.witness { border-left: 3px solid var(--red); }
+
+  /* --- transcript renderer (no monospace; proper HTML) --- */
+  .trace { display: flex; flex-direction: column; gap: 0.55rem; }
+  .step { display: grid; grid-template-columns: 78px 1fr; gap: 0.7rem; align-items: start; }
+  .step .role {
+    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-dim); padding-top: 0.45rem; text-align: right; font-weight: 600;
+  }
+  .step .body { min-width: 0; }
+  .bubble {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 0.5rem 0.8rem; white-space: pre-wrap; word-break: break-word;
+  }
+  .toolcall {
+    background: rgba(124,108,255,0.08); border: 1px solid rgba(124,108,255,0.3);
+    border-radius: 10px; padding: 0.45rem 0.8rem;
+  }
+  .toolcall .nm { color: #b7aaff; font-weight: 600; }
+  .toolresp {
+    background: rgba(154,163,178,0.07); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.45rem 0.8rem; color: var(--text-dim);
+    white-space: pre-wrap; word-break: break-word; font-size: 0.88rem;
+  }
+  .statenote { font-size: 0.78rem; color: var(--text-dim); padding: 0.2rem 0.2rem; }
+  .prose { white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
 
   .proposal { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.9rem; }
   .proposal:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
@@ -138,6 +169,15 @@
       <summary>Prompts under test (JSON)</summary>
       <textarea id="psut" spellcheck="false"></textarea>
     </details>
+  </div>
+
+  <div class="card">
+    <label>Budget</label>
+    <div class="budget-row">
+      <div><span>max scenarios</span><input type="number" id="b_scenarios" value="8" min="1"></div>
+      <div><span>max steps / trace</span><input type="number" id="b_steps" value="6" min="1"></div>
+      <div><span>max tokens (optional)</span><input type="number" id="b_tokens" placeholder="—"></div>
+    </div>
   </div>
 
   <button id="go">Investigate</button>
@@ -169,6 +209,39 @@ document.getElementById("psut").value = JSON.stringify(DEFAULT_PSUT, null, 2);
 
 const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
 
+function pretty(v) {
+  if (v == null) return "";
+  if (typeof v === "string") {
+    try { return JSON.stringify(JSON.parse(v), null, 2); } catch { return v; }
+  }
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+function compactArgs(v) {
+  if (v == null) return "";
+  try { return JSON.stringify(typeof v === "string" ? JSON.parse(v) : v); } catch { return String(v); }
+}
+function stepRow(role, body) {
+  return `<div class="step"><div class="role">${role}</div><div class="body">${body}</div></div>`;
+}
+function renderSteps(steps) {
+  if (!steps || !steps.length) return '<p class="meta">(no steps)</p>';
+  let html = '<div class="trace">';
+  for (const s of steps) {
+    const text = (s.model_output || "").trim();
+    if (text) html += stepRow("agent", `<div class="bubble">${esc(text)}</div>`);
+    if (s.tool_call) {
+      html += stepRow("tool", `<div class="toolcall"><span class="nm">▸ ${esc(s.tool_call.name)}</span> <span style="color:var(--text-dim)">(${esc(compactArgs(s.tool_call.args))})</span></div>`);
+    }
+    if (s.tool_response != null) {
+      html += stepRow("result", `<div class="toolresp">← ${esc(pretty(s.tool_response))}</div>`);
+    }
+    if (s.world_state_after) {
+      html += stepRow("state", `<details class="statenote"><summary>⚙ world state updated</summary><div class="toolresp" style="margin-top:0.4rem">${esc(pretty(s.world_state_after))}</div></details>`);
+    }
+  }
+  return html + '</div>';
+}
+
 function renderResult(data) {
   const r = data.result;
   let html = `<div class="card">
@@ -178,12 +251,13 @@ function renderResult(data) {
     <ul class="strategies">` +
     r.strategies_tried.map(s => `<li>${esc(s)}</li>`).join("") + `</ul></div>`;
 
-  if (data.transcript) {
+  if (r.witness && r.witness.traces && r.witness.traces.length) {
+    const steps = r.witness.traces[0].steps;
     html += `<div class="card">
       <h2 class="section-title">Witness trace</h2>
-      <pre class="witness">${esc(data.transcript)}</pre>
+      ${renderSteps(steps)}
       <h2 class="section-title" style="margin-top:1rem">Attribution</h2>
-      <pre>${esc(r.witness.attribution.evidence)}</pre></div>`;
+      <div class="prose">${esc(r.witness.attribution.evidence)}</div></div>`;
   }
   if (r.proposals && r.proposals.length) {
     html += `<div class="card">
@@ -191,7 +265,7 @@ function renderResult(data) {
       r.proposals.map((p, i) => `
         <div class="proposal">
           <h4><span class="badge kind">${i+1}</span> ${esc(p.kind)}</h4>
-          <pre>${esc(p.content)}</pre>
+          <div class="prose">${esc(p.content)}</div>
           <div class="note">${esc(p.confidence_note)}</div>
         </div>`).join("") + `</div>`;
   }
@@ -207,7 +281,7 @@ function renderResult(data) {
           </h4>
           <p class="meta" style="margin:0.3rem 0">user: ${esc(a.user_message ?? '(none)')}</p>
           <p class="meta" style="margin:0.3rem 0">judge: ${esc(a.verdict_rationale)}</p>
-          <details><summary>transcript</summary><pre style="margin-top:0.5rem">${esc(a.transcript)}</pre></details>
+          <details><summary>transcript</summary><div style="margin-top:0.5rem">${renderSteps(a.steps)}</div></details>
         </div>`).join("") + `</div>`;
   }
   return html;
@@ -259,10 +333,15 @@ document.getElementById("go").onclick = async () => {
   try { psut = JSON.parse(document.getElementById("psut").value); }
   catch (e) { statusText.textContent = "PsUT JSON invalid: " + e.message; status.classList.add("on"); return; }
 
+  const maxTokens = document.getElementById("b_tokens").value.trim();
   const investigation = {
     question: document.getElementById("question").value,
     target_put: psut.prompts[0].id,
-    budget: { max_scenarios: 8, max_steps_per_trace: 6, max_tokens: null }
+    budget: {
+      max_scenarios: parseInt(document.getElementById("b_scenarios").value) || 8,
+      max_steps_per_trace: parseInt(document.getElementById("b_steps").value) || 6,
+      max_tokens: maxTokens ? parseInt(maxTokens) : null
+    }
   };
 
   btn.disabled = true;

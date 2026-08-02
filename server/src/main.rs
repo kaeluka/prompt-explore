@@ -22,10 +22,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use prompt_explore::generate::{Investigator, LlmRole};
-use prompt_explore::judge::render_transcript;
 use prompt_explore::llm::OpenAiCompatibleClient;
 use prompt_explore::model::input::{Investigation, PromptsUnderTest};
 use prompt_explore::model::output::RunResult;
+use prompt_explore::model::simulation::TraceStep;
 
 const MODEL: &str = "glm-5.2";
 
@@ -59,8 +59,6 @@ struct InvestigateRequest {
 #[derive(Serialize, Clone)]
 struct InvestigateResponse {
     result: RunResult,
-    /// Pre-rendered transcript of the witness trace, for display.
-    transcript: Option<String>,
     scenarios_generated: usize,
     /// Every completed run — the evidence behind a negative result.
     attempts: Vec<AttemptView>,
@@ -73,7 +71,8 @@ struct AttemptView {
     matched: bool,
     verdict_rationale: String,
     verdict_confidence: Option<f32>,
-    transcript: String,
+    /// Structured steps, rendered as HTML by the UI.
+    steps: Vec<TraceStep>,
 }
 
 #[derive(Serialize)]
@@ -162,14 +161,6 @@ async fn create_investigation(
             .investigate(&req.investigation, &req.psut)
             .await;
 
-        let transcript = outcome.result.witness.as_ref().map(|w| {
-            w.traces
-                .iter()
-                .map(render_transcript)
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-
         let attempts = outcome
             .attempts
             .iter()
@@ -179,12 +170,12 @@ async fn create_investigation(
                 matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),
                 verdict_rationale: a
                     .trace
-                    .verdict
-                    .as_ref()
-                    .map(|v| v.rationale.clone())
-                    .unwrap_or_default(),
+            .verdict
+            .as_ref()
+            .map(|v| v.rationale.clone())
+            .unwrap_or_default(),
                 verdict_confidence: a.trace.verdict.as_ref().and_then(|v| v.confidence),
-                transcript: render_transcript(&a.trace),
+                steps: a.trace.steps.clone(),
             })
             .collect();
 
@@ -193,7 +184,6 @@ async fn create_investigation(
             job.status = JobStatus::Done;
             job.result = Some(InvestigateResponse {
                 result: outcome.result,
-                transcript,
                 scenarios_generated: outcome.scenarios.len(),
                 attempts,
             });
