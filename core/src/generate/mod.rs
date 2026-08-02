@@ -8,7 +8,7 @@ pub mod propose;
 pub mod scenario;
 pub mod search;
 
-pub use apply::{apply, ApplyError, AppliedPut};
+pub use apply::{AppliedPut, DiffPart, ProposalApplier};
 pub use hypothesize::Hypothesizer;
 pub use propose::ProposalGenerator;
 pub use scenario::ScenarioBuilder;

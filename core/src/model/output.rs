@@ -48,26 +48,6 @@ pub struct Proposal {
     pub addresses: Vec<String>,
     /// Must state explicitly that the proposal is unverified.
     pub confidence_note: String,
-    /// Structured edits, when the proposal is syntactically appliable.
-    /// Each `find` must be verbatim text occurring exactly once in the
-    /// target. Empty for purely advisory proposals.
-    #[serde(default)]
-    pub edits: Vec<TextEdit>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TextEdit {
-    pub target: EditTarget,
-    /// Verbatim text to find (must occur exactly once).
-    pub find: String,
-    pub replace: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EditTarget {
-    Template,
-    DesignGoals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

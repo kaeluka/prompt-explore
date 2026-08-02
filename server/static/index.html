@@ -166,6 +166,13 @@
   }
   .statenote { font-size: 0.78rem; color: var(--text-dim); padding: 0.2rem 0.2rem; }
   .prose { white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+  .diff-view { margin-top: 0.7rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
+  .diff-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-dim); margin-bottom: 0.3rem; }
+  .diff { line-height: 1.7; word-break: break-word; }
+  .deq { color: var(--text-dim); }
+  .dins { color: var(--green); background: rgba(81,207,138,0.12); border-radius: 3px; }
+  .ddel { color: var(--red); background: rgba(255,107,107,0.12); border-radius: 3px; text-decoration: line-through; }
 
   .proposal { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.9rem; }
   .proposal:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
@@ -289,6 +296,21 @@ function compactArgs(v) {
 function stepRow(role, body) {
   return `<div class="step"><div class="role">${role}</div><div class="body">${body}</div></div>`;
 }
+function renderDiff(templateDiff, goalsDiff) {
+  const part = p => {
+    if (!p || p.length === 0) return "";
+    return '<div class="diff">' + p.map(d => {
+      const cls = { equal: "deq", insert: "dins", delete: "ddel" }[d.tag] || "deq";
+      const pre = d.tag === "insert" ? "+" : d.tag === "delete" ? "−" : "";
+      return `<span class="${cls}">${pre}${esc(d.value)}</span>`;
+    }).join("") + '</div>';
+  };
+  let html = '<div class="diff-view">';
+  if (templateDiff && templateDiff.length) html += `<div class="diff-label">template</div>${part(templateDiff)}`;
+  if (goalsDiff && goalsDiff.length) html += `<div class="diff-label">design goals</div>${part(goalsDiff)}`;
+  return html + '</div>';
+}
+
 function renderSteps(steps, openingUser) {
   if (!steps || !steps.length) return '<p class="meta">(no steps)</p>';
   let html = '<div class="trace">';
@@ -331,7 +353,7 @@ function renderResult(data) {
     html += `<div class="card">
       <h2 class="section-title">Proposed fixes <span class="badge kind">unverified</span></h2>` +
       r.proposals.map((p, i) => `
-        <div class="proposal">
+        <div class="proposal" id="prop-${i}">
           <h4><span class="badge kind">${i+1}</span> ${esc(p.kind)}
             <button class="secondary apply-btn" data-i="${i}" style="margin:0 0 0 auto">apply</button>
           </h4>
@@ -413,7 +435,14 @@ document.getElementById("out").addEventListener("click", async (e) => {
     const put = data.psut.prompts[0];
     document.getElementById("put_template").value = put.template;
     document.getElementById("put_goals").value = put.design_goals;
-    e.target.textContent = "applied ✓ — review the prompt above, then re-investigate";
+    const card = document.getElementById(`prop-${i}`);
+    const diffHtml = renderDiff(data.template_diff, data.goals_diff);
+    if (card) {
+      const existing = card.querySelector(".diff-view");
+      if (existing) existing.remove();
+      card.insertAdjacentHTML("beforeend", diffHtml);
+    }
+    e.target.textContent = "applied ✓ — review the diff, then re-investigate";
     window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (err) {
     status.classList.add("on");

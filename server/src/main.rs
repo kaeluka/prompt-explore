@@ -9,7 +9,6 @@
 //! is a deliberate v2 concern.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -20,8 +19,9 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-use prompt_explore::generate::{apply, Investigator, LlmRole};
+use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
 use prompt_explore::llm::OpenAiCompatibleClient;
 use prompt_explore::model::input::{Investigation, PromptsUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
@@ -29,11 +29,9 @@ use prompt_explore::model::simulation::TraceStep;
 
 const MODEL: &str = "glm-5.2";
 
-#[derive(Default)]
 struct AppState {
     client: Option<Arc<OpenAiCompatibleClient>>,
     jobs: Mutex<HashMap<String, Job>>,
-    next_id: AtomicU64,
 }
 
 struct Job {
@@ -67,6 +65,8 @@ struct ApplyRequest {
 #[derive(Serialize)]
 struct ApplyResponse {
     psut: PromptsUnderTest,
+    template_diff: Vec<prompt_explore::generate::DiffPart>,
+    goals_diff: Vec<prompt_explore::generate::DiffPart>,
 }
 
 #[derive(Serialize, Clone)]
@@ -111,7 +111,7 @@ async fn main() {
     let key = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY");
     let state = Arc::new(AppState {
         client: Some(Arc::new(OpenAiCompatibleClient::zai(&key))),
-        ..Default::default()
+        jobs: Mutex::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -146,7 +146,7 @@ async fn create_investigation(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InvestigateRequest>,
 ) -> (StatusCode, Json<JobCreated>) {
-    let id = format!("job-{}", state.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+    let id = Uuid::new_v4().to_string();
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
@@ -232,6 +232,7 @@ async fn get_investigation(
 }
 
 async fn apply_proposal(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, (StatusCode, String)> {
     let mut psut = req.psut;
@@ -253,18 +254,24 @@ async fn apply_proposal(
             )
         })?;
 
-    let applied = apply(&put, &req.proposal).map_err(|e| {
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("cannot apply: {e}"),
-        )
-    })?;
+    let client = state.client.as_ref().unwrap().clone();
+    let applier = ProposalApplier::new(client, MODEL);
+    let applied = applier
+        .apply(&put, &req.proposal)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let template_diff = applied.template_diff.clone();
+    let goals_diff = applied.goals_diff.clone();
     if let Some(p) = psut.prompts.iter_mut().find(|p| p.id == target) {
         p.template = applied.template;
         p.design_goals = applied.design_goals;
     }
-    Ok(Json(ApplyResponse { psut }))
+    Ok(Json(ApplyResponse {
+        psut,
+        template_diff,
+        goals_diff,
+    }))
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
