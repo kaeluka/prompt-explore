@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{Html, Json},
+    response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -111,10 +111,18 @@ async fn main() {
 }
 
 async fn index() -> impl axum::response::IntoResponse {
-    (
-        [(axum::http::header::CACHE_CONTROL, "no-cache")],
-        Html(INDEX_HTML),
-    )
+    // During development the UI changes often; in release builds the
+    // embedded page is versioned with the binary, so normal caching
+    // semantics are fine.
+    if cfg!(debug_assertions) {
+        (
+            [(axum::http::header::CACHE_CONTROL, "no-cache")],
+            Html(INDEX_HTML),
+        )
+            .into_response()
+    } else {
+        Html(INDEX_HTML).into_response()
+    }
 }
 
 async fn create_investigation(
