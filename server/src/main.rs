@@ -110,8 +110,11 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-cache")],
+        Html(INDEX_HTML),
+    )
 }
 
 async fn create_investigation(
