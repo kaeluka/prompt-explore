@@ -21,7 +21,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
+use prompt_explore::generate::{apply, Investigator, LlmRole};
 use prompt_explore::llm::OpenAiCompatibleClient;
 use prompt_explore::model::input::{Investigation, PromptsUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
@@ -232,7 +232,6 @@ async fn get_investigation(
 }
 
 async fn apply_proposal(
-    State(state): State<Arc<AppState>>,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, (StatusCode, String)> {
     let mut psut = req.psut;
@@ -254,12 +253,12 @@ async fn apply_proposal(
             )
         })?;
 
-    let client = state.client.as_ref().unwrap().clone();
-    let applier = ProposalApplier::new(client, MODEL);
-    let applied = applier
-        .apply(&put, &req.proposal)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let applied = apply(&put, &req.proposal).map_err(|e| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("cannot apply: {e}"),
+        )
+    })?;
 
     if let Some(p) = psut.prompts.iter_mut().find(|p| p.id == target) {
         p.template = applied.template;

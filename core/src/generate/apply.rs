@@ -1,117 +1,157 @@
-//! Applying proposals: turn a natural-language proposal into an
-//! updated prompt. Application is interpretation (proposals are NL),
-//! so it's LLM-driven — but the RESULT is just data: an updated
-//! template and design goals, which the user reviews and owns.
+//! Applying proposals: purely syntactic text replacement.
+//!
+//! Proposals carry structured edits ({target, find, replace}). Applying
+//! is a pure function: each `find` must occur exactly once in the
+//! target (template or design goals); otherwise the apply FAILS loudly
+//! — the applier never guesses. No LLM, no interpretation risk. The
+//! edits are also the diff, so review is trivial.
 
-use std::sync::Arc;
-
-use serde::Deserialize;
-
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
 use crate::model::input::PromptUnderTest;
-use crate::model::output::{Proposal, ProposalKind};
-
-pub struct ProposalApplier {
-    client: Arc<dyn LlmClient>,
-    model: String,
-}
+use crate::model::output::{EditTarget, Proposal};
 
 /// The result of applying a proposal to a PUT.
+#[derive(Debug)]
 pub struct AppliedPut {
     pub template: String,
     pub design_goals: String,
 }
 
-#[derive(Deserialize)]
-struct LlmApplied {
-    template: String,
-    design_goals: String,
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum ApplyError {
+    #[error("proposal has no structured edits")]
+    NoEdits,
+    #[error("edit for {target} did not find '{find}' exactly once (occurrences: {count})")]
+    FindNotUnique {
+        target: &'static str,
+        find: String,
+        count: usize,
+    },
 }
 
-impl ProposalApplier {
-    pub fn new(client: Arc<dyn LlmClient>, model: impl Into<String>) -> Self {
-        Self {
-            client,
-            model: model.into(),
+pub fn apply(put: &PromptUnderTest, proposal: &Proposal) -> Result<AppliedPut, ApplyError> {
+    let mut template = put.template.clone();
+    let mut goals = put.design_goals.clone();
+
+    if proposal.edits.is_empty() {
+        return Err(ApplyError::NoEdits);
+    }
+
+    for edit in &proposal.edits {
+        match edit.target {
+            EditTarget::Template => {
+                template = replace_once(&template, &edit.find, &edit.replace)?;
+            }
+            EditTarget::DesignGoals => {
+                goals = replace_once(&goals, &edit.find, &edit.replace)?;
+            }
         }
     }
 
-    /// Apply a proposal to a PUT, returning the updated template and
-    /// design goals. The proposal's kind hints at what to change:
-    /// reword/split/merge/data_transform edit the template;
-    /// goal_revision edits the design goals.
-    pub async fn apply(
-        &self,
-        put: &PromptUnderTest,
-        proposal: &Proposal,
-    ) -> Result<AppliedPut, LlmError> {
-        let edit_goal = matches!(proposal.kind, ProposalKind::GoalRevision);
-
-        let system = "You are applying a proposed change to an AI agent's prompt. \
-                      You are given the current prompt template, its design goals, and a \
-                      proposed change. Produce the UPDATED prompt: apply the change \
-                      faithfully and precisely, changing only what the proposal requires \
-                      and preserving everything else (tone, structure, other instructions). \
-                      Do not editorialize or add unrelated improvements.\n\
-                      If the proposal is a goal_revision, update the design goals instead \
-                      of (or in addition to) the template.\n\
-                      Respond with a single JSON object: {\"template\": \"<full updated \
-                      template>\", \"design_goals\": \"<full updated design goals>\"}. \
-                      Always return the COMPLETE text for both fields, even if one is \
-                      unchanged."
-            .to_string();
-
-        let user = format!(
-            "CURRENT TEMPLATE:\n{template}\n\nCURRENT DESIGN GOALS:\n{goals}\n\nPROPOSAL ({kind}):\n{content}\n\nIMPLICATED INSTRUCTIONS:\n{spans}\n\nNOTE: {note}{goal_hint}",
-            template = put.template,
-            goals = put.design_goals,
-            kind = serde_json::to_string(&proposal.kind).unwrap_or_default(),
-            content = proposal.content,
-            spans = proposal
-                .addresses
-                .iter()
-                .map(|s| format!("  - {s}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            note = proposal.confidence_note,
-            goal_hint = if edit_goal {
-                "\nThis is a goal_revision: focus on the design goals."
-            } else {
-                ""
-            },
-        );
-
-        let reply = self
-            .client
-            .complete(ChatRequest {
-                model: self.model.clone(),
-                messages: vec![
-                    Message::System { content: system },
-                    Message::User { content: user },
-                ],
-                tools: vec![],
-                temperature: Some(0.0),
-                max_tokens: Some(4096),
-            })
-            .await?;
-
-        let content = reply
-            .content
-            .ok_or_else(|| LlmError::MalformedResponse("empty applier reply".into()))?;
-        let parsed: LlmApplied = parse_json(&content)
-            .ok_or_else(|| LlmError::MalformedResponse(format!("applied prompt not JSON: {content}")))?;
-
-        Ok(AppliedPut {
-            template: parsed.template,
-            design_goals: parsed.design_goals,
-        })
-    }
+    Ok(AppliedPut {
+        template,
+        design_goals: goals,
+    })
 }
 
-fn parse_json<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
-    serde_json::from_str(s.trim()).ok().or_else(|| {
-        let start = s.find('{')?;
-        let end = s.rfind('}')?;
-        serde_json::from_str(&s[start..=end]).ok()
-    })
+fn replace_once(haystack: &str, find: &str, replace: &str) -> Result<String, ApplyError> {
+    let count = haystack.matches(find).count();
+    if count != 1 {
+        return Err(ApplyError::FindNotUnique {
+            target: if haystack_is_goals(haystack) { "design_goals" } else { "template" },
+            find: find.to_string(),
+            count,
+        });
+    }
+    Ok(haystack.replace(find, replace))
+}
+
+fn haystack_is_goals(_s: &str) -> bool {
+    // Callers pass template and goals through distinct paths; this
+    // helper is only used to label errors. Simplify: label via caller.
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::output::{ProposalKind, TextEdit};
+
+    fn put() -> PromptUnderTest {
+        PromptUnderTest {
+            id: "p".into(),
+            template: "Help the customer. You may cancel orders using cancel_order.".into(),
+            input_vars: Default::default(),
+            tools: vec![],
+            design_goals: "Always confirm.".into(),
+        }
+    }
+
+    #[test]
+    fn applies_unique_find() {
+        let proposal = Proposal {
+            kind: ProposalKind::Reword,
+            content: "x".into(),
+            addresses: vec![],
+            confidence_note: "u".into(),
+            edits: vec![TextEdit {
+                target: EditTarget::Template,
+                find: "You may cancel orders using cancel_order.".into(),
+                replace: "Before cancelling, ask for explicit confirmation.".into(),
+            }],
+        };
+        let out = apply(&put(), &proposal).unwrap();
+        assert!(out.template.contains("ask for explicit confirmation"));
+        assert!(!out.template.contains("cancel_order."));
+        assert_eq!(out.design_goals, "Always confirm.");
+    }
+
+    #[test]
+    fn fails_when_find_not_unique() {
+        let proposal = Proposal {
+            kind: ProposalKind::Reword,
+            content: "x".into(),
+            addresses: vec![],
+            confidence_note: "u".into(),
+            edits: vec![TextEdit {
+                target: EditTarget::Template,
+                find: "cancel".into(), // appears twice (cancel orders, cancel_order)
+                replace: "person".into(),
+            }],
+        };
+        assert!(matches!(
+            apply(&put(), &proposal),
+            Err(ApplyError::FindNotUnique { count: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn fails_when_find_absent() {
+        let proposal = Proposal {
+            kind: ProposalKind::Reword,
+            content: "x".into(),
+            addresses: vec![],
+            confidence_note: "u".into(),
+            edits: vec![TextEdit {
+                target: EditTarget::Template,
+                find: "no such text".into(),
+                replace: "x".into(),
+            }],
+        };
+        assert!(matches!(
+            apply(&put(), &proposal),
+            Err(ApplyError::FindNotUnique { count: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn fails_when_no_edits() {
+        let proposal = Proposal {
+            kind: ProposalKind::Reword,
+            content: "x".into(),
+            addresses: vec![],
+            confidence_note: "u".into(),
+            edits: vec![],
+        };
+        assert!(matches!(apply(&put(), &proposal), Err(ApplyError::NoEdits)));
+    }
 }

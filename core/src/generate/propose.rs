@@ -33,6 +33,16 @@ struct LlmProposal {
     content: String,
     addresses: Vec<String>,
     rationale: String,
+    /// Structured edits: verbatim find/replace pairs, when the proposal
+    /// is syntactically appliable.
+    edits: Option<Vec<LlmEdit>>,
+}
+
+#[derive(Deserialize)]
+struct LlmEdit {
+    target: String,
+    find: String,
+    replace: String,
 }
 
 impl ProposalGenerator {
@@ -105,6 +115,20 @@ impl ProposalGenerator {
                      question to check.",
                     p.rationale
                 ),
+                edits: p
+                    .edits
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| crate::model::output::TextEdit {
+                        target: if e.target.trim().eq_ignore_ascii_case("design_goals") {
+                            crate::model::output::EditTarget::DesignGoals
+                        } else {
+                            crate::model::output::EditTarget::Template
+                        },
+                        find: e.find,
+                        replace: e.replace,
+                    })
+                    .collect(),
             })
             .collect())
     }
