@@ -2,11 +2,18 @@
 //!
 //! Thin wrapper around the core library: no business logic lives here.
 //! The core (`prompt-explore`) stays usable as a standalone lib/CLI.
+//!
+//! Investigations can run for minutes, so the API is job-based:
+//! POST returns a job id immediately; clients poll for the result.
+//! Job state is held in memory (lost on restart) — durable storage
+//! is a deliberate v2 concern.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{Html, Json},
     routing::{get, post},
@@ -22,8 +29,25 @@ use prompt_explore::model::output::RunResult;
 
 const MODEL: &str = "glm-5.2";
 
+#[derive(Default)]
 struct AppState {
-    client: Arc<OpenAiCompatibleClient>,
+    client: Option<Arc<OpenAiCompatibleClient>>,
+    jobs: Mutex<HashMap<String, Job>>,
+    next_id: AtomicU64,
+}
+
+struct Job {
+    status: JobStatus,
+    result: Option<InvestigateResponse>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum JobStatus {
+    Running,
+    Done,
+    Failed,
 }
 
 #[derive(Deserialize)]
@@ -32,7 +56,7 @@ struct InvestigateRequest {
     psut: PromptsUnderTest,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct InvestigateResponse {
     result: RunResult,
     /// Pre-rendered transcript of the witness trace, for display.
@@ -40,16 +64,32 @@ struct InvestigateResponse {
     scenarios_generated: usize,
 }
 
+#[derive(Serialize)]
+struct JobCreated {
+    id: String,
+}
+
+#[derive(Serialize)]
+struct JobView {
+    status: JobStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<InvestigateResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let key = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY");
     let state = Arc::new(AppState {
-        client: Arc::new(OpenAiCompatibleClient::zai(&key)),
+        client: Some(Arc::new(OpenAiCompatibleClient::zai(&key))),
+        ..Default::default()
     });
 
     let app = Router::new()
         .route("/", get(index))
-        .route("/api/investigate", post(investigate))
+        .route("/api/investigations", post(create_investigation))
+        .route("/api/investigations/{id}", get(get_investigation))
         .with_state(state);
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -62,40 +102,75 @@ async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-async fn investigate(
+async fn create_investigation(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InvestigateRequest>,
-) -> Result<Json<InvestigateResponse>, (StatusCode, String)> {
-    let role = || LlmRole {
-        client: state.client.clone(),
-        model: MODEL.into(),
-    };
+) -> (StatusCode, Json<JobCreated>) {
+    let id = format!("job-{}", state.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+    state.jobs.lock().unwrap().insert(
+        id.clone(),
+        Job {
+            status: JobStatus::Running,
+            result: None,
+            error: None,
+        },
+    );
 
-    let investigator = Investigator {
-        hypothesizer: role(),
-        builder: role(),
-        runner_put: role(),
-        runner_sim: role(),
-        judge: role(),
-        proposer: role(),
-        scenarios_per_hypothesis: 2,
-        max_hypotheses: 4,
-    };
+    let state2 = state.clone();
+    let id2 = id.clone();
+    tokio::spawn(async move {
+        let client = state2.client.as_ref().unwrap().clone();
+        let role = || LlmRole {
+            client: client.clone(),
+            model: MODEL.into(),
+        };
+        let investigator = Investigator {
+            hypothesizer: role(),
+            builder: role(),
+            runner_put: role(),
+            runner_sim: role(),
+            judge: role(),
+            proposer: role(),
+            scenarios_per_hypothesis: 2,
+            max_hypotheses: 4,
+        };
 
-    let outcome = investigator
-        .investigate(&req.investigation, &req.psut)
-        .await;
+        let outcome = investigator
+            .investigate(&req.investigation, &req.psut)
+            .await;
 
-    let transcript = outcome
-        .result
-        .witness
-        .as_ref()
-        .map(|w| w.traces.iter().map(render_transcript).collect::<Vec<_>>().join("\n"));
+        let transcript = outcome.result.witness.as_ref().map(|w| {
+            w.traces
+                .iter()
+                .map(render_transcript)
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
 
-    Ok(Json(InvestigateResponse {
-        result: outcome.result,
-        transcript,
-        scenarios_generated: outcome.scenarios.len(),
+        let mut jobs = state2.jobs.lock().unwrap();
+        if let Some(job) = jobs.get_mut(&id2) {
+            job.status = JobStatus::Done;
+            job.result = Some(InvestigateResponse {
+                result: outcome.result,
+                transcript,
+                scenarios_generated: outcome.scenarios.len(),
+            });
+        }
+    });
+
+    (StatusCode::ACCEPTED, Json(JobCreated { id }))
+}
+
+async fn get_investigation(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<JobView>, StatusCode> {
+    let jobs = state.jobs.lock().unwrap();
+    let job = jobs.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(JobView {
+        status: job.status,
+        result: job.result.clone(),
+        error: job.error.clone(),
     }))
 }
 
@@ -154,6 +229,48 @@ document.getElementById("psut").value = JSON.stringify(DEFAULT_PSUT, null, 2);
 
 function esc(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
 
+function renderResult(data) {
+  const r = data.result;
+  let html = `<div class="section"><h2>Result: ${esc(r.status)}</h2>
+    <p>${r.scenarios_tried} scenario(s) tried.</p>
+    <h3>Strategies tried</h3><ul>` +
+    r.strategies_tried.map(s => `<li>${esc(s)}</li>`).join("") + `</ul></div>`;
+
+  if (data.transcript) {
+    html += `<div class="section"><h3>Witness trace</h3>
+      <pre class="witness">${esc(data.transcript)}</pre>
+      <h3>Attribution</h3><pre>${esc(r.witness.attribution.evidence)}</pre></div>`;
+  }
+  if (r.proposals && r.proposals.length) {
+    html += `<div class="section"><h3>Proposed fixes (unverified)</h3>` +
+      r.proposals.map((p, i) =>
+        `<h4>${i+1}. ${esc(p.kind)}</h4><pre>${esc(p.content)}</pre>
+         <p><em>${esc(p.confidence_note)}</em></p>`).join("") + `</div>`;
+  }
+  return html;
+}
+
+async function poll(id) {
+  const status = document.getElementById("status");
+  const out = document.getElementById("out");
+  for (;;) {
+    await new Promise(r => setTimeout(r, 3000));
+    const resp = await fetch(`/api/investigations/${id}`);
+    if (resp.status === 404) { status.textContent = "Job not found."; return; }
+    const job = await resp.json();
+    if (job.status === "done") {
+      status.textContent = "";
+      out.innerHTML = renderResult(job.result);
+      return;
+    }
+    if (job.status === "failed") {
+      status.textContent = "Failed: " + (job.error || "unknown");
+      return;
+    }
+    status.textContent = `Investigating (${id})… this can take minutes.`;
+  }
+}
+
 document.getElementById("go").onclick = async () => {
   const out = document.getElementById("out");
   const status = document.getElementById("status");
@@ -168,38 +285,14 @@ document.getElementById("go").onclick = async () => {
     budget: { max_scenarios: 8, max_steps_per_trace: 6, max_tokens: null }
   };
 
-  status.textContent = "Investigating… (generating hypotheses, simulating, judging; this can take a minute)";
-  try {
-    const resp = await fetch("/api/investigate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ investigation, psut })
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    const data = await resp.json();
-    const r = data.result;
-
-    let html = `<div class="section"><h2>Result: ${esc(r.status)}</h2>
-      <p>${r.scenarios_tried} scenario(s) tried.</p>
-      <h3>Strategies tried</h3><ul>` +
-      r.strategies_tried.map(s => `<li>${esc(s)}</li>`).join("") + `</ul></div>`;
-
-    if (data.transcript) {
-      html += `<div class="section"><h3>Witness trace</h3>
-        <pre class="witness">${esc(data.transcript)}</pre>
-        <h3>Attribution</h3><pre>${esc(r.witness.attribution.evidence)}</pre></div>`;
-    }
-    if (r.proposals && r.proposals.length) {
-      html += `<div class="section"><h3>Proposed fixes (unverified)</h3>` +
-        r.proposals.map((p, i) =>
-          `<h4>${i+1}. ${esc(p.kind)}</h4><pre>${esc(p.content)}</pre>
-           <p><em>${esc(p.confidence_note)}</em></p>`).join("") + `</div>`;
-    }
-    out.innerHTML = html;
-    status.textContent = "";
-  } catch (e) {
-    status.textContent = "Error: " + e.message;
-  }
+  const resp = await fetch("/api/investigations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ investigation, psut })
+  });
+  if (!resp.ok) { status.textContent = "Error: " + await resp.text(); return; }
+  const { id } = await resp.json();
+  poll(id);
 };
 </script>
 </body>
