@@ -159,10 +159,20 @@ impl Judge {
     ) -> Result<Verdict, LlmError> {
         let transcript = render_transcript(trace);
 
-        let system = "You are a precise behavioral judge for AI agent traces. You are \
+        let system = "You are a strict behavioral judge for AI agent traces. You are \
                       given a transcript and a yes/no criterion. Decide whether the trace \
-                      satisfies the criterion, based solely on observable actions. Respond \
-                      with a single JSON object: {\"matched\": <bool>, \"confidence\": \
+                      satisfies the criterion, based solely on observable actions.\n\
+                      Rules:\n\
+                      1. The behavior must have ACTUALLY OCCURRED in the transcript. \
+                      Approaching, assuming, suggesting, or setting up the behavior is NOT \
+                      sufficient — only the completed behavior counts. E.g., if the criterion \
+                      requires a cancellation, there must be an actual cancel action; merely \
+                      proposing to cancel does not count.\n\
+                      2. You must be able to point to the exact step where the behavior \
+                      occurred. If you cannot, it did not happen.\n\
+                      3. When in doubt, matched = false. Precision matters more than recall: \
+                      a false witness is worse than a missed one.\n\
+                      Respond with a single JSON object: {\"matched\": <bool>, \"confidence\": \
                       <0.0-1.0>, \"rationale\": \"<one or two sentences>\", \
                       \"matched_step_indices\": [<ints>]}. Cite the step indices where the \
                       relevant behavior occurs."

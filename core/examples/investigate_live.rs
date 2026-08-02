@@ -90,7 +90,7 @@ async fn main() {
         max_hypotheses: 4,
     };
 
-    let InvestigateOutcome { result, scenarios } =
+    let InvestigateOutcome { result, scenarios, .. } =
         investigator.investigate(&investigation, &psut).await;
 
     println!("=== HYPOTHESES / STRATEGIES TRIED ===");
