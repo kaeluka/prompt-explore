@@ -132,6 +132,7 @@
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
     padding: 0.5rem 0.8rem; white-space: pre-wrap; word-break: break-word;
   }
+  .bubble.user { background: rgba(124,108,255,0.1); border-color: rgba(124,108,255,0.3); }
   .toolcall {
     background: rgba(124,108,255,0.08); border: 1px solid rgba(124,108,255,0.3);
     border-radius: 10px; padding: 0.45rem 0.8rem;
@@ -223,9 +224,10 @@ function compactArgs(v) {
 function stepRow(role, body) {
   return `<div class="step"><div class="role">${role}</div><div class="body">${body}</div></div>`;
 }
-function renderSteps(steps) {
+function renderSteps(steps, openingUser) {
   if (!steps || !steps.length) return '<p class="meta">(no steps)</p>';
   let html = '<div class="trace">';
+  if (openingUser) html += stepRow("user", `<div class="bubble user">${esc(openingUser)}</div>`);
   for (const s of steps) {
     const text = (s.model_output || "").trim();
     if (text) html += stepRow("agent", `<div class="bubble">${esc(text)}</div>`);
@@ -255,7 +257,7 @@ function renderResult(data) {
     const steps = r.witness.traces[0].steps;
     html += `<div class="card">
       <h2 class="section-title">Witness trace</h2>
-      ${renderSteps(steps)}
+      ${renderSteps(steps, data.witness_user_message)}
       <h2 class="section-title" style="margin-top:1rem">Attribution</h2>
       <div class="prose">${esc(r.witness.attribution.evidence)}</div></div>`;
   }
@@ -281,7 +283,7 @@ function renderResult(data) {
           </h4>
           <p class="meta" style="margin:0.3rem 0">user: ${esc(a.user_message ?? '(none)')}</p>
           <p class="meta" style="margin:0.3rem 0">judge: ${esc(a.verdict_rationale)}</p>
-          <details><summary>transcript</summary><div style="margin-top:0.5rem">${renderSteps(a.steps)}</div></details>
+          <details><summary>transcript</summary><div style="margin-top:0.5rem">${renderSteps(a.steps, a.user_message)}</div></details>
         </div>`).join("") + `</div>`;
   }
   return html;

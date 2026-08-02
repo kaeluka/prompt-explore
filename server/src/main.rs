@@ -60,6 +60,10 @@ struct InvestigateRequest {
 struct InvestigateResponse {
     result: RunResult,
     scenarios_generated: usize,
+    /// The opening user message of the witness scenario, so the UI can
+    /// show the full conversation (the trace steps start with the
+    /// agent's first reply).
+    witness_user_message: Option<String>,
     /// Every completed run — the evidence behind a negative result.
     attempts: Vec<AttemptView>,
 }
@@ -161,6 +165,12 @@ async fn create_investigation(
             .investigate(&req.investigation, &req.psut)
             .await;
 
+        let witness_user_message = outcome
+            .attempts
+            .iter()
+            .find(|a| a.trace.verdict.as_ref().is_some_and(|v| v.matched))
+            .and_then(|a| a.scenario.user_message.clone());
+
         let attempts = outcome
             .attempts
             .iter()
@@ -185,6 +195,7 @@ async fn create_investigation(
             job.result = Some(InvestigateResponse {
                 result: outcome.result,
                 scenarios_generated: outcome.scenarios.len(),
+                witness_user_message,
                 attempts,
             });
         }
