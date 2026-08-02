@@ -21,10 +21,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use prompt_explore::generate::{Investigator, LlmRole};
+use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
 use prompt_explore::llm::OpenAiCompatibleClient;
 use prompt_explore::model::input::{Investigation, PromptsUnderTest};
-use prompt_explore::model::output::RunResult;
+use prompt_explore::model::output::{Proposal, RunResult};
 use prompt_explore::model::simulation::TraceStep;
 
 const MODEL: &str = "glm-5.2";
@@ -53,6 +53,19 @@ enum JobStatus {
 #[derive(Deserialize)]
 struct InvestigateRequest {
     investigation: Investigation,
+    psut: PromptsUnderTest,
+}
+
+#[derive(Deserialize)]
+struct ApplyRequest {
+    psut: PromptsUnderTest,
+    proposal: Proposal,
+    /// Which PUT to apply the proposal to. Defaults to the first.
+    target_put: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ApplyResponse {
     psut: PromptsUnderTest,
 }
 
@@ -105,6 +118,7 @@ async fn main() {
         .route("/", get(index))
         .route("/api/investigations", post(create_investigation))
         .route("/api/investigations/{id}", get(get_investigation))
+        .route("/api/apply", post(apply_proposal))
         .with_state(state);
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -215,6 +229,43 @@ async fn get_investigation(
         result: job.result.clone(),
         error: job.error.clone(),
     }))
+}
+
+async fn apply_proposal(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ApplyRequest>,
+) -> Result<Json<ApplyResponse>, (StatusCode, String)> {
+    let mut psut = req.psut;
+    let target = req.target_put.unwrap_or_else(|| {
+        psut.prompts
+            .first()
+            .map(|p| p.id.clone())
+            .unwrap_or_default()
+    });
+    let put = psut
+        .prompts
+        .iter()
+        .find(|p| p.id == target)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("target PUT '{target}' not found"),
+            )
+        })?;
+
+    let client = state.client.as_ref().unwrap().clone();
+    let applier = ProposalApplier::new(client, MODEL);
+    let applied = applier
+        .apply(&put, &req.proposal)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some(p) = psut.prompts.iter_mut().find(|p| p.id == target) {
+        p.template = applied.template;
+        p.design_goals = applied.design_goals;
+    }
+    Ok(Json(ApplyResponse { psut }))
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");

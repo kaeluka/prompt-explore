@@ -327,11 +327,14 @@ function renderResult(data) {
       <div class="prose">${esc(r.witness.attribution.evidence)}</div></div>`;
   }
   if (r.proposals && r.proposals.length) {
+    window._proposals = r.proposals;
     html += `<div class="card">
       <h2 class="section-title">Proposed fixes <span class="badge kind">unverified</span></h2>` +
       r.proposals.map((p, i) => `
         <div class="proposal">
-          <h4><span class="badge kind">${i+1}</span> ${esc(p.kind)}</h4>
+          <h4><span class="badge kind">${i+1}</span> ${esc(p.kind)}
+            <button class="secondary apply-btn" data-i="${i}" style="margin:0 0 0 auto">apply</button>
+          </h4>
           <div class="prose">${esc(p.content)}</div>
           <div class="note">${esc(p.confidence_note)}</div>
         </div>`).join("") + `</div>`;
@@ -389,6 +392,36 @@ async function poll(id, startedAt) {
     statusText.textContent = `Investigating (${id})… ${secs}s elapsed`;
   }
 }
+
+document.getElementById("out").addEventListener("click", async (e) => {
+  if (!e.target.classList.contains("apply-btn")) return;
+  const i = parseInt(e.target.dataset.i);
+  const proposal = window._proposals?.[i];
+  if (!proposal) return;
+  const status = document.getElementById("status");
+  const statusText = document.getElementById("status-text");
+  e.target.disabled = true;
+  e.target.textContent = "applying…";
+  try {
+    const resp = await fetch("/api/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ psut: buildPsut(), proposal })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    const put = data.psut.prompts[0];
+    document.getElementById("put_template").value = put.template;
+    document.getElementById("put_goals").value = put.design_goals;
+    e.target.textContent = "applied ✓ — review the prompt above, then re-investigate";
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch (err) {
+    status.classList.add("on");
+    statusText.textContent = "Apply failed: " + err.message;
+    e.target.textContent = "apply";
+    e.target.disabled = false;
+  }
+});
 
 document.getElementById("go").onclick = async () => {
   const btn = document.getElementById("go");
