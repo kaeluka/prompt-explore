@@ -45,6 +45,15 @@ pub struct InvestigateOutcome {
     pub result: RunResult,
     /// All scenarios that were actually tried (for inspection/debugging).
     pub scenarios: Vec<Scenario>,
+    /// Every completed run: scenario + trace + verdict. Essential for
+    /// auditing negative results ("did it even try?") and spotting
+    /// near-misses.
+    pub attempts: Vec<Attempt>,
+}
+
+pub struct Attempt {
+    pub scenario: Scenario,
+    pub trace: crate::model::simulation::Trace,
 }
 
 impl Investigator {
@@ -85,6 +94,7 @@ impl Investigator {
         let mut strategies_tried: Vec<String> =
             hypotheses.iter().map(|h| h.claim.clone()).collect();
         let mut all_scenarios = Vec::new();
+        let mut attempts = Vec::new();
         let mut budget_remaining = investigation.budget.max_scenarios as usize;
 
         // 2. For each hypothesis, build + run + judge scenarios.
@@ -103,8 +113,9 @@ impl Investigator {
             all_scenarios.extend(scenarios.clone());
 
             // Run + judge concurrently. Each task owns cloned Arcs.
-            let mut tasks: JoinSet<Option<(crate::model::simulation::Trace, bool)>> =
-                JoinSet::new();
+            let mut tasks: JoinSet<
+                Option<(Scenario, crate::model::simulation::Trace, bool)>,
+            > = JoinSet::new();
             for scenario in scenarios {
                 let put_role = self.runner_put.clone();
                 let sim_role = self.runner_sim.clone();
@@ -138,13 +149,17 @@ impl Investigator {
                     let matched = v.matched;
                     let mut t = trace;
                     t.verdict = Some(v);
-                    Some((t, matched))
+                    Some((scenario, t, matched))
                 });
             }
 
             while let Some(res) = tasks.join_next().await {
                 budget_remaining = budget_remaining.saturating_sub(1);
-                if let Ok(Some((trace, matched))) = res {
+                if let Ok(Some((scenario, trace, matched))) = res {
+                    attempts.push(Attempt {
+                        scenario,
+                        trace: trace.clone(),
+                    });
                     if matched {
                         let witness = Witness {
                             attribution: Attribution {
@@ -182,6 +197,7 @@ impl Investigator {
                                 proposals,
                             },
                             scenarios: all_scenarios,
+            attempts,
                         };
                     }
                 }
@@ -201,6 +217,7 @@ impl Investigator {
                 proposals: vec![],
             },
             scenarios: all_scenarios,
+            attempts,
         }
     }
 
@@ -215,6 +232,7 @@ impl Investigator {
                 proposals: vec![],
             },
             scenarios: vec![],
+            attempts: vec![],
         }
     }
 }

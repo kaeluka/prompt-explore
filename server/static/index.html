@@ -195,6 +195,21 @@ function renderResult(data) {
           <div class="note">${esc(p.confidence_note)}</div>
         </div>`).join("") + `</div>`;
   }
+
+  if (data.attempts && data.attempts.length) {
+    html += `<div class="card">
+      <h2 class="section-title">Attempts (${data.attempts.length})</h2>` +
+      data.attempts.map((a, i) => `
+        <div class="proposal">
+          <h4>
+            <span class="badge ${a.matched ? 'witness_found' : 'no_witness_within_budget'}">${a.matched ? 'witness' : 'no match'}</span>
+            <span style="color:var(--text-dim);font-weight:400">${esc(a.hypothesis_id)} · confidence ${a.verdict_confidence ?? '—'}</span>
+          </h4>
+          <p class="meta" style="margin:0.3rem 0">user: ${esc(a.user_message ?? '(none)')}</p>
+          <p class="meta" style="margin:0.3rem 0">judge: ${esc(a.verdict_rationale)}</p>
+          <details><summary>transcript</summary><pre style="margin-top:0.5rem">${esc(a.transcript)}</pre></details>
+        </div>`).join("") + `</div>`;
+  }
   return html;
 }
 

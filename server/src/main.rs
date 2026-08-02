@@ -62,6 +62,18 @@ struct InvestigateResponse {
     /// Pre-rendered transcript of the witness trace, for display.
     transcript: Option<String>,
     scenarios_generated: usize,
+    /// Every completed run — the evidence behind a negative result.
+    attempts: Vec<AttemptView>,
+}
+
+#[derive(Serialize, Clone)]
+struct AttemptView {
+    user_message: Option<String>,
+    hypothesis_id: String,
+    matched: bool,
+    verdict_rationale: String,
+    verdict_confidence: Option<f32>,
+    transcript: String,
 }
 
 #[derive(Serialize)]
@@ -147,6 +159,24 @@ async fn create_investigation(
                 .join("\n")
         });
 
+        let attempts = outcome
+            .attempts
+            .iter()
+            .map(|a| AttemptView {
+                user_message: a.scenario.user_message.clone(),
+                hypothesis_id: a.scenario.hypothesis_id.clone(),
+                matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),
+                verdict_rationale: a
+                    .trace
+                    .verdict
+                    .as_ref()
+                    .map(|v| v.rationale.clone())
+                    .unwrap_or_default(),
+                verdict_confidence: a.trace.verdict.as_ref().and_then(|v| v.confidence),
+                transcript: render_transcript(&a.trace),
+            })
+            .collect();
+
         let mut jobs = state2.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id2) {
             job.status = JobStatus::Done;
@@ -154,6 +184,7 @@ async fn create_investigation(
                 result: outcome.result,
                 transcript,
                 scenarios_generated: outcome.scenarios.len(),
+                attempts,
             });
         }
     });

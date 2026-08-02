@@ -10,4 +10,4 @@ pub mod search;
 pub use hypothesize::Hypothesizer;
 pub use propose::ProposalGenerator;
 pub use scenario::ScenarioBuilder;
-pub use search::{InvestigateOutcome, Investigator, LlmRole};
+pub use search::{Attempt, InvestigateOutcome, Investigator, LlmRole};
