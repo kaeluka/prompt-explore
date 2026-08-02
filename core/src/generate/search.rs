@@ -18,6 +18,7 @@ use crate::model::simulation::Scenario;
 use crate::simulate::Runner;
 
 use super::hypothesize::Hypothesizer;
+use super::propose::ProposalGenerator;
 use super::scenario::ScenarioBuilder;
 
 /// One LLM client + model name, reused across generator roles.
@@ -33,6 +34,7 @@ pub struct Investigator {
     pub runner_put: LlmRole,
     pub runner_sim: LlmRole,
     pub judge: LlmRole,
+    pub proposer: LlmRole,
     /// Max scenarios generated per hypothesis.
     pub scenarios_per_hypothesis: usize,
     /// Max hypotheses to generate.
@@ -152,8 +154,23 @@ impl Investigator {
                                     hypothesis.id, hypothesis.claim
                                 ),
                             },
-                            traces: vec![trace],
+                            traces: vec![trace.clone()],
                         };
+
+                        // Step 3: propose (unverified) fixes.
+                        let proposals = ProposalGenerator::new(
+                            self.proposer.client.clone(),
+                            &self.proposer.model,
+                        )
+                        .propose(
+                            put,
+                            &witness.attribution,
+                            &crate::judge::render_transcript(&trace),
+                            all_scenarios.last(),
+                        )
+                        .await
+                        .unwrap_or_default();
+
                         return InvestigateOutcome {
                             result: RunResult {
                                 status: RunStatus::WitnessFound,
@@ -162,7 +179,7 @@ impl Investigator {
                                 strategies_tried,
                                 witness: Some(witness),
                                 incidental_findings: vec![],
-                                proposals: vec![],
+                                proposals,
                             },
                             scenarios: all_scenarios,
                         };

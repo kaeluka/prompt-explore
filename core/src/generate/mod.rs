@@ -3,9 +3,11 @@
 //! (`Investigator`) orchestrates hypothesize → build → run → judge.
 
 pub mod hypothesize;
+pub mod propose;
 pub mod scenario;
 pub mod search;
 
 pub use hypothesize::Hypothesizer;
+pub use propose::ProposalGenerator;
 pub use scenario::ScenarioBuilder;
 pub use search::{InvestigateOutcome, Investigator, LlmRole};

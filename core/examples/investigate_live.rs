@@ -84,7 +84,8 @@ async fn main() {
         builder: role.clone(),
         runner_put: role.clone(),
         runner_sim: role.clone(),
-        judge: role,
+        judge: role.clone(),
+        proposer: role,
         scenarios_per_hypothesis: 2,
         max_hypotheses: 4,
     };
@@ -116,5 +117,19 @@ async fn main() {
     } else {
         println!("\n(no witness found within budget)");
         println!("scenarios generated: {}", scenarios.len());
+    }
+
+    if !result.proposals.is_empty() {
+        println!("\n=== PROPOSED FIXES (UNVERIFIED) ===");
+        for (i, p) in result.proposals.iter().enumerate() {
+            println!(
+                "\n[{}] {:?} — addresses: {:?}",
+                i + 1,
+                p.kind,
+                p.addresses
+            );
+            println!("    {}", p.content);
+            println!("    ({})", p.confidence_note);
+        }
     }
 }
