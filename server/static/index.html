@@ -219,16 +219,29 @@ async function poll(id, startedAt) {
   const out = document.getElementById("out");
   for (;;) {
     await new Promise(r => setTimeout(r, 3000));
-    const resp = await fetch(`/api/investigations/${id}`);
-    if (resp.status === 404) { statusText.textContent = "Job not found."; return; }
-    const job = await resp.json();
+    let job;
+    try {
+      const resp = await fetch(`/api/investigations/${id}`);
+      if (resp.status === 404) {
+        statusText.textContent = "Job not found (server may have restarted and lost it).";
+        localStorage.removeItem("pe.currentJob");
+        return;
+      }
+      job = await resp.json();
+    } catch (e) {
+      // Server unreachable (e.g. restarting) — keep polling.
+      statusText.textContent = `Server unreachable — retrying…`;
+      continue;
+    }
     if (job.status === "done") {
       status.classList.remove("on");
+      localStorage.removeItem("pe.currentJob");
       out.innerHTML = renderResult(job.result);
       return;
     }
     if (job.status === "failed") {
       statusText.textContent = "Failed: " + (job.error || "unknown");
+      localStorage.removeItem("pe.currentJob");
       return;
     }
     const secs = Math.round((Date.now() - startedAt) / 1000);
@@ -263,6 +276,7 @@ document.getElementById("go").onclick = async () => {
     });
     if (!resp.ok) throw new Error(await resp.text());
     const { id } = await resp.json();
+    localStorage.setItem("pe.currentJob", id);
     await poll(id, Date.now());
   } catch (e) {
     statusText.textContent = "Error: " + e.message;
@@ -270,6 +284,15 @@ document.getElementById("go").onclick = async () => {
     btn.disabled = false;
   }
 };
+
+// Resume polling a job started before a page reload.
+(function resume() {
+  const id = localStorage.getItem("pe.currentJob");
+  if (!id) return;
+  document.getElementById("status").classList.add("on");
+  document.getElementById("status-text").textContent = `Reattached to ${id}…`;
+  poll(id, Date.now());
+})();
 </script>
 </body>
 </html>
