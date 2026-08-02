@@ -299,6 +299,7 @@ function stepRow(role, body) {
 function renderDiff(templateDiff, goalsDiff) {
   const part = p => {
     if (!p || p.length === 0) return "";
+    if (p.every(d => d.tag === "equal")) return "";  // unchanged field
     return '<div class="diff">' + p.map(d => {
       const cls = { equal: "deq", insert: "dins", delete: "ddel" }[d.tag] || "deq";
       const pre = d.tag === "insert" ? "+" : d.tag === "delete" ? "−" : "";

@@ -40,9 +40,8 @@ pub enum DiffPart {
 }
 
 #[derive(Deserialize)]
-struct LlmApplied {
-    template: String,
-    design_goals: String,
+struct LlmRewritten {
+    text: String,
 }
 
 impl ProposalApplier {
@@ -53,35 +52,34 @@ impl ProposalApplier {
         }
     }
 
-    /// Apply a proposal: the LLM rewrites the full prompt; we diff the
-    /// result against the originals. Returns the new prompt and the
-    /// diffs. The proposal's kind hints at the focus: goal_revision
-    /// edits the design goals; others edit the template.
+    /// Apply a proposal: rewrite ONLY the target field (template, or
+    /// design goals for goal_revision) and diff it. The other field is
+    /// never sent to the LLM, so it can't be changed by accident.
     pub async fn apply(
         &self,
         put: &PromptUnderTest,
         proposal: &Proposal,
     ) -> Result<AppliedPut, LlmError> {
         let edit_goal = matches!(proposal.kind, ProposalKind::GoalRevision);
+        let (original, target_name) = if edit_goal {
+            (put.design_goals.as_str(), "design goals")
+        } else {
+            (put.template.as_str(), "prompt template")
+        };
 
-        let system = "You are applying a proposed change to an AI agent's prompt. \
-                      You are given the current prompt template, its design goals, and a \
-                      proposed change. Produce the UPDATED prompt: apply the change \
-                      faithfully and precisely, changing only what the proposal requires \
-                      and preserving everything else (tone, structure, other instructions). \
-                      Do not editorialize or add unrelated improvements.\n\
-                      If the proposal is a goal_revision, update the design goals instead \
-                      of (or in addition to) the template.\n\
-                      Respond with a single JSON object: {\"template\": \"<full updated \
-                      template>\", \"design_goals\": \"<full updated design goals>\"}. \
-                      Always return the COMPLETE text for both fields, even if one is \
-                      unchanged."
+        let system = "You are applying a proposed change to an AI agent's prompt. You are \
+                      given ONE piece of text (the target) and a proposed change. Produce \
+                      the UPDATED target: apply the change faithfully and precisely, \
+                      changing only what the proposal requires and preserving everything \
+                      else (tone, structure, other instructions). Do not editorialize or \
+                      add unrelated improvements.\n\
+                      Respond with a single JSON object: {\"text\": \"<the full updated \
+                      target text>\"}. Return the COMPLETE text, not just the changed \
+                      part."
             .to_string();
 
         let user = format!(
-            "CURRENT TEMPLATE:\n{template}\n\nCURRENT DESIGN GOALS:\n{goals}\n\nPROPOSAL ({kind}):\n{content}\n\nIMPLICATED INSTRUCTIONS:\n{spans}\n\nNOTE: {note}{goal_hint}",
-            template = put.template,
-            goals = put.design_goals,
+            "TARGET ({target_name}):\n{original}\n\nPROPOSAL ({kind}):\n{content}\n\nIMPLICATED INSTRUCTIONS:\n{spans}\n\nNOTE: {note}",
             kind = serde_json::to_string(&proposal.kind).unwrap_or_default(),
             content = proposal.content,
             spans = proposal
@@ -91,11 +89,6 @@ impl ProposalApplier {
                 .collect::<Vec<_>>()
                 .join("\n"),
             note = proposal.confidence_note,
-            goal_hint = if edit_goal {
-                "\nThis is a goal_revision: focus on the design goals."
-            } else {
-                ""
-            },
         );
 
         let reply = self
@@ -115,16 +108,26 @@ impl ProposalApplier {
         let content = reply
             .content
             .ok_or_else(|| LlmError::MalformedResponse("empty applier reply".into()))?;
-        let parsed: LlmApplied = parse_json(&content).ok_or_else(|| {
+        let parsed: LlmRewritten = parse_json(&content).ok_or_else(|| {
             LlmError::MalformedResponse(format!("applied prompt not JSON: {content}"))
         })?;
+        let new_text = parsed.text;
 
-        Ok(AppliedPut {
-            template_diff: diff_unicode_words(&put.template, &parsed.template),
-            goals_diff: diff_unicode_words(&put.design_goals, &parsed.design_goals),
-            template: parsed.template,
-            design_goals: parsed.design_goals,
-        })
+        if edit_goal {
+            Ok(AppliedPut {
+                template: put.template.clone(),
+                design_goals: new_text.clone(),
+                template_diff: diff_unicode_words(&put.template, &put.template),
+                goals_diff: diff_unicode_words(&put.design_goals, &new_text),
+            })
+        } else {
+            Ok(AppliedPut {
+                template: new_text.clone(),
+                design_goals: put.design_goals.clone(),
+                template_diff: diff_unicode_words(&put.template, &new_text),
+                goals_diff: diff_unicode_words(&put.design_goals, &put.design_goals),
+            })
+        }
     }
 }
 
