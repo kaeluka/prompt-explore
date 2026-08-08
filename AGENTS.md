@@ -132,8 +132,13 @@ ZAI_API_KEY=... cargo run -p prompt-explore-server   # serve on 127.0.0.1:8080
 ZAI_API_KEY=... cargo run --example investigate_live # CLI-style live run
 ```
 
-Live runs use the z.ai coding-plan endpoint (model `glm-5.2`); OpenRouter is
-also supported via `OpenAiCompatibleClient::openrouter`.
+Live runs go through the `genai` multi-provider library (`ProviderClient`
+behind the `LlmClient` trait). Provider is chosen per call by the model
+namespace: `zai_coding::glm-5.2` (default; `ZAI_API_KEY`),
+`open_router::<model>` (`OPEN_ROUTER_API_KEY`), `bedrock_sigv4::<model-id>`
+(default AWS credential chain — `aws sso login` works). A bare model name
+uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`, default
+`zai`).
 
 ## Dogfooding rule
 

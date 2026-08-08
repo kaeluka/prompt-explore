@@ -10,15 +10,15 @@ use serde_json::json;
 
 use prompt_explore::generate::{InvestigateOutcome, Investigator, LlmRole};
 use prompt_explore::judge::render_transcript;
-use prompt_explore::llm::OpenAiCompatibleClient;
+use prompt_explore::llm::ProviderClient;
 use prompt_explore::model::*;
 
 const MODEL: &str = "glm-5.2";
 
 #[tokio::main]
 async fn main() {
-    let key = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY");
-    let client = Arc::new(OpenAiCompatibleClient::zai(&key));
+    let _ = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY (the z.ai adapter reads it)");
+    let client = Arc::new(ProviderClient::zai());
     let role = LlmRole {
         client: client.clone(),
         model: MODEL.into(),

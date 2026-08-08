@@ -7,18 +7,20 @@
 //! Sends a chat request with a tool defined; prints the model's
 //! response and whether it called the tool.
 
-use prompt_explore::llm::{ChatRequest, LlmClient, Message, OpenAiCompatibleClient, ToolDef};
+use prompt_explore::llm::{ChatRequest, LlmClient, Message, ProviderClient, ToolDef};
 
 #[tokio::main]
 async fn main() {
     let provider = std::env::args().nth(1).unwrap_or_else(|| "zai".into());
     let model = std::env::args().nth(2).unwrap_or_else(|| "glm-4.5".into());
 
-    let client: OpenAiCompatibleClient = match provider.as_str() {
-        "zai" => OpenAiCompatibleClient::zai(&env_key("ZAI_API_KEY")),
-        "openrouter" => OpenAiCompatibleClient::openrouter(&env_key("OPENROUTER_API_KEY")),
+    let client: ProviderClient = match provider.as_str() {
+        "zai" => ProviderClient::zai(),
+        "zai_standard" => ProviderClient::zai_standard(),
+        "openrouter" => ProviderClient::openrouter(),
+        "bedrock" => ProviderClient::bedrock(),
         other => {
-            eprintln!("unknown provider {other:?}; expected 'zai' or 'openrouter'");
+            eprintln!("unknown provider {other:?}; expected zai | zai_standard | openrouter | bedrock");
             std::process::exit(1);
         }
     };
@@ -66,8 +68,4 @@ async fn main() {
             std::process::exit(1);
         }
     }
-}
-
-fn env_key(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("set {name}"))
 }

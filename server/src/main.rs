@@ -24,7 +24,7 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
-use prompt_explore::llm::{OpenAiCompatibleClient, UsageTotals, UsageTracker};
+use prompt_explore::llm::{ProviderClient, UsageTotals, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
@@ -33,7 +33,7 @@ use serde_json::Value;
 const MODEL: &str = "glm-5.2";
 
 struct AppState {
-    client: Option<Arc<OpenAiCompatibleClient>>,
+    client: Option<Arc<ProviderClient>>,
     jobs: Mutex<HashMap<String, Job>>,
 }
 
@@ -68,7 +68,10 @@ struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
     /// Model for every LLM role (runner PUT + simulator, judge,
-    /// proposer). Omit to use the server default (`glm-5.2`).
+    /// proposer). Omit to use the server default (`glm-5.2`). Provider is
+    /// selected by namespace prefix, e.g. `zai_coding::glm-5.2`,
+    /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name
+    /// uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
     #[serde(default)]
     model: Option<String>,
     /// The test cases to run. Required; ALL of them are run (an explicit
@@ -195,8 +198,12 @@ fn print_help() {
     println!("    -h, --help        Print this help message and exit");
     println!();
     println!("ENVIRONMENT:");
-    println!("    ZAI_API_KEY          Required. z.ai API key for LLM access.");
-    println!("    PROMPT_EXPLORE_ADDR  Bind address (default: 0.0.0.0:8080, LAN-reachable).");
+    println!("    PROMPT_EXPLORE_PROVIDER  Which provider runs the LLM calls (default: zai).");
+    println!("                           zai | zai_standard | openrouter | bedrock");
+    println!("    ZAI_API_KEY            API key for zai / zai_standard (coding-plan default).");
+    println!("    OPENROUTER_API_KEY     API key for openrouter.");
+    println!("    bedrock uses the default AWS credential chain (aws sso login, profiles, IMDS).");
+    println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).");
 }
 
 #[tokio::main]
@@ -216,9 +223,16 @@ async fn main() {
         return;
     }
 
-    let key = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY");
+    let provider = std::env::var("PROMPT_EXPLORE_PROVIDER").unwrap_or_else(|_| "zai".into());
+    let client = match provider.as_str() {
+        "zai" => ProviderClient::zai(),
+        "zai_standard" => ProviderClient::zai_standard(),
+        "openrouter" => ProviderClient::openrouter(),
+        "bedrock" => ProviderClient::bedrock(),
+        other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock)"),
+    };
     let state = Arc::new(AppState {
-        client: Some(Arc::new(OpenAiCompatibleClient::zai(&key))),
+        client: Some(Arc::new(client)),
         jobs: Mutex::new(HashMap::new()),
     });
 

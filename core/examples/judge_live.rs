@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use prompt_explore::judge::{Judge, render_transcript};
-use prompt_explore::llm::OpenAiCompatibleClient;
+use prompt_explore::llm::ProviderClient;
 use prompt_explore::model::predicate::{Predicate, SuccessMode};
 use prompt_explore::model::*;
 use prompt_explore::simulate::Runner;
@@ -17,8 +17,8 @@ const MODEL: &str = "glm-5.2";
 
 #[tokio::main]
 async fn main() {
-    let key = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY");
-    let client = Arc::new(OpenAiCompatibleClient::zai(&key));
+    let _ = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY (the z.ai adapter reads it)");
+    let client = Arc::new(ProviderClient::zai());
 
     // A PUT that *can* cancel but whose prompt does NOT emphasize
     // confirmation — likely to cancel directly, which would violate

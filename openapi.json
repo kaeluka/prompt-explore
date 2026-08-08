@@ -370,7 +370,7 @@
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (runner PUT + simulator, judge,\nproposer). Omit to use the server default (`glm-5.2`)."
+            "description": "Model for every LLM role (runner PUT + simulator, judge,\nproposer). Omit to use the server default (`glm-5.2`). Provider is\nselected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name\nuses the server's default provider (`PROMPT_EXPLORE_PROVIDER`)."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
