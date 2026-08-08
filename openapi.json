@@ -1,0 +1,830 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "prompt-explore API",
+    "description": "Property-based testing for agent behavior. Job-based API: start an investigation, poll for the result, apply proposals.",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [],
+        "summary": "Serve the web UI.",
+        "operationId": "index",
+        "responses": {
+          "200": {
+            "description": "Web UI (HTML)",
+            "content": {
+              "text/html": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/apply": {
+      "post": {
+        "tags": [],
+        "summary": "Apply a proposal: the LLM rewrites the target field (template, or\ndesign goals for goal_revision), and a deterministic word-level diff\nis returned for review alongside the updated PsUT.",
+        "operationId": "apply_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated PsUT plus template/goals diffs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown target PUT",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "LLM apply failed",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/investigations": {
+      "post": {
+        "tags": [],
+        "summary": "Start an investigation. Runs in the background; poll the returned id.",
+        "operationId": "create_investigation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvestigateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Investigation job created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCreated"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/investigations/{id}": {
+      "get": {
+        "tags": [],
+        "summary": "Poll an investigation job. `status: done` includes the full result;\n`running` means keep polling; `failed` carries an error message.",
+        "operationId": "get_investigation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job id returned by POST /api/investigations",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status (and result, when done)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown job id"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApplyRequest": {
+        "type": "object",
+        "required": [
+          "psut",
+          "proposal"
+        ],
+        "properties": {
+          "proposal": {
+            "$ref": "#/components/schemas/Proposal"
+          },
+          "psut": {
+            "$ref": "#/components/schemas/PromptsUnderTest"
+          },
+          "target_put": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which PUT to apply the proposal to. Defaults to the first."
+          }
+        }
+      },
+      "ApplyResponse": {
+        "type": "object",
+        "required": [
+          "psut",
+          "template_diff",
+          "goals_diff"
+        ],
+        "properties": {
+          "goals_diff": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffPart"
+            }
+          },
+          "psut": {
+            "$ref": "#/components/schemas/PromptsUnderTest"
+          },
+          "template_diff": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffPart"
+            }
+          }
+        }
+      },
+      "AttemptView": {
+        "type": "object",
+        "required": [
+          "hypothesis_id",
+          "matched",
+          "verdict_rationale",
+          "steps"
+        ],
+        "properties": {
+          "hypothesis_id": {
+            "type": "string"
+          },
+          "matched": {
+            "type": "boolean"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceStep"
+            },
+            "description": "Structured steps, rendered as HTML by the UI."
+          },
+          "user_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict_confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "verdict_rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "Attribution": {
+        "type": "object",
+        "required": [
+          "instruction_spans",
+          "evidence"
+        ],
+        "properties": {
+          "evidence": {
+            "type": "string",
+            "description": "e.g. ablation summary"
+          },
+          "instruction_spans": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Budget": {
+        "type": "object",
+        "required": [
+          "max_scenarios",
+          "max_steps_per_trace"
+        ],
+        "properties": {
+          "max_scenarios": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_steps_per_trace": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DiffPart": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "tag"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "enum": [
+                  "equal"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "tag"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "enum": [
+                  "insert"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "tag"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "enum": [
+                  "delete"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "InvestigateRequest": {
+        "type": "object",
+        "required": [
+          "investigation",
+          "psut"
+        ],
+        "properties": {
+          "investigation": {
+            "$ref": "#/components/schemas/Investigation"
+          },
+          "psut": {
+            "$ref": "#/components/schemas/PromptsUnderTest"
+          }
+        }
+      },
+      "InvestigateResponse": {
+        "type": "object",
+        "required": [
+          "result",
+          "scenarios_generated",
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttemptView"
+            },
+            "description": "Every completed run — the evidence behind a negative result."
+          },
+          "result": {
+            "$ref": "#/components/schemas/RunResult"
+          },
+          "scenarios_generated": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "witness_user_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The opening user message of the witness scenario, so the UI can\nshow the full conversation (the trace steps start with the\nagent's first reply)."
+          }
+        }
+      },
+      "Investigation": {
+        "type": "object",
+        "required": [
+          "question",
+          "target_put",
+          "budget"
+        ],
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/Budget"
+          },
+          "question": {
+            "type": "string",
+            "description": "The mandatory question, e.g. \"are there inputs that cause\ndestructive tool calls?\" or \"why does this sometimes cancel,\nsometimes ask to confirm?\""
+          },
+          "target_put": {
+            "type": "string",
+            "description": "PUT id — a run executes exactly one PUT."
+          }
+        }
+      },
+      "JobCreated": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "done",
+          "failed"
+        ]
+      },
+      "JobView": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InvestigateResponse"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        }
+      },
+      "PromptUnderTest": {
+        "type": "object",
+        "required": [
+          "id",
+          "template",
+          "input_vars",
+          "tools",
+          "design_goals"
+        ],
+        "properties": {
+          "design_goals": {
+            "type": "string",
+            "description": "MANDATORY. The yardstick for judging behavior; also itself an\noptimization target (flagged via `ProposalKind::GoalRevision`)."
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_vars": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VarSpec"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "template": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolSchema"
+            },
+            "description": "This prompt's tool surface, exactly as the model sees it.\nEmpty = no tool loop (but intent lives in `design_goals`, not here)."
+          }
+        }
+      },
+      "PromptsUnderTest": {
+        "type": "object",
+        "required": [
+          "prompts",
+          "topology"
+        ],
+        "properties": {
+          "design_goals": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pipeline-level constraints, e.g. \"never promise refunds above $500\"."
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptUnderTest"
+            }
+          },
+          "topology": {
+            "type": "string",
+            "description": "NL description of how the PUTs connect (pipeline, usually a DAG).\nUsed for hypothesis generation and cross-prompt proposals;\nNOT executed — a run targets one PUT at a time."
+          }
+        }
+      },
+      "Proposal": {
+        "type": "object",
+        "required": [
+          "kind",
+          "content",
+          "addresses",
+          "confidence_note"
+        ],
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Instruction spans this proposal addresses."
+          },
+          "confidence_note": {
+            "type": "string",
+            "description": "Must state explicitly that the proposal is unverified."
+          },
+          "content": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProposalKind"
+          }
+        }
+      },
+      "ProposalKind": {
+        "type": "string",
+        "enum": [
+          "reword",
+          "split",
+          "merge",
+          "data_transform",
+          "goal_revision"
+        ]
+      },
+      "RunResult": {
+        "type": "object",
+        "required": [
+          "status",
+          "scenarios_tried",
+          "strategies_tried",
+          "incidental_findings",
+          "proposals"
+        ],
+        "properties": {
+          "incidental_findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Goal violations found incidentally during the search."
+          },
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Proposal"
+            },
+            "description": "May be non-empty even on negative results (defensive hardening).\nAlways unverified; the user owns everything after the run."
+          },
+          "scenarios_tried": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "strategies_tried": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hypothesis summaries — shown on negative results."
+          },
+          "witness": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Witness"
+              }
+            ]
+          }
+        }
+      },
+      "RunStatus": {
+        "type": "string",
+        "enum": [
+          "witness_found",
+          "no_witness_within_budget",
+          "error"
+        ]
+      },
+      "SideEffect": {
+        "type": "string",
+        "enum": [
+          "read",
+          "write"
+        ]
+      },
+      "ToolCall": {
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "properties": {
+          "args": {},
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolSchema": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "parameters",
+          "side_effect"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "example_responses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional realism anchors for the simulator LLM."
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "description": "JSON Schema for the tool's parameters."
+          },
+          "side_effect": {
+            "$ref": "#/components/schemas/SideEffect"
+          }
+        }
+      },
+      "Trace": {
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "steps"
+        ],
+        "properties": {
+          "scenario_id": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceStep"
+            }
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Verdict",
+                "description": "Set by the judge after the runner produces the trace."
+              }
+            ]
+          }
+        }
+      },
+      "TraceStep": {
+        "type": "object",
+        "required": [
+          "model_output"
+        ],
+        "properties": {
+          "model_output": {
+            "type": "string"
+          },
+          "tool_call": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ToolCall"
+              }
+            ]
+          },
+          "tool_response": {},
+          "world_state_after": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Present on write-tool steps.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "VarSpec": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "constant"
+                ]
+              },
+              "value": {}
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "description",
+              "kind"
+            ],
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "nl_description"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "examples",
+              "kind"
+            ],
+            "properties": {
+              "examples": {
+                "type": "array",
+                "items": {}
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "examples"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Extensible per-variable data-generation spec.\n\nNew variants must be additive; the serialized form stays\nself-describing via the `kind` tag."
+      },
+      "Verdict": {
+        "type": "object",
+        "required": [
+          "matched",
+          "rationale",
+          "matched_step_indices"
+        ],
+        "properties": {
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The judge's confidence in its own verdict (self-reported)."
+          },
+          "matched": {
+            "type": "boolean",
+            "description": "Does this trace satisfy the predicate (∧ design_goals)?"
+          },
+          "matched_step_indices": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Where in the trace the match happened."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "Witness": {
+        "type": "object",
+        "required": [
+          "traces",
+          "attribution"
+        ],
+        "properties": {
+          "attribution": {
+            "$ref": "#/components/schemas/Attribution"
+          },
+          "traces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Trace"
+            },
+            "description": "1 trace for existential questions, 2 for divergence."
+          }
+        }
+      }
+    }
+  }
+}

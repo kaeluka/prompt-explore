@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptsUnderTest {
     pub prompts: Vec<PromptUnderTest>,
     /// NL description of how the PUTs connect (pipeline, usually a DAG).
@@ -15,7 +15,7 @@ pub struct PromptsUnderTest {
     pub design_goals: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptUnderTest {
     pub id: String,
     pub template: String,
@@ -32,7 +32,7 @@ pub struct PromptUnderTest {
 ///
 /// New variants must be additive; the serialized form stays
 /// self-describing via the `kind` tag.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VarSpec {
     Constant { value: Value },
@@ -41,7 +41,7 @@ pub enum VarSpec {
     // future: Schema, Distribution, TraceSample, ...
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
@@ -53,14 +53,14 @@ pub struct ToolSchema {
     pub example_responses: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SideEffect {
     Read,
     Write,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Investigation {
     /// The mandatory question, e.g. "are there inputs that cause
     /// destructive tool calls?" or "why does this sometimes cancel,
@@ -71,7 +71,7 @@ pub struct Investigation {
     pub budget: Budget,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Budget {
     pub max_scenarios: u32,
     pub max_steps_per_trace: u32,

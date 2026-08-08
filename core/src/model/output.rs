@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::simulation::Trace;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunResult {
     pub status: RunStatus,
     pub scenarios_tried: u32,
@@ -18,7 +18,7 @@ pub struct RunResult {
     pub proposals: Vec<Proposal>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     WitnessFound,
@@ -26,21 +26,21 @@ pub enum RunStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Witness {
     /// 1 trace for existential questions, 2 for divergence.
     pub traces: Vec<Trace>,
     pub attribution: Attribution,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Attribution {
     pub instruction_spans: Vec<String>,
     /// e.g. ablation summary
     pub evidence: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Proposal {
     pub kind: ProposalKind,
     pub content: String,
@@ -50,7 +50,7 @@ pub struct Proposal {
     pub confidence_note: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalKind {
     Reword,
@@ -61,7 +61,7 @@ pub enum ProposalKind {
 }
 
 /// Result of checking a trace against a PUT's design goals.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GoalFinding {
     pub goal: String,
     pub violated: bool,
@@ -70,7 +70,7 @@ pub struct GoalFinding {
 }
 
 /// Result of comparing two traces for material divergence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DivergenceVerdict {
     pub divergent: bool,
     /// What specifically differs between the two traces.

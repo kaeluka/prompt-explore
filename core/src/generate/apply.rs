@@ -31,7 +31,7 @@ pub struct AppliedPut {
     pub goals_diff: Vec<DiffPart>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case", tag = "tag", content = "value")]
 pub enum DiffPart {
     Equal(String),

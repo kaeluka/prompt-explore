@@ -19,6 +19,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::OpenApi;
 use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
@@ -40,7 +41,7 @@ struct Job {
     error: Option<String>,
 }
 
-#[derive(Clone, Copy, Serialize, PartialEq)]
+#[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 enum JobStatus {
     Running,
@@ -48,13 +49,13 @@ enum JobStatus {
     Failed,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 struct InvestigateRequest {
     investigation: Investigation,
     psut: PromptsUnderTest,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 struct ApplyRequest {
     psut: PromptsUnderTest,
     proposal: Proposal,
@@ -62,14 +63,14 @@ struct ApplyRequest {
     target_put: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct ApplyResponse {
     psut: PromptsUnderTest,
     template_diff: Vec<prompt_explore::generate::DiffPart>,
     goals_diff: Vec<prompt_explore::generate::DiffPart>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 struct InvestigateResponse {
     result: RunResult,
     scenarios_generated: usize,
@@ -81,7 +82,7 @@ struct InvestigateResponse {
     attempts: Vec<AttemptView>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 struct AttemptView {
     user_message: Option<String>,
     hypothesis_id: String,
@@ -92,12 +93,12 @@ struct AttemptView {
     steps: Vec<TraceStep>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct JobCreated {
     id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct JobView {
     status: JobStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,8 +107,28 @@ struct JobView {
     error: Option<String>,
 }
 
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "prompt-explore API",
+        version = env!("CARGO_PKG_VERSION"),
+        description = "Property-based testing for agent behavior. Job-based API: \
+                       start an investigation, poll for the result, apply proposals."
+    ),
+    paths(index, create_investigation, get_investigation, apply_proposal)
+)]
+struct ApiDoc;
+
 #[tokio::main]
 async fn main() {
+    if std::env::args().any(|a| a == "--dump-openapi") {
+        println!(
+            "{}",
+            ApiDoc::openapi().to_pretty_json().expect("spec serializes")
+        );
+        return;
+    }
+
     let key = std::env::var("ZAI_API_KEY").expect("set ZAI_API_KEY");
     let state = Arc::new(AppState {
         client: Some(Arc::new(OpenAiCompatibleClient::zai(&key))),
@@ -119,6 +140,7 @@ async fn main() {
         .route("/api/investigations", post(create_investigation))
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/apply", post(apply_proposal))
+        .route("/api/openapi.json", get(openapi_json))
         .with_state(state);
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -127,6 +149,16 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(ApiDoc::openapi())
+}
+
+/// Serve the web UI.
+#[utoipa::path(
+    get,
+    path = "/",
+    responses((status = 200, description = "Web UI (HTML)", content_type = "text/html"))
+)]
 async fn index() -> impl axum::response::IntoResponse {
     // During development the UI changes often; in release builds the
     // embedded page is versioned with the binary, so normal caching
@@ -142,6 +174,15 @@ async fn index() -> impl axum::response::IntoResponse {
     }
 }
 
+/// Start an investigation. Runs in the background; poll the returned id.
+#[utoipa::path(
+    post,
+    path = "/api/investigations",
+    request_body = InvestigateRequest,
+    responses(
+        (status = 202, description = "Investigation job created", body = JobCreated)
+    )
+)]
 async fn create_investigation(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InvestigateRequest>,
@@ -218,6 +259,17 @@ async fn create_investigation(
     (StatusCode::ACCEPTED, Json(JobCreated { id }))
 }
 
+/// Poll an investigation job. `status: done` includes the full result;
+/// `running` means keep polling; `failed` carries an error message.
+#[utoipa::path(
+    get,
+    path = "/api/investigations/{id}",
+    params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
+    responses(
+        (status = 200, description = "Job status (and result, when done)", body = JobView),
+        (status = 404, description = "Unknown job id")
+    )
+)]
 async fn get_investigation(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -231,6 +283,19 @@ async fn get_investigation(
     }))
 }
 
+/// Apply a proposal: the LLM rewrites the target field (template, or
+/// design goals for goal_revision), and a deterministic word-level diff
+/// is returned for review alongside the updated PsUT.
+#[utoipa::path(
+    post,
+    path = "/api/apply",
+    request_body = ApplyRequest,
+    responses(
+        (status = 200, description = "Updated PsUT plus template/goals diffs", body = ApplyResponse),
+        (status = 400, description = "Unknown target PUT", body = String),
+        (status = 500, description = "LLM apply failed", body = String)
+    )
+)]
 async fn apply_proposal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ApplyRequest>,

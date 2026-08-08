@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 /// Everything needed to (stochastically) reproduce a trajectory.
 /// Everything else in a trace is derived.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
     pub id: String,
     pub hypothesis_id: String,
@@ -20,7 +20,7 @@ pub struct Scenario {
     pub simulator_notes: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TraceStep {
     pub model_output: String,
     pub tool_call: Option<ToolCall>,
@@ -29,13 +29,13 @@ pub struct TraceStep {
     pub world_state_after: Option<HashMap<String, Value>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Trace {
     pub scenario_id: String,
     pub steps: Vec<TraceStep>,
@@ -43,7 +43,7 @@ pub struct Trace {
     pub verdict: Option<Verdict>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Verdict {
     /// Does this trace satisfy the predicate (∧ design_goals)?
     pub matched: bool,

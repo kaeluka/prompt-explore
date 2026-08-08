@@ -31,6 +31,11 @@ Cargo workspace:
   and instruct the user to re-ask the question to check.
 - Negative results are first-class: surface what was tried (scenarios, traces,
   verdicts), never just "nothing found".
+- The OpenAPI spec is generated, not hand-written: handlers and
+  request/response types carry `utoipa` annotations, and `openapi.json` is
+  compiled from them. **Whenever the API changes** (endpoints, request or
+  response shapes), re-run `scripts/dump-openapi.sh` and commit the updated
+  `openapi.json` together with the change.
 
 ## Build / test / run
 

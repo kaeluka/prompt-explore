@@ -9,13 +9,13 @@ use super::input::VarSpec;
 /// The investigation question, used directly as the judge criterion.
 /// No translation to logic; the LLM judge evaluates traces against
 /// this natural-language criterion, and the transcript is the evidence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Predicate {
     pub criterion: String,
     pub success_mode: SuccessMode,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SuccessMode {
     /// One trace demonstrating the behavior (existential questions).
@@ -25,7 +25,7 @@ pub enum SuccessMode {
     WitnessPair,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Hypothesis {
     pub id: String,
     pub claim: String,
