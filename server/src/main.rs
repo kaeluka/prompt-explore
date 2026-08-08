@@ -12,9 +12,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::{Html, IntoResponse, Json},
+    extract::{Path, Request, State},
+    http::{header, HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -141,10 +142,12 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/openapi.json", get(openapi_json))
         .route("/api/investigations", post(create_investigation))
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/apply", post(apply_proposal))
         .route("/api/openapi.json", get(openapi_json))
+        .layer(middleware::from_fn(spec_discovery))
         .with_state(state);
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -155,6 +158,21 @@ async fn main() {
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
+}
+
+/// Discovery: every response advertises the OpenAPI spec
+/// (machine-readable, `rel="service-desc"`) and the web UI
+/// (human-readable, `rel="service-doc"`) via standard link relations,
+/// so spec-aware tooling can find them from any endpoint.
+async fn spec_discovery(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(
+        header::LINK,
+        HeaderValue::from_static(
+            r#"</openapi.json>; rel="service-desc", </>; rel="service-doc""#,
+        ),
+    );
+    res
 }
 
 /// Serve the web UI.
