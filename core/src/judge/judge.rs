@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
+use crate::llm::{ChatRequest, LlmClient, LlmError, Message, parse_json};
 use crate::model::output::{DivergenceVerdict, GoalFinding};
 use crate::model::predicate::Predicate;
 use crate::model::simulation::{Scenario, Trace, Verdict};
@@ -244,13 +244,4 @@ fn push_scenario_context(user: &mut String, scenario: Option<&crate::model::simu
             ));
         }
     }
-}
-
-/// Parse JSON from a model reply, tolerating surrounding prose.
-fn parse_json<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
-    serde_json::from_str(s.trim()).ok().or_else(|| {
-        let start = s.find('{')?;
-        let end = s.rfind('}')?;
-        serde_json::from_str(&s[start..=end]).ok()
-    })
 }

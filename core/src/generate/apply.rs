@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
+use crate::llm::{ChatRequest, LlmClient, LlmError, Message, parse_json};
 use crate::model::input::PromptUnderTest;
 use crate::model::output::{Proposal, ProposalKind};
 
@@ -141,14 +141,6 @@ fn diff_unicode_words(old: &str, new: &str) -> Vec<DiffPart> {
             ChangeTag::Delete => DiffPart::Delete(c.value().to_string()),
         })
         .collect()
-}
-
-fn parse_json<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
-    serde_json::from_str(s.trim()).ok().or_else(|| {
-        let start = s.find('{')?;
-        let end = s.rfind('}')?;
-        serde_json::from_str(&s[start..=end]).ok()
-    })
 }
 
 #[cfg(test)]

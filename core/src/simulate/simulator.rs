@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
+use crate::llm::{ChatRequest, LlmClient, LlmError, Message, parse_json};
 use crate::model::ToolSchema;
 use crate::model::simulation::ToolCall;
 
@@ -111,15 +111,6 @@ impl ToolSimulator {
             state_patch: if is_write { parsed.state_patch } else { None },
         })
     }
-}
-
-/// Parse JSON, tolerating surrounding prose or code fences.
-fn parse_json(s: &str) -> Option<SimReply> {
-    serde_json::from_str(s.trim()).ok().or_else(|| {
-        let start = s.find('{')?;
-        let end = s.rfind('}')?;
-        serde_json::from_str(&s[start..=end]).ok()
-    })
 }
 
 /// Shallow-merge a patch into world state; null values delete keys.

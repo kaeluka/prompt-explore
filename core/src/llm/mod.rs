@@ -5,11 +5,13 @@
 pub mod client;
 pub mod mock;
 pub mod openai;
+pub mod parse;
 pub mod track;
 pub mod types;
 
 pub use client::{LlmClient, LlmError};
 pub use mock::MockLlmClient;
 pub use openai::OpenAiCompatibleClient;
+pub use parse::{extract_json, parse_json};
 pub use track::{UsageTotals, UsageTracker};
 pub use types::*;
