@@ -124,9 +124,33 @@ struct JobView {
 )]
 struct ApiDoc;
 
+fn print_help() {
+    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("Property-based testing for agent behavior. HTTP API + web UI.");
+    println!();
+    println!("USAGE:");
+    println!("    {} [OPTIONS]", env!("CARGO_PKG_NAME"));
+    println!();
+    println!("OPTIONS:");
+    println!("    --dump-openapi    Print the OpenAPI spec as JSON and exit");
+    println!("    -h, --help        Print this help message and exit");
+    println!();
+    println!("ENVIRONMENT:");
+    println!("    ZAI_API_KEY          Required. z.ai API key for LLM access.");
+    println!("    PROMPT_EXPLORE_ADDR  Bind address (default: 127.0.0.1:8080).");
+}
+
 #[tokio::main]
 async fn main() {
-    if std::env::args().any(|a| a == "--dump-openapi") {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--dump-openapi") {
         println!(
             "{}",
             ApiDoc::openapi().to_pretty_json().expect("spec serializes")
