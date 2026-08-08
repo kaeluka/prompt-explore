@@ -3,7 +3,9 @@
 //!
 //! There is no scenario generation here. Scenarios are authored outside
 //! the harness (by the operator's agent) and passed in; an explicit list
-//! is a contract — all of them are run.
+//! is a contract — all of them are run. Run errors are captured, not
+//! swallowed: a scenario whose trace or verdict fails becomes a
+//! `ScenarioFailure`, so an empty `attempts` list is interpretable.
 
 use std::sync::Arc;
 
@@ -12,7 +14,7 @@ use tokio::task::JoinSet;
 use crate::judge::Judge;
 use crate::llm::LlmClient;
 use crate::model::input::{Investigation, PromptUnderTest};
-use crate::model::output::{Attribution, RunResult, RunStatus, Witness};
+use crate::model::output::{Attribution, RunResult, RunStatus, ScenarioFailure, Witness};
 use crate::model::predicate::{Predicate, SuccessMode};
 use crate::model::simulation::Scenario;
 use crate::simulate::Runner;
@@ -51,6 +53,12 @@ pub struct Attempt {
     pub matched: bool,
 }
 
+/// Outcome of running one scenario: a judged trace, or a captured failure.
+enum RunOne {
+    Done(Scenario, crate::model::simulation::Trace, bool),
+    Failed(Scenario, &'static str, String),
+}
+
 impl Investigator {
     /// Run exactly the given scenarios against the PUT. All of them —
     /// an explicit list is a contract.
@@ -65,8 +73,7 @@ impl Investigator {
             success_mode: SuccessMode::Witness,
         };
 
-        let mut tasks: JoinSet<Option<(Scenario, crate::model::simulation::Trace, bool)>> =
-            JoinSet::new();
+        let mut tasks: JoinSet<RunOne> = JoinSet::new();
         for scenario in scenarios {
             self.spawn_run(
                 &mut tasks,
@@ -78,13 +85,24 @@ impl Investigator {
         }
 
         let mut attempts = Vec::new();
+        let mut failures = Vec::new();
         while let Some(res) = tasks.join_next().await {
-            if let Ok(Some((scenario, trace, matched))) = res {
-                attempts.push(Attempt {
+            match res {
+                Ok(RunOne::Done(scenario, trace, matched)) => attempts.push(Attempt {
                     scenario,
                     trace: trace.clone(),
                     matched,
-                });
+                }),
+                Ok(RunOne::Failed(scenario, stage, error)) => failures.push(ScenarioFailure {
+                    scenario_id: scenario.id.clone(),
+                    stage: stage.into(),
+                    error,
+                }),
+                Err(join_err) => failures.push(ScenarioFailure {
+                    scenario_id: "?".into(),
+                    stage: "runner".into(),
+                    error: format!("task panicked: {join_err}"),
+                }),
             }
         }
 
@@ -92,6 +110,25 @@ impl Investigator {
             .iter()
             .map(|s| format!("caller-provided scenario '{}'", s.id))
             .collect::<Vec<_>>();
+
+        // Every scenario errored -> the run itself is an error, not a
+        // clean "no witness".
+        if attempts.is_empty() && !failures.is_empty() {
+            return InvestigateOutcome {
+                result: RunResult {
+                    status: RunStatus::Error,
+                    scenarios_tried: scenarios.len() as u32,
+                    strategies_tried,
+                    witness: None,
+                    incidental_findings: vec![],
+                    proposals: vec![],
+                    failures,
+                    final_state: None,
+                },
+                scenarios: scenarios.to_vec(),
+                attempts,
+            };
+        }
 
         // Existential mode: the first matched attempt is the witness.
         if let Some(att) = attempts.iter().find(|a| a.matched) {
@@ -122,6 +159,7 @@ impl Investigator {
                     witness: Some(witness),
                     incidental_findings: vec![],
                     proposals,
+                    failures,
                     final_state: Some(trace.final_world_state.clone()),
                 },
                 scenarios: scenarios.to_vec(),
@@ -136,6 +174,7 @@ impl Investigator {
                     witness: None,
                     incidental_findings: vec![],
                     proposals: vec![],
+                    failures,
                     final_state: attempts.last().map(|a| a.trace.final_world_state.clone()),
                 },
                 scenarios: scenarios.to_vec(),
@@ -144,10 +183,11 @@ impl Investigator {
         }
     }
 
-    /// Spawn one run+judge task for a scenario.
+    /// Spawn one run+judge task for a scenario. Errors are captured as
+    /// `RunOne::Failed` rather than swallowed.
     fn spawn_run(
         &self,
-        tasks: &mut JoinSet<Option<(Scenario, crate::model::simulation::Trace, bool)>>,
+        tasks: &mut JoinSet<RunOne>,
         predicate: &Predicate,
         budget: &crate::model::Budget,
         put: &PromptUnderTest,
@@ -177,15 +217,18 @@ impl Investigator {
                 tools: put_tools,
                 design_goals: String::new(),
             };
-            let trace = runner.run(&put_view, &scenario, &budget).await.ok()?;
-            let v = judge
-                .evaluate(&trace, &predicate, Some(&scenario))
-                .await
-                .ok()?;
+            let trace = match runner.run(&put_view, &scenario, &budget).await {
+                Ok(t) => t,
+                Err(e) => return RunOne::Failed(scenario, "runner", e.to_string()),
+            };
+            let v = match judge.evaluate(&trace, &predicate, Some(&scenario)).await {
+                Ok(v) => v,
+                Err(e) => return RunOne::Failed(scenario, "judge", e.to_string()),
+            };
             let matched = v.matched;
             let mut t = trace;
             t.verdict = Some(v);
-            Some((scenario, t, matched))
+            RunOne::Done(scenario, t, matched)
         });
     }
 }

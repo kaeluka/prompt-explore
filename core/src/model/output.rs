@@ -9,7 +9,8 @@ use super::simulation::Trace;
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunResult {
     pub status: RunStatus,
-    /// How many scenarios completed a trace.
+    /// Scenarios attempted (= completed, in the response's `attempts`, +
+    /// failed, in `failures`).
     pub scenarios_tried: u32,
     /// Per-scenario provenance labels (e.g. "caller-provided scenario
     /// 'id'"), surfaced so negative results show what was tried.
@@ -18,13 +19,32 @@ pub struct RunResult {
     /// Reserved for goal violations found incidentally; currently always
     /// empty (goal checking is not wired into the run path).
     pub incidental_findings: Vec<String>,
-    /// May be non-empty even on negative results (defensive hardening).
-    /// Always unverified; the user owns everything after the run.
+    /// Generated ONLY when a witness is found (fixes for the witnessed
+    /// behavior). Empty on negative results — the proposer does not run
+    /// without a witness. Always unverified; the user owns everything
+    /// after the run.
     pub proposals: Vec<Proposal>,
+    /// Scenarios that errored instead of producing a judged trace (PUT
+    /// execution, tool simulation, or judge failure). When non-empty,
+    /// `attempts` may be shorter than `scenarios_tried`; when ALL
+    /// scenarios failed, `status` is `error`.
+    #[serde(default)]
+    pub failures: Vec<ScenarioFailure>,
     /// The world state at the end: the witness trace's when one was
     /// found, otherwise the last completed attempt's. Informational.
     #[serde(default)]
     pub final_state: Option<HashMap<String, Value>>,
+}
+
+/// A scenario that errored during a run.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ScenarioFailure {
+    pub scenario_id: String,
+    /// Where it failed: `"runner"` (PUT execution or tool simulation)
+    /// or `"judge"`.
+    pub stage: String,
+    /// The error message.
+    pub error: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]

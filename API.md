@@ -205,10 +205,11 @@ Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `failures` | [`ScenarioFailure`](#scenariofailure)[] | no | Scenarios that errored instead of producing a judged trace (PUT execution, tool simulation, or judge failure). When non-empty, `attempts` may be shorter than `scenarios_tried`; when ALL scenarios failed, `status` is `error`. |
 | `final_state` | object? | no | The world state at the end: the witness trace's when one was found, otherwise the last completed attempt's. Informational. |
 | `incidental_findings` | string[] | yes | Reserved for goal violations found incidentally; currently always empty (goal checking is not wired into the run path). |
-| `proposals` | [`Proposal`](#proposal)[] | yes | May be non-empty even on negative results (defensive hardening). Always unverified; the user owns everything after the run. |
-| `scenarios_tried` | integer | yes | How many scenarios completed a trace. |
+| `proposals` | [`Proposal`](#proposal)[] | yes | Generated ONLY when a witness is found (fixes for the witnessed behavior). Empty on negative results — the proposer does not run without a witness. Always unverified; the user owns everything after the run. |
+| `scenarios_tried` | integer | yes | Scenarios attempted (= completed, in the response's `attempts`, + failed, in `failures`). |
 | `status` | [`RunStatus`](#runstatus) | yes |  |
 | `strategies_tried` | string[] | yes | Per-scenario provenance labels (e.g. "caller-provided scenario 'id'"), surfaced so negative results show what was tried. |
 | `witness` | [`Witness`](#witness)? | no |  |
@@ -232,6 +233,16 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 | `stated_state` | string? | no | Operator-required environment facts for THIS scenario (e.g. "cancel_order is broken and returns E_CONN"). Appended to the simulator's context so it respects them. Independent per scenario; there is no investigation-level environment-state field. |
 | `user_message` | string? | no | The opening message from the user/protagonist. For a tool-less PUT this is the entire work input. |
 | `world_state` | map&lt;string, any&gt; | yes | Mutable world facts, updated by write-tool patches during the trace. Static truth belongs in the narrative, not here. |
+
+### `ScenarioFailure`
+
+A scenario that errored during a run.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes | The error message. |
+| `scenario_id` | string | yes |  |
+| `stage` | string | yes | Where it failed: `"runner"` (PUT execution or tool simulation) or `"judge"`. |
 
 ### `SideEffect`
 

@@ -548,6 +548,13 @@
           "proposals"
         ],
         "properties": {
+          "failures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScenarioFailure"
+            },
+            "description": "Scenarios that errored instead of producing a judged trace (PUT\nexecution, tool simulation, or judge failure). When non-empty,\n`attempts` may be shorter than `scenarios_tried`; when ALL\nscenarios failed, `status` is `error`."
+          },
           "final_state": {
             "type": [
               "object",
@@ -571,12 +578,12 @@
             "items": {
               "$ref": "#/components/schemas/Proposal"
             },
-            "description": "May be non-empty even on negative results (defensive hardening).\nAlways unverified; the user owns everything after the run."
+            "description": "Generated ONLY when a witness is found (fixes for the witnessed\nbehavior). Empty on negative results — the proposer does not run\nwithout a witness. Always unverified; the user owns everything\nafter the run."
           },
           "scenarios_tried": {
             "type": "integer",
             "format": "int32",
-            "description": "How many scenarios completed a trace.",
+            "description": "Scenarios attempted (= completed, in the response's `attempts`, +\nfailed, in `failures`).",
             "minimum": 0
           },
           "status": {
@@ -670,6 +677,28 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "ScenarioFailure": {
+        "type": "object",
+        "description": "A scenario that errored during a run.",
+        "required": [
+          "scenario_id",
+          "stage",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "The error message."
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "Where it failed: `\"runner\"` (PUT execution or tool simulation)\nor `\"judge\"`."
           }
         }
       },
