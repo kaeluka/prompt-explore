@@ -16,7 +16,7 @@ Serve the web UI.
 
 ### `POST /api/apply`
 
-Apply a proposal: the LLM rewrites the target field (template, or design goals for goal_revision), and a deterministic word-level diff is returned for review alongside the updated PsUT.
+Apply a proposal: the LLM rewrites the target field (template, or design goals for goal_revision), and a deterministic word-level diff is returned for review alongside the updated prompt set.
 
 Body: [`ApplyRequest`](#applyrequest)
 
@@ -24,13 +24,13 @@ Body: [`ApplyRequest`](#applyrequest)
 |---|---|---|---|
 | `proposal` | [`Proposal`](#proposal) | yes |  |
 | `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
-| `target_put` | string? | no | Which PUT to apply the proposal to. Defaults to the first. |
+| `target_put` | string? | no | Id of the prompt under test to apply the proposal to. Defaults to the first. |
 
 
 | Status | Response |
 |---|---|
-| `200` | Updated PsUT plus template/goals diffs: [`ApplyResponse`](#applyresponse) |
-| `400` | Unknown target PUT |
+| `200` | Updated prompt set plus template/goals diffs: [`ApplyResponse`](#applyresponse) |
+| `400` | Unknown target prompt |
 | `500` | LLM apply failed |
 
 ### `POST /api/investigations`
@@ -70,7 +70,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 |---|---|---|---|
 | `proposal` | [`Proposal`](#proposal) | yes |  |
 | `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
-| `target_put` | string? | no | Which PUT to apply the proposal to. Defaults to the first. |
+| `target_put` | string? | no | Id of the prompt under test to apply the proposal to. Defaults to the first. |
 
 ### `ApplyResponse`
 
@@ -151,7 +151,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 |---|---|---|---|
 | `budget` | [`Budget`](#budget) | yes |  |
 | `question` | string | yes | The mandatory question, e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" |
-| `target_put` | string | yes | PUT id — a run executes exactly one PUT. |
+| `target_put` | string | yes | Id of the prompt under test — a run executes exactly one prompt. |
 
 ### `JobCreated`
 
@@ -173,6 +173,8 @@ Values: `running`, `done`, `failed`
 
 ### `PromptUnderTest`
 
+One prompt under test: template, input variables, tool surface, and (mandatory) design goals.
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `design_goals` | string | yes | MANDATORY. The yardstick for judging behavior; also itself an optimization target (flagged via `ProposalKind::GoalRevision`). |
@@ -183,11 +185,13 @@ Values: `running`, `done`, `failed`
 
 ### `PromptsUnderTest`
 
+The prompts under test (PsUT): a set of agent prompts, how they connect, and optional pipeline-level design goals.
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `design_goals` | string? | no | Pipeline-level constraints, e.g. "never promise refunds above $500". |
 | `prompts` | [`PromptUnderTest`](#promptundertest)[] | yes |  |
-| `topology` | string | yes | NL description of how the PUTs connect (pipeline, usually a DAG). Used for hypothesis generation and cross-prompt proposals; NOT executed — a run targets one PUT at a time. |
+| `topology` | string | yes | NL description of how the prompts connect (pipeline, usually a DAG). Used for hypothesis generation and cross-prompt proposals; NOT executed — a run targets one prompt at a time. |
 
 ### `Proposal`
 

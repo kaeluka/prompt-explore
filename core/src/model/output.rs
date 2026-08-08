@@ -60,7 +60,7 @@ pub enum ProposalKind {
     GoalRevision,
 }
 
-/// Result of checking a trace against a PUT's design goals.
+/// Result of checking a trace against a prompt's design goals.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GoalFinding {
     pub goal: String,

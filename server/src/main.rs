@@ -59,7 +59,8 @@ struct InvestigateRequest {
 struct ApplyRequest {
     psut: PromptsUnderTest,
     proposal: Proposal,
-    /// Which PUT to apply the proposal to. Defaults to the first.
+    /// Id of the prompt under test to apply the proposal to.
+    /// Defaults to the first.
     target_put: Option<String>,
 }
 
@@ -285,14 +286,14 @@ async fn get_investigation(
 
 /// Apply a proposal: the LLM rewrites the target field (template, or
 /// design goals for goal_revision), and a deterministic word-level diff
-/// is returned for review alongside the updated PsUT.
+/// is returned for review alongside the updated prompt set.
 #[utoipa::path(
     post,
     path = "/api/apply",
     request_body = ApplyRequest,
     responses(
-        (status = 200, description = "Updated PsUT plus template/goals diffs", body = ApplyResponse),
-        (status = 400, description = "Unknown target PUT", body = String),
+        (status = 200, description = "Updated prompt set plus template/goals diffs", body = ApplyResponse),
+        (status = 400, description = "Unknown target prompt", body = String),
         (status = 500, description = "LLM apply failed", body = String)
     )
 )]
@@ -315,7 +316,7 @@ async fn apply_proposal(
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
-                format!("target PUT '{target}' not found"),
+                format!("target prompt '{target}' not found"),
             )
         })?;
 
