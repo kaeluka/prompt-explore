@@ -803,6 +803,13 @@
               "$ref": "#/components/schemas/TraceStep"
             },
             "description": "Steps simulated so far (tool calls + responses + model output)."
+          },
+          "user_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The opening user message (the protagonist's first turn, played by\nthe simulator side). Lets a chat view render the whole\nconversation, not just from the PUT's first reply."
           }
         }
       },

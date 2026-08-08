@@ -21,6 +21,11 @@ pub struct ScenarioProgress {
     pub state: ScenarioState,
     /// Steps simulated so far (tool calls + responses + model output).
     pub steps: Vec<TraceStep>,
+    /// The opening user message (the protagonist's first turn, played by
+    /// the simulator side). Lets a chat view render the whole
+    /// conversation, not just from the PUT's first reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_message: Option<String>,
 }
 
 /// The state of one scenario within a run.

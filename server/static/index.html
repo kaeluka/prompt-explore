@@ -51,6 +51,13 @@
   .step .n { color: var(--accent); }
   .step .tool { color: var(--text); font-weight: 600; }
   .step .resp { display: block; margin-top: 0.2rem; white-space: pre-wrap; word-break: break-word; max-height: 9em; overflow: auto; }
+  .chat { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem; }
+  .bubble { max-width: 82%; padding: 0.4rem 0.6rem; border-radius: 9px; font-size: 0.8rem; }
+  .bubble.put { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); }
+  .bubble.sim { align-self: flex-end; background: rgba(124,108,255,0.10); border: 1px solid rgba(124,108,255,0.30); }
+  .bubble .role { font-size: 0.66rem; color: var(--text-dim); margin-bottom: 0.18rem; letter-spacing: 0.04em; }
+  .bubble .body { white-space: pre-wrap; word-break: break-word; }
+  .bubble .body.tool { font-family: var(--mono); font-size: 0.76rem; }
   .note { color: var(--amber); font-size: 0.82rem; }
   .fade { opacity: 0.6; }
   button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
@@ -78,19 +85,30 @@ const API = id => `/api/investigations${id ? '/'+id : ''}`;
 function fmtUsage(u){ if(!u) return ""; const c=u.cache_read_tokens?` <span class="meta">(${u.cache_read_tokens.toLocaleString()} cached)</span>`:""; return `${u.input_tokens.toLocaleString()} in${c} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm · ${u.tool_calls} tool calls`; }
 function relTime(ms){ const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
 
-function renderStep(i, st) {
-  const tc = st.tool_call, tr = st.tool_response;
-  let body = "";
-  if (tc) {
-    const args = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args);
-    body += ` → <span class="tool">${esc(tc.name)}</span>(${esc(args)})`;
-  }
-  if (tr != null) {
-    const t = typeof tr === "string" ? tr : JSON.stringify(tr);
-    body += `<span class="resp">${esc(t)}</span>`;
-  }
-  if (!tc && st.model_output) body += ` <span class="fade">final turn</span>`;
-  return `<div class="step"><span class="n">${i}</span>${body}</div>`;
+function bubble(side, role, bodyHtml, bodyClass) {
+  return `<div class="bubble ${side}"><div class="role">${role}</div><div class="body${bodyClass ? ' '+bodyClass : ''}">${bodyHtml}</div></div>`;
+}
+function renderChat(s) {
+  const out = [];
+  // Opening user message — the protagonist's first turn (sim side).
+  if (s.user_message && s.user_message.trim())
+    out.push(bubble("sim", "USER", esc(s.user_message)));
+  (s.steps || []).forEach(st => {
+    // PUT LLM (left): its text, then any tool call it makes.
+    if (st.model_output && st.model_output.trim())
+      out.push(bubble("put", "PUT", esc(st.model_output)));
+    if (st.tool_call) {
+      const a = st.tool_call.args;
+      const args = typeof a === "string" ? a : JSON.stringify(a);
+      out.push(bubble("put", "PUT · tool", `🔧 ${esc(st.tool_call.name)}(${esc(args)})`, "tool"));
+    }
+    // Simulation LLM (right): the tool response.
+    if (st.tool_response != null) {
+      const t = typeof st.tool_response === "string" ? st.tool_response : JSON.stringify(st.tool_response, null, 2);
+      out.push(bubble("sim", "SIM", esc(t)));
+    }
+  });
+  return `<div class="chat">${out.join("") || '<span class="meta">(no messages yet)</span>'}</div>`;
 }
 
 function renderScenario(s) {
@@ -101,14 +119,13 @@ function renderScenario(s) {
   else if (kind === "done") badge = `<span class="badge ${st.matched ? 'witness_found':'no_witness_within_budget'}">${st.matched ? 'witness':'no match'}</span>`;
   else if (kind === "failed") badge = `<span class="badge error">failed: ${esc(st.stage)}</span>`;
   const failNote = kind === "failed" ? `<div class="note" style="margin:0.3rem 0">${esc(st.error)}</div>` : '';
-  const steps = (s.steps||[]).map((st,i)=>renderStep(i,st)).join("");
   return `<div class="scen">
     <div class="scen-head"><span class="scen-id">${esc(s.scenario_id)}</span> ${badge}
-      <span class="meta">${(s.steps||[]).length} step(s)</span></div>
+      <span class="meta">${(s.steps||[]).length} turn(s)</span></div>
     ${failNote}
     <details>
-      <summary>tool-call log</summary>
-      <div style="margin-top:0.35rem">${steps || '<span class="meta">(no steps yet)</span>'}</div>
+      <summary>conversation</summary>
+      ${renderChat(s)}
     </details>
   </div>`;
 }

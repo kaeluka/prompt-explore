@@ -281,6 +281,7 @@ One scenario's progress within a run.
 | `scenario_id` | string | yes |  |
 | `state` | [`ScenarioState`](#scenariostate) | yes |  |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Steps simulated so far (tool calls + responses + model output). |
+| `user_message` | string? | no | The opening user message (the protagonist's first turn, played by the simulator side). Lets a chat view render the whole conversation, not just from the PUT's first reply. |
 
 ### `ScenarioState`
 
