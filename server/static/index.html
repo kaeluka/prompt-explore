@@ -388,7 +388,7 @@ function renderResult(data) {
         <div class="proposal">
           <h4>
             <span class="badge ${a.matched ? 'witness_found' : 'no_witness_within_budget'}">${a.matched ? 'witness' : 'no match'}</span>
-            <span style="color:var(--text-dim);font-weight:400">${esc(a.hypothesis_id)} · confidence ${a.verdict_confidence ?? '—'}</span>
+            <span style="color:var(--text-dim);font-weight:400">${esc(a.scenario_id)} · ${esc(a.hypothesis_id)} · confidence ${a.verdict_confidence ?? '—'}</span>
           </h4>
           <p class="meta" style="margin:0.3rem 0">user: ${esc(a.user_message ?? '(none)')}</p>
           <p class="meta" style="margin:0.3rem 0">judge: ${esc(a.verdict_rationale)}</p>

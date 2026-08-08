@@ -96,6 +96,9 @@ struct InvestigateResponse {
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct AttemptView {
+    /// The scenario this attempt ran, by id — ties the evidence back
+    /// to its world.
+    scenario_id: String,
     user_message: Option<String>,
     hypothesis_id: String,
     matched: bool,
@@ -297,6 +300,7 @@ async fn create_investigation(
             .attempts
             .iter()
             .map(|a| AttemptView {
+                scenario_id: a.scenario.id.clone(),
                 user_message: a.scenario.user_message.clone(),
                 hypothesis_id: a.scenario.hypothesis_id.clone(),
                 matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),

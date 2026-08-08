@@ -43,9 +43,8 @@ pub struct Scenario {
     pub simulator_notes: String,
     /// The world specification — ground truth the simulator renders
     /// tool responses from, and the judge checks claims against.
-    /// Natural language; see the struct docs for the four parts it
-    /// should pin.
-    #[serde(default)]
+    /// Required; every scenario must pin one (see the struct docs for
+    /// the four parts it should cover).
     pub narrative: String,
     /// Operator-required environment facts for THIS scenario (e.g.
     /// "cancel_order is broken and returns E_CONN"). Appended to the

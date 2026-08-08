@@ -171,6 +171,7 @@
       "AttemptView": {
         "type": "object",
         "required": [
+          "scenario_id",
           "hypothesis_id",
           "matched",
           "verdict_rationale",
@@ -197,6 +198,10 @@
           "narrative": {
             "type": "string",
             "description": "The scenario's narrative (world spec), so the consumer can\njudge simulation quality alongside the trace."
+          },
+          "scenario_id": {
+            "type": "string",
+            "description": "The scenario this attempt ran, by id — ties the evidence back\nto its world."
           },
           "steps": {
             "type": "array",
@@ -626,7 +631,8 @@
           "put_id",
           "resolved_inputs",
           "world_state",
-          "simulator_notes"
+          "simulator_notes",
+          "narrative"
         ],
         "properties": {
           "hypothesis_id": {
@@ -639,7 +645,7 @@
           },
           "narrative": {
             "type": "string",
-            "description": "The world specification — ground truth the simulator renders\ntool responses from, and the judge checks claims against.\nNatural language; see the struct docs for the four parts it\nshould pin."
+            "description": "The world specification — ground truth the simulator renders\ntool responses from, and the judge checks claims against.\nRequired; every scenario must pin one (see the struct docs for\nthe four parts it should cover)."
           },
           "put_id": {
             "type": "string",

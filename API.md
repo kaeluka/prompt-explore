@@ -87,6 +87,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `hypothesis_id` | string | yes |  |
 | `matched` | boolean | yes |  |
 | `narrative` | string | yes | The scenario's narrative (world spec), so the consumer can judge simulation quality alongside the trace. |
+| `scenario_id` | string | yes | The scenario this attempt ran, by id — ties the evidence back to its world. |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
 | `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
 | `user_message` | string? | no |  |
@@ -226,7 +227,7 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 |---|---|---|---|
 | `hypothesis_id` | string | yes | Provenance label: what this scenario was authored to test. Informational only. |
 | `id` | string | yes | Free-form label, echoed back in reports. |
-| `narrative` | string | no | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. Natural language; see the struct docs for the four parts it should pin. |
+| `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. Required; every scenario must pin one (see the struct docs for the four parts it should cover). |
 | `put_id` | string | yes | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. |
 | `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete values for the PUT template's {{variables}}. |
 | `simulator_notes` | string | yes | Persona/stance guidance for a simulated user, if the scenario involves one. |

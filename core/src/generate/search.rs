@@ -146,7 +146,7 @@ impl Investigator {
                         put,
                         &witness.attribution,
                         &crate::judge::render_transcript(trace),
-                        attempts.last().map(|a| &a.scenario),
+                        Some(&att.scenario),
                     )
                     .await
                     .unwrap_or_default();
