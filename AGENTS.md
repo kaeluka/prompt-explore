@@ -41,6 +41,30 @@ that deviation is visible in the trace and the judge (which sees the same
 context) can catch it. The user is the loop; they see what happened, not what
 was supposed to happen.
 
+**Environments are narratives, not data.** A scenario is a world
+*specification* — facts, completeness assertions, rendering instructions —
+never an instantiated environment. The simulator lazily renders concrete
+tool responses from the narrative. Materializing an environment requires a
+closed world (enumerable, bounded, copyable); open worlds — web search,
+email, a payment network — can never be materialized, so narratives are the
+only mechanism that generalizes. Completeness assertions are total for
+closed worlds ("these are ALL the entry points") and scoped for open ones
+("these are the relevant results on this topic"). The world-state mechanism
+(mutations during a trace) composes with this: the narrative says what
+exists, world state tracks what the trace changed.
+
+**The consumer owns simulation quality.** Whoever consumes an
+investigation's output judges whether the tool simulation was good enough.
+If it wasn't, the remediation is a user action — sharpen the scenario and
+re-investigate — not harness machinery. The harness's job ends at
+transparency: surface the narrative, the trace, and divergence signals
+(e.g. the judge flagging "the simulator contradicted the stated facts",
+kept separate from "the PUT misbehaved"). Do not build consistency
+machinery (materialized fixtures, render caches) to make fidelity the
+harness's problem. This is "the user is the loop" extended one level down —
+same loop, new object — and it is the contract a future optimizer agent
+operates under.
+
 ## Repo layout
 
 Cargo workspace:
