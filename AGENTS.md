@@ -10,6 +10,37 @@ scenarios for a witness trace, attributes the behavior, and proposes *unverified
 fixes. The user owns everything after the run — the tool is the loop body of an
 interactive optimization loop, the user is the loop.
 
+## Design philosophy
+
+**prompt-explore is a thin harness around an LLM. Nothing more.**
+
+The LLM does the semantic work — hypothesizing how a behavior could arise,
+inventing scenarios, simulating tool responses and users, judging traces,
+proposing fixes. The harness does only the deterministic bookkeeping it can
+do better than an LLM: routing messages, validating argument shapes, applying
+state patches, counting budget, computing diffs. The split is the point:
+deterministic things in code, semantic things in the model.
+
+**We chose LLMs knowing they are imperfect, and we accept it.** A simulator
+asked to break a tool will sometimes make it work. A judge will sometimes
+misread a trace. This is a property of the approach, not a defect to patch
+with a second system.
+
+**Resist building a parallel deterministic system.** The recurring temptation
+is to "compile" natural-language intent into a DSL, or to "enforce" a
+condition in code so the model can't get it wrong. Any DSL you design will
+fail to express a realistic case; you'll extend it, hit compilation bugs,
+and debug them — swapping LLM flakiness (already accepted) for harness bugs
+(now your problem), none of it closer to the core mission. When in doubt,
+pass the user's words through to the model as-is.
+
+**The answer to LLM unreliability is transparency, not enforcement.** Surface
+everything: every scenario tried, every trace, the stated environment, the
+world state. When the simulator deviates from what the operator specified,
+that deviation is visible in the trace and the judge (which sees the same
+context) can catch it. The user is the loop; they see what happened, not what
+was supposed to happen.
+
 ## Repo layout
 
 Cargo workspace:
