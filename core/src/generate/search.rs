@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::judge::Judge;
 use crate::llm::LlmClient;
-use crate::model::input::{Investigation, PromptsUnderTest};
+use crate::model::input::{Investigation, PromptUnderTest};
 use crate::model::output::{Attribution, RunResult, RunStatus, Witness};
 use crate::model::predicate::{Predicate, SuccessMode};
 use crate::model::simulation::Scenario;
@@ -60,18 +60,8 @@ impl Investigator {
     pub async fn investigate(
         &self,
         investigation: &Investigation,
-        psut: &PromptsUnderTest,
+        put: &PromptUnderTest,
     ) -> InvestigateOutcome {
-        let put = match psut.prompts.iter().find(|p| p.id == investigation.target_put) {
-            Some(p) => p,
-            None => {
-                return self.fail(format!(
-                    "target PUT '{}' not found",
-                    investigation.target_put
-                ));
-            }
-        };
-
         // The question IS the criterion — no operationalization step.
         let predicate = Predicate {
             criterion: investigation.question.clone(),
@@ -104,7 +94,12 @@ impl Investigator {
             }
             let want = self.scenarios_per_hypothesis.min(budget_remaining);
             let scenarios = match builder
-                .build(hypothesis, put, want, investigation.initial_state.as_deref())
+                .build(
+                    hypothesis,
+                    put,
+                    want,
+                    investigation.initial_state.as_deref(),
+                )
                 .await
             {
                 Ok(s) => s,
@@ -116,9 +111,8 @@ impl Investigator {
             all_scenarios.extend(scenarios.clone());
 
             // Run + judge concurrently. Each task owns cloned Arcs.
-            let mut tasks: JoinSet<
-                Option<(Scenario, crate::model::simulation::Trace, bool)>,
-            > = JoinSet::new();
+            let mut tasks: JoinSet<Option<(Scenario, crate::model::simulation::Trace, bool)>> =
+                JoinSet::new();
             for scenario in scenarios {
                 let put_role = self.runner_put.clone();
                 let sim_role = self.runner_sim.clone();
@@ -201,7 +195,7 @@ impl Investigator {
                                 final_state: Some(trace.final_world_state.clone()),
                             },
                             scenarios: all_scenarios,
-            attempts,
+                            attempts,
                         };
                     }
                 }

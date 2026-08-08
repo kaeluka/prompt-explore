@@ -91,8 +91,10 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
 - ⬜ Dedicated simulated-user model (persona, consistency across
   turns — basic user replies already work via a tool whose description
   says it responds with the user's answer)
-- ⬜ Multi-prompt pipelines (topology is described but read nowhere;
-  runs target one PUT)
+- ⬜ Multi-prompt scenarios: a dedicated endpoint that uses
+  single-prompt investigations as a *tool* to explore pipelines
+  (e.g. one agent's output feeding another's input). The API is
+  deliberately single-PUT; premature multi-prompt plumbing was removed.
 - ⬜ PsUT version history + rollback (diffs exist; commits/undo don't)
 - ⬜ PsUT optimizer agent: an in-process agentic loop over core/
   (investigate + free prompt rewrites as discrete, diffed, versioned

@@ -27,7 +27,7 @@
     "/api/apply": {
       "post": {
         "tags": [],
-        "summary": "Apply a proposal: the LLM rewrites the target field (template, or\ndesign goals for goal_revision), and a deterministic word-level diff\nis returned for review alongside the updated prompt set.",
+        "summary": "Apply a proposal: the LLM rewrites the target field (template, or\ndesign goals for goal_revision), and a deterministic word-level diff\nis returned for review alongside the updated prompt.",
         "operationId": "apply_proposal",
         "requestBody": {
           "content": {
@@ -41,21 +41,11 @@
         },
         "responses": {
           "200": {
-            "description": "Updated prompt set plus template/goals diffs",
+            "description": "Updated prompt plus template/goals diffs",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApplyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Unknown target prompt",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
                 }
               }
             }
@@ -141,29 +131,22 @@
       "ApplyRequest": {
         "type": "object",
         "required": [
-          "psut",
+          "put",
           "proposal"
         ],
         "properties": {
           "proposal": {
             "$ref": "#/components/schemas/Proposal"
           },
-          "psut": {
-            "$ref": "#/components/schemas/PromptsUnderTest"
-          },
-          "target_put": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Id of the prompt under test to apply the proposal to.\nDefaults to the first."
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest"
           }
         }
       },
       "ApplyResponse": {
         "type": "object",
         "required": [
-          "psut",
+          "put",
           "template_diff",
           "goals_diff"
         ],
@@ -174,8 +157,8 @@
               "$ref": "#/components/schemas/DiffPart"
             }
           },
-          "psut": {
-            "$ref": "#/components/schemas/PromptsUnderTest"
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest"
           },
           "template_diff": {
             "type": "array",
@@ -342,14 +325,14 @@
         "type": "object",
         "required": [
           "investigation",
-          "psut"
+          "put"
         ],
         "properties": {
           "investigation": {
             "$ref": "#/components/schemas/Investigation"
           },
-          "psut": {
-            "$ref": "#/components/schemas/PromptsUnderTest"
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest"
           }
         }
       },
@@ -388,7 +371,6 @@
         "type": "object",
         "required": [
           "question",
-          "target_put",
           "budget"
         ],
         "properties": {
@@ -405,10 +387,6 @@
           "question": {
             "type": "string",
             "description": "The mandatory question, e.g. \"are there inputs that cause\ndestructive tool calls?\" or \"why does this sometimes cancel,\nsometimes ask to confirm?\""
-          },
-          "target_put": {
-            "type": "string",
-            "description": "Id of the prompt under test — a run executes exactly one prompt."
           }
         }
       },
@@ -494,33 +472,6 @@
               "$ref": "#/components/schemas/ToolSchema"
             },
             "description": "This prompt's tool surface, exactly as the model sees it.\nEmpty = no tool loop (but intent lives in `design_goals`, not here)."
-          }
-        }
-      },
-      "PromptsUnderTest": {
-        "type": "object",
-        "description": "The prompts under test (PsUT): a set of agent prompts, how they\nconnect, and optional pipeline-level design goals.",
-        "required": [
-          "prompts",
-          "topology"
-        ],
-        "properties": {
-          "design_goals": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Pipeline-level constraints, e.g. \"never promise refunds above $500\"."
-          },
-          "prompts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PromptUnderTest"
-            }
-          },
-          "topology": {
-            "type": "string",
-            "description": "NL description of how the prompts connect (pipeline, usually a DAG).\nUsed for hypothesis generation and cross-prompt proposals;\nNOT executed — a run targets one prompt at a time."
           }
         }
       },

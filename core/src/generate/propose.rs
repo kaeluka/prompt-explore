@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
 use crate::judge::render_transcript;
+use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
 use crate::model::input::PromptUnderTest;
 use crate::model::output::{Attribution, Proposal, ProposalKind};
 use crate::model::simulation::Scenario;
@@ -34,7 +34,6 @@ struct LlmProposal {
     addresses: Vec<String>,
     rationale: String,
 }
-
 
 impl ProposalGenerator {
     pub fn new(client: Arc<dyn LlmClient>, model: impl Into<String>) -> Self {
@@ -84,10 +83,7 @@ impl ProposalGenerator {
             evidence = attribution.evidence,
         );
         if let Some(s) = scenario {
-            user.push_str(&format!(
-                "\n\nSCENARIO: user said {:?}",
-                s.user_message
-            ));
+            user.push_str(&format!("\n\nSCENARIO: user said {:?}", s.user_message));
         }
 
         let reply = self.call(&system, &user).await?;
@@ -118,7 +114,9 @@ impl ProposalGenerator {
                     Message::System {
                         content: system.into(),
                     },
-                    Message::User { content: user.into() },
+                    Message::User {
+                        content: user.into(),
+                    },
                 ],
                 tools: vec![],
                 temperature: Some(0.0),
@@ -166,7 +164,10 @@ mod tests {
     fn parse_kind_maps_known_and_defaults_to_reword() {
         assert!(matches!(parse_kind("reword"), ProposalKind::Reword));
         assert!(matches!(parse_kind("Split"), ProposalKind::Split));
-        assert!(matches!(parse_kind("goal_revision"), ProposalKind::GoalRevision));
+        assert!(matches!(
+            parse_kind("goal_revision"),
+            ProposalKind::GoalRevision
+        ));
         assert!(matches!(parse_kind("nonsense"), ProposalKind::Reword));
     }
 }

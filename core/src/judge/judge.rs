@@ -73,7 +73,8 @@ impl Judge {
         predicate: &Predicate,
         scenario: Option<&Scenario>,
     ) -> Result<Verdict, LlmError> {
-        self.llm_verdict(trace, &predicate.criterion, scenario).await
+        self.llm_verdict(trace, &predicate.criterion, scenario)
+            .await
     }
 
     /// Does this trace violate the PUT's design goals? Returns one
@@ -223,7 +224,9 @@ impl Judge {
                     Message::System {
                         content: system.into(),
                     },
-                    Message::User { content: user.into() },
+                    Message::User {
+                        content: user.into(),
+                    },
                 ],
                 tools: vec![],
                 temperature: Some(0.0),

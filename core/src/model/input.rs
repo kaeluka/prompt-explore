@@ -4,19 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// The prompts under test (PsUT): a set of agent prompts, how they
-/// connect, and optional pipeline-level design goals.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct PromptsUnderTest {
-    pub prompts: Vec<PromptUnderTest>,
-    /// NL description of how the prompts connect (pipeline, usually a DAG).
-    /// Used for hypothesis generation and cross-prompt proposals;
-    /// NOT executed — a run targets one prompt at a time.
-    pub topology: String,
-    /// Pipeline-level constraints, e.g. "never promise refunds above $500".
-    pub design_goals: Option<String>,
-}
-
 /// One prompt under test: template, input variables, tool surface,
 /// and (mandatory) design goals.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -70,8 +57,6 @@ pub struct Investigation {
     /// destructive tool calls?" or "why does this sometimes cancel,
     /// sometimes ask to confirm?"
     pub question: String,
-    /// Id of the prompt under test — a run executes exactly one prompt.
-    pub target_put: String,
     pub budget: Budget,
     /// Optional user-specified starting environment state, in natural
     /// language (e.g. "cancel_order is broken and returns E_CONN; order

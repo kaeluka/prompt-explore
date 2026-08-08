@@ -8,7 +8,7 @@ use prompt_explore::judge::Judge;
 use prompt_explore::llm::{ChatResponse, MockLlmClient};
 use prompt_explore::model::output::GoalFinding;
 use prompt_explore::model::predicate::{Predicate, SuccessMode};
-use prompt_explore::model::simulation::{Scenario, Trace, TraceStep, ToolCall};
+use prompt_explore::model::simulation::{Scenario, ToolCall, Trace, TraceStep};
 
 fn trace_with_cancel() -> Trace {
     Trace {

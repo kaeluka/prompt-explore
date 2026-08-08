@@ -37,10 +37,7 @@ fn scenario() -> Scenario {
         put_id: "support".into(),
         resolved_inputs: HashMap::from([("customer_tier".into(), json!("gold"))]),
         user_message: Some("cancel my order A-1234!".into()),
-        world_state: HashMap::from([(
-            "orders".into(),
-            json!({"A-1234": {"status": "shipped"}}),
-        )]),
+        world_state: HashMap::from([("orders".into(), json!({"A-1234": {"status": "shipped"}}))]),
         simulator_notes: "customer is angry".into(),
         stated_state: None,
     }
@@ -90,7 +87,10 @@ async fn tool_call_loop_runs_and_mutates_state() {
         Arc::new(sim_model),
         "sim-model",
     );
-    let trace = runner.run(&support_put(), &scenario(), &budget()).await.unwrap();
+    let trace = runner
+        .run(&support_put(), &scenario(), &budget())
+        .await
+        .unwrap();
 
     assert_eq!(trace.steps.len(), 2);
 
@@ -137,7 +137,10 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         Arc::new(sim_model),
         "sim-model",
     );
-    let trace = runner.run(&support_put(), &scenario(), &budget()).await.unwrap();
+    let trace = runner
+        .run(&support_put(), &scenario(), &budget())
+        .await
+        .unwrap();
 
     let resp = trace.steps[0].tool_response.as_ref().unwrap();
     assert!(resp.as_str().unwrap().contains("invalid arguments"));

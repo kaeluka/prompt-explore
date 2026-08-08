@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
-use crate::model::simulation::ToolCall;
 use crate::model::ToolSchema;
+use crate::model::simulation::ToolCall;
 
 pub struct ToolSimulator {
     client: Arc<dyn LlmClient>,
@@ -98,8 +98,9 @@ impl ToolSimulator {
         let content = reply
             .content
             .ok_or_else(|| LlmError::MalformedResponse("empty simulator reply".into()))?;
-        let parsed: SimReply = parse_json(&content)
-            .ok_or_else(|| LlmError::MalformedResponse(format!("simulator reply not JSON: {content}")))?;
+        let parsed: SimReply = parse_json(&content).ok_or_else(|| {
+            LlmError::MalformedResponse(format!("simulator reply not JSON: {content}"))
+        })?;
 
         Ok(SimOutcome {
             response: parsed.response,

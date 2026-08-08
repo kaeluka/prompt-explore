@@ -43,7 +43,7 @@ async fn main() {
                 name: "send_user_message".into(),
                 description: "Send a message to the customer. The tool responds \
                               with the customer's answer."
-                .into(),
+                    .into(),
                 parameters: json!({
                     "type": "object",
                     "properties": { "text": { "type": "string" } },

@@ -11,10 +11,10 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ToolDef};
-use crate::model::simulation::{Scenario, Trace, TraceStep, ToolCall};
+use crate::model::simulation::{Scenario, ToolCall, Trace, TraceStep};
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
-use super::simulator::{apply_patch, ToolSimulator};
+use super::simulator::{ToolSimulator, apply_patch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
@@ -240,8 +240,6 @@ fn validate_args(tool: &ToolSchema, arguments: &str) -> Result<Value, String> {
         serde_json::from_str(arguments).map_err(|e| format!("arguments not JSON: {e}"))?;
     let validator = jsonschema::validator_for(&tool.parameters)
         .map_err(|e| format!("invalid tool schema: {e}"))?;
-    validator
-        .validate(&args)
-        .map_err(|e| e.to_string())?;
+    validator.validate(&args).map_err(|e| e.to_string())?;
     Ok(args)
 }

@@ -16,8 +16,12 @@ pub struct ChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
-    System { content: String },
-    User { content: String },
+    System {
+        content: String,
+    },
+    User {
+        content: String,
+    },
     Assistant {
         content: Option<String>,
         tool_calls: Vec<ToolCallRequest>,

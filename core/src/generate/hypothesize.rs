@@ -119,7 +119,9 @@ impl Hypothesizer {
                     Message::System {
                         content: system.into(),
                     },
-                    Message::User { content: user.into() },
+                    Message::User {
+                        content: user.into(),
+                    },
                 ],
                 tools: vec![],
                 temperature: Some(0.7),

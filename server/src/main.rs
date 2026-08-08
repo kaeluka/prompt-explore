@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    Router,
     extract::{Path, Request, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
 use prompt_explore::llm::OpenAiCompatibleClient;
-use prompt_explore::model::input::{Investigation, PromptsUnderTest};
+use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
 use prompt_explore::model::simulation::TraceStep;
 use serde_json::Value;
@@ -54,21 +54,18 @@ enum JobStatus {
 #[derive(Deserialize, utoipa::ToSchema)]
 struct InvestigateRequest {
     investigation: Investigation,
-    psut: PromptsUnderTest,
+    put: PromptUnderTest,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
 struct ApplyRequest {
-    psut: PromptsUnderTest,
+    put: PromptUnderTest,
     proposal: Proposal,
-    /// Id of the prompt under test to apply the proposal to.
-    /// Defaults to the first.
-    target_put: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct ApplyResponse {
-    psut: PromptsUnderTest,
+    put: PromptUnderTest,
     template_diff: Vec<prompt_explore::generate::DiffPart>,
     goals_diff: Vec<prompt_explore::generate::DiffPart>,
 }
@@ -192,9 +189,7 @@ async fn spec_discovery(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     res.headers_mut().insert(
         header::LINK,
-        HeaderValue::from_static(
-            r#"</openapi.json>; rel="service-desc", </>; rel="service-doc""#,
-        ),
+        HeaderValue::from_static(r#"</openapi.json>; rel="service-desc", </>; rel="service-doc""#),
     );
     res
 }
@@ -262,9 +257,7 @@ async fn create_investigation(
             max_hypotheses: 4,
         };
 
-        let outcome = investigator
-            .investigate(&req.investigation, &req.psut)
-            .await;
+        let outcome = investigator.investigate(&req.investigation, &req.put).await;
 
         let witness_user_message = outcome
             .attempts
@@ -281,10 +274,10 @@ async fn create_investigation(
                 matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),
                 verdict_rationale: a
                     .trace
-            .verdict
-            .as_ref()
-            .map(|v| v.rationale.clone())
-            .unwrap_or_default(),
+                    .verdict
+                    .as_ref()
+                    .map(|v| v.rationale.clone())
+                    .unwrap_or_default(),
                 verdict_confidence: a.trace.verdict.as_ref().and_then(|v| v.confidence),
                 steps: a.trace.steps.clone(),
                 final_world_state: a.trace.final_world_state.clone(),
@@ -332,14 +325,13 @@ async fn get_investigation(
 
 /// Apply a proposal: the LLM rewrites the target field (template, or
 /// design goals for goal_revision), and a deterministic word-level diff
-/// is returned for review alongside the updated prompt set.
+/// is returned for review alongside the updated prompt.
 #[utoipa::path(
     post,
     path = "/api/apply",
     request_body = ApplyRequest,
     responses(
-        (status = 200, description = "Updated prompt set plus template/goals diffs", body = ApplyResponse),
-        (status = 400, description = "Unknown target prompt", body = String),
+        (status = 200, description = "Updated prompt plus template/goals diffs", body = ApplyResponse),
         (status = 500, description = "LLM apply failed", body = String)
     )
 )]
@@ -347,42 +339,21 @@ async fn apply_proposal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, (StatusCode, String)> {
-    let mut psut = req.psut;
-    let target = req.target_put.unwrap_or_else(|| {
-        psut.prompts
-            .first()
-            .map(|p| p.id.clone())
-            .unwrap_or_default()
-    });
-    let put = psut
-        .prompts
-        .iter()
-        .find(|p| p.id == target)
-        .cloned()
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("target prompt '{target}' not found"),
-            )
-        })?;
-
     let client = state.client.as_ref().unwrap().clone();
     let applier = ProposalApplier::new(client, MODEL);
     let applied = applier
-        .apply(&put, &req.proposal)
+        .apply(&req.put, &req.proposal)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let template_diff = applied.template_diff.clone();
-    let goals_diff = applied.goals_diff.clone();
-    if let Some(p) = psut.prompts.iter_mut().find(|p| p.id == target) {
-        p.template = applied.template;
-        p.design_goals = applied.design_goals;
-    }
     Ok(Json(ApplyResponse {
-        psut,
-        template_diff,
-        goals_diff,
+        put: PromptUnderTest {
+            template: applied.template,
+            design_goals: applied.design_goals,
+            ..req.put
+        },
+        template_diff: applied.template_diff,
+        goals_diff: applied.goals_diff,
     }))
 }
 

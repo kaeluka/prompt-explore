@@ -7,9 +7,7 @@
 //! Sends a chat request with a tool defined; prints the model's
 //! response and whether it called the tool.
 
-use prompt_explore::llm::{
-    ChatRequest, LlmClient, Message, OpenAiCompatibleClient, ToolDef,
-};
+use prompt_explore::llm::{ChatRequest, LlmClient, Message, OpenAiCompatibleClient, ToolDef};
 
 #[tokio::main]
 async fn main() {

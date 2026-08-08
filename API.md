@@ -16,21 +16,19 @@ Serve the web UI.
 
 ### `POST /api/apply`
 
-Apply a proposal: the LLM rewrites the target field (template, or design goals for goal_revision), and a deterministic word-level diff is returned for review alongside the updated prompt set.
+Apply a proposal: the LLM rewrites the target field (template, or design goals for goal_revision), and a deterministic word-level diff is returned for review alongside the updated prompt.
 
 Body: [`ApplyRequest`](#applyrequest)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `proposal` | [`Proposal`](#proposal) | yes |  |
-| `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
-| `target_put` | string? | no | Id of the prompt under test to apply the proposal to. Defaults to the first. |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 
 
 | Status | Response |
 |---|---|
-| `200` | Updated prompt set plus template/goals diffs: [`ApplyResponse`](#applyresponse) |
-| `400` | Unknown target prompt |
+| `200` | Updated prompt plus template/goals diffs: [`ApplyResponse`](#applyresponse) |
 | `500` | LLM apply failed |
 
 ### `POST /api/investigations`
@@ -42,7 +40,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
-| `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 
 
 | Status | Response |
@@ -69,15 +67,14 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `proposal` | [`Proposal`](#proposal) | yes |  |
-| `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
-| `target_put` | string? | no | Id of the prompt under test to apply the proposal to. Defaults to the first. |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 
 ### `ApplyResponse`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `goals_diff` | [`DiffPart`](#diffpart)[] | yes |  |
-| `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `template_diff` | [`DiffPart`](#diffpart)[] | yes |  |
 
 ### `AttemptView`
@@ -135,7 +132,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
-| `psut` | [`PromptsUnderTest`](#promptsundertest) | yes |  |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 
 ### `InvestigateResponse`
 
@@ -153,7 +150,6 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `budget` | [`Budget`](#budget) | yes |  |
 | `initial_state` | string? | no | Optional user-specified starting environment state, in natural language (e.g. "cancel_order is broken and returns E_CONN; order 123 is already shipped"). It is NOT compiled or enforced: it flows into scenario building, the simulator notes, and the judge's scenario context as-is. Free-text — pasting a previous run's returned `final_state` JSON works fine. |
 | `question` | string | yes | The mandatory question, e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" |
-| `target_put` | string | yes | Id of the prompt under test — a run executes exactly one prompt. |
 
 ### `JobCreated`
 
@@ -184,16 +180,6 @@ One prompt under test: template, input variables, tool surface, and (mandatory) 
 | `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes |  |
 | `template` | string | yes |  |
 | `tools` | [`ToolSchema`](#toolschema)[] | yes | This prompt's tool surface, exactly as the model sees it. Empty = no tool loop (but intent lives in `design_goals`, not here). |
-
-### `PromptsUnderTest`
-
-The prompts under test (PsUT): a set of agent prompts, how they connect, and optional pipeline-level design goals.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `design_goals` | string? | no | Pipeline-level constraints, e.g. "never promise refunds above $500". |
-| `prompts` | [`PromptUnderTest`](#promptundertest)[] | yes |  |
-| `topology` | string | yes | NL description of how the prompts connect (pipeline, usually a DAG). Used for hypothesis generation and cross-prompt proposals; NOT executed — a run targets one prompt at a time. |
 
 ### `Proposal`
 

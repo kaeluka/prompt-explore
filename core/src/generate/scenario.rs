@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message};
 use crate::model::input::{PromptUnderTest, VarSpec};
@@ -121,11 +121,7 @@ impl ScenarioBuilder {
             id: format!("{}#{}", hypothesis.id, attempt),
             hypothesis_id: hypothesis.id.clone(),
             put_id: put.id.clone(),
-            resolved_inputs: parsed
-                .resolved_inputs
-                .into_iter()
-                .chain(resolved)
-                .collect(),
+            resolved_inputs: parsed.resolved_inputs.into_iter().chain(resolved).collect(),
             user_message: Some(parsed.user_message),
             world_state: parsed.world_state.into_iter().collect(),
             simulator_notes: parsed.simulator_notes,
@@ -142,7 +138,9 @@ impl ScenarioBuilder {
                     Message::System {
                         content: system.into(),
                     },
-                    Message::User { content: user.into() },
+                    Message::User {
+                        content: user.into(),
+                    },
                 ],
                 tools: vec![],
                 temperature: Some(0.9),

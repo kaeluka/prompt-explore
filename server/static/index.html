@@ -260,7 +260,7 @@ DEFAULT_TOOLS.forEach(addTool);
 document.getElementById("add_tool").onclick = () =>
   addTool({ name: "", description: "", side_effect: "read", parameters: { type: "object", properties: {} } });
 
-function buildPsut() {
+function buildPut() {
   const tools = [...document.querySelectorAll("#tools .tool")].map(div => {
     const paramsText = div.querySelector(".t_params").value;
     let parameters;
@@ -275,15 +275,11 @@ function buildPsut() {
     };
   });
   return {
-    prompts: [{
-      id: "put",
-      template: document.getElementById("put_template").value,
-      input_vars: {},
-      tools,
-      design_goals: document.getElementById("put_goals").value
-    }],
-    topology: "single prompt",
-    design_goals: null
+    id: "put",
+    template: document.getElementById("put_template").value,
+    input_vars: {},
+    tools,
+    design_goals: document.getElementById("put_goals").value
   };
 }
 
@@ -442,11 +438,11 @@ document.getElementById("out").addEventListener("click", async (e) => {
     const resp = await fetch("/api/apply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ psut: buildPsut(), proposal })
+      body: JSON.stringify({ put: buildPut(), proposal })
     });
     if (!resp.ok) throw new Error(await resp.text());
     const data = await resp.json();
-    const put = data.psut.prompts[0];
+    const put = data.put;
     document.getElementById("put_template").value = put.template;
     document.getElementById("put_goals").value = put.design_goals;
     const card = document.getElementById(`prop-${i}`);
@@ -472,14 +468,13 @@ document.getElementById("go").onclick = async () => {
   const status = document.getElementById("status");
   const statusText = document.getElementById("status-text");
   out.innerHTML = "";
-  let psut;
-  try { psut = buildPsut(); }
+  let put;
+  try { put = buildPut(); }
   catch (e) { statusText.textContent = e.message; status.classList.add("on"); return; }
 
   const maxTokens = document.getElementById("b_tokens").value.trim();
   const investigation = {
     question: document.getElementById("question").value,
-    target_put: psut.prompts[0].id,
     budget: {
       max_scenarios: parseInt(document.getElementById("b_scenarios").value) || 8,
       max_steps_per_trace: parseInt(document.getElementById("b_steps").value) || 6,
@@ -495,7 +490,7 @@ document.getElementById("go").onclick = async () => {
     const resp = await fetch("/api/investigations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ investigation, psut })
+      body: JSON.stringify({ investigation, put })
     });
     if (!resp.ok) throw new Error(await resp.text());
     const { id } = await resp.json();

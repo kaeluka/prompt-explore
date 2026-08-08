@@ -5,24 +5,22 @@
 //! selection is pure configuration.
 
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::chat::{
-        ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
-        ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestMessage,
-        ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
-        ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
-        ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-        ChatCompletionMessageToolCalls, ChatCompletionTool, ChatCompletionTools,
+        ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+        ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+        ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessage,
+        ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessage,
+        ChatCompletionRequestUserMessageContent, ChatCompletionTool, ChatCompletionTools,
         CreateChatCompletionRequest, FunctionCall, FunctionObject,
     },
-    Client,
 };
 use async_trait::async_trait;
 
 use super::client::{LlmClient, LlmError};
-use super::types::{
-    ChatRequest, ChatResponse, Message, ToolCallRequest, ToolDef, Usage,
-};
+use super::types::{ChatRequest, ChatResponse, Message, ToolCallRequest, ToolDef, Usage};
 
 pub struct OpenAiCompatibleClient {
     client: Client<OpenAIConfig>,
