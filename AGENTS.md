@@ -35,7 +35,7 @@ Cargo workspace:
   request/response types carry `utoipa` annotations, and `openapi.json` is
   compiled from them. **Whenever the API changes** (endpoints, request or
   response shapes), re-run `scripts/dump-openapi.sh` and commit the updated
-  `openapi.json` together with the change.
+  `openapi.json` + `API.md` together with the change.
 
 ## Build / test / run
 

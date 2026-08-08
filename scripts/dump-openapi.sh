@@ -5,4 +5,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo run -q -p prompt-explore-server -- --dump-openapi > openapi.json
-echo "wrote openapi.json ($(python3 -c "import json; print(len(json.load(open('openapi.json'))['paths']))" ) endpoints)"
+python3 scripts/openapi_to_md.py openapi.json API.md
