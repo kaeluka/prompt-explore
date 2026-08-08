@@ -92,7 +92,7 @@ function renderStep(i, st) {
   return `<div class="step"><span class="n">${i}</span>${body}</div>`;
 }
 
-function renderScenario(s) {
+function renderScenario(jobId, s) {
   const st = s.state || {};
   const kind = st.kind || "running";
   let badge = "";
@@ -101,12 +101,11 @@ function renderScenario(s) {
   else if (kind === "failed") badge = `<span class="badge error">failed: ${esc(st.stage)}</span>`;
   const failNote = kind === "failed" ? `<div class="note" style="margin:0.3rem 0">${esc(st.error)}</div>` : '';
   const steps = (s.steps||[]).map((st,i)=>renderStep(i,st)).join("");
-  const open = kind === "running" ? '' : ''; // collapsed by default
   return `<div class="scen">
     <div class="scen-head"><span class="scen-id">${esc(s.scenario_id)}</span> ${badge}
       <span class="meta">${(s.steps||[]).length} step(s)</span></div>
     ${failNote}
-    <details ${open}>
+    <details data-key="${esc(jobId)}:${esc(s.scenario_id)}:log">
       <summary>tool-call log</summary>
       <div style="margin-top:0.35rem">${steps || '<span class="meta">(no steps yet)</span>'}</div>
     </details>
@@ -116,7 +115,7 @@ function renderScenario(s) {
 function renderJob(j) {
   const p = j.progress || { scenarios: [] };
   const r = j.result;
-  const scenHtml = (p.scenarios||[]).map(renderScenario).join("");
+  const scenHtml = (p.scenarios||[]).map(s => renderScenario(j.id, s)).join("");
   let resultLine = "";
   if (r) {
     const rr = r.result;
@@ -126,7 +125,7 @@ function renderJob(j) {
       ${r.usage ? `<div class="meta" style="margin-top:0.2rem">${fmtUsage(r.usage)}</div>`:''}
     </div>`;
     if (rr.failures && rr.failures.length) {
-      resultLine += `<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f=>`<div class="step"><span class="tool">${esc(f.scenario_id)}</span> (${esc(f.stage)}): ${esc(f.error)}</div>`).join('')}</div></details>`;
+      resultLine += `<details data-key="${esc(j.id)}:failures" style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f=>`<div class="step"><span class="tool">${esc(f.scenario_id)}</span> (${esc(f.stage)}): ${esc(f.error)}</div>`).join('')}</div></details>`;
     }
   }
   return `<div class="card">
@@ -145,7 +144,11 @@ async function refresh() {
     const el = document.getElementById('jobs');
     if (!list.length) { el.innerHTML = '<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>'; return; }
     const views = await Promise.all(list.map(s => fetch(API(s.id)).then(r => r.json())));
+    // Snapshot which logs are open before re-rendering, so auto-refresh
+    // doesn't snap them shut.
+    const openKeys = new Set([...document.querySelectorAll('#jobs details[open][data-key]')].map(d => d.dataset.key));
     el.innerHTML = views.map(renderJob).join("");
+    document.querySelectorAll('#jobs details[data-key]').forEach(d => { if (openKeys.has(d.dataset.key)) d.setAttribute('open',''); });
   } catch (e) { console.error(e); }
 }
 document.getElementById('expandall').onclick = () => {
