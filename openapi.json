@@ -489,6 +489,9 @@
         "required": [
           "status",
           "started_at",
+          "question",
+          "put",
+          "scenarios",
           "progress"
         ],
         "properties": {
@@ -502,6 +505,14 @@
             "$ref": "#/components/schemas/RunProgress",
             "description": "Live progress — per-scenario state + steps simulated so far.\nPopulated while running; frozen (all scenarios done/failed) when\nthe job finishes. Lets a dashboard show a tool-call log as it\nhappens."
           },
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest",
+            "description": "The prompt under test."
+          },
+          "question": {
+            "type": "string",
+            "description": "The investigation question (the judge's criterion)."
+          },
           "result": {
             "oneOf": [
               {
@@ -511,6 +522,13 @@
                 "$ref": "#/components/schemas/InvestigateResponse"
               }
             ]
+          },
+          "scenarios": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Scenario"
+            },
+            "description": "The full input scenarios (narrative = ground truth, etc.)."
           },
           "started_at": {
             "type": "integer",

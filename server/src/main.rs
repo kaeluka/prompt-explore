@@ -45,6 +45,14 @@ struct Job {
     progress: Arc<std::sync::Mutex<RunProgress>>,
     /// Wall-clock start, epoch millis.
     started_at: u64,
+    /// The investigation question (the judge's criterion) — shown so a
+    /// reader can judge the unfolding trace against it.
+    question: String,
+    /// The prompt under test.
+    put: PromptUnderTest,
+    /// The full input scenarios (narrative, world_state, simulator_notes),
+    /// so the ground truth is visible while the run unfolds.
+    scenarios: Vec<Scenario>,
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
@@ -128,6 +136,12 @@ struct JobCreated {
 struct JobView {
     status: JobStatus,
     started_at: u64,
+    /// The investigation question (the judge's criterion).
+    question: String,
+    /// The prompt under test.
+    put: PromptUnderTest,
+    /// The full input scenarios (narrative = ground truth, etc.).
+    scenarios: Vec<Scenario>,
     /// Live progress — per-scenario state + steps simulated so far.
     /// Populated while running; frozen (all scenarios done/failed) when
     /// the job finishes. Lets a dashboard show a tool-call log as it
@@ -295,6 +309,9 @@ async fn create_investigation(
             error: None,
             progress: progress.clone(),
             started_at,
+            question: req.investigation.question.clone(),
+            put: req.put.clone(),
+            scenarios: req.scenarios.clone(),
         },
     );
 
@@ -420,6 +437,9 @@ async fn get_investigation(
     Ok(Json(JobView {
         status: job.status,
         started_at: job.started_at,
+        question: job.question.clone(),
+        put: job.put.clone(),
+        scenarios: job.scenarios.clone(),
         progress: job.progress.lock().unwrap().clone(),
         result: job.result.clone(),
         error: job.error.clone(),

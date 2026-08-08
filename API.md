@@ -192,7 +192,10 @@ Values: `running`, `done`, `failed`
 |---|---|---|---|
 | `error` | string? | no |  |
 | `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + steps simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes | The prompt under test. |
+| `question` | string | yes | The investigation question (the judge's criterion). |
 | `result` | [`InvestigateResponse`](#investigateresponse)? | no |  |
+| `scenarios` | [`Scenario`](#scenario)[] | yes | The full input scenarios (narrative = ground truth, etc.). |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
 

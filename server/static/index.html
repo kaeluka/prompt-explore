@@ -83,6 +83,7 @@
 const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
 const API = id => `/api/investigations${id ? '/'+id : ''}`;
 function fmtUsage(u){ if(!u) return ""; const c=u.cache_read_tokens?` <span class="meta">(${u.cache_read_tokens.toLocaleString()} cached)</span>`:""; return `${u.input_tokens.toLocaleString()} in${c} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm · ${u.tool_calls} tool calls`; }
+function pretty(v){ try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
 function relTime(ms){ const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
 
 function bubble(side, role, bodyHtml, bodyClass) {
@@ -111,7 +112,7 @@ function renderChat(s) {
   return `<div class="chat">${out.join("") || '<span class="meta">(no messages yet)</span>'}</div>`;
 }
 
-function renderScenario(s) {
+function renderScenario(s, input) {
   const st = s.state || {};
   const kind = st.kind || "running";
   let badge = "";
@@ -119,10 +120,18 @@ function renderScenario(s) {
   else if (kind === "done") badge = `<span class="badge ${st.matched ? 'witness_found':'no_witness_within_budget'}">${st.matched ? 'witness':'no match'}</span>`;
   else if (kind === "failed") badge = `<span class="badge error">failed: ${esc(st.stage)}</span>`;
   const failNote = kind === "failed" ? `<div class="note" style="margin:0.3rem 0">${esc(st.error)}</div>` : '';
+  // The scenario spec (ground truth to read the conversation against).
+  const spec = input ? `<details>
+    <summary>scenario spec (narrative)</summary>
+    <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${esc(input.narrative || '(no narrative)')}</div>
+    ${input.simulator_notes ? `<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${esc(input.simulator_notes)}</div>`:''}
+    ${input.world_state && Object.keys(input.world_state).length ? `<details class="statenote"><summary class="meta">world state</summary><pre class="step" style="max-height:9em;overflow:auto">${esc(pretty(input.world_state))}</pre></details>`:''}
+  </details>` : '';
   return `<div class="scen">
     <div class="scen-head"><span class="scen-id">${esc(s.scenario_id)}</span> ${badge}
       <span class="meta">${(s.steps||[]).length} turn(s)</span></div>
     ${failNote}
+    ${spec}
     <details>
       <summary>conversation</summary>
       ${renderChat(s)}
@@ -130,10 +139,22 @@ function renderScenario(s) {
   </div>`;
 }
 
+function renderPut(put) {
+  if (!put) return '';
+  const tools = (put.tools||[]).map(t => `<span class="badge" style="background:var(--panel-2)">${esc(t.name)}</span>`).join(' ');
+  return `<details style="margin-top:0.4rem">
+    <summary class="meta">prompt under test</summary>
+    <div class="meta" style="margin:0.3rem 0"><b>design goals:</b> ${esc(put.design_goals||'')}</div>
+    ${tools ? `<div class="meta" style="margin:0.3rem 0"><b>tools:</b> ${tools}</div>`:''}
+    <details style="margin-top:0.3rem"><summary class="meta">template</summary><div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0;font-size:0.78rem">${esc(put.template||'')}</div></details>
+  </details>`;
+}
 function renderJob(j) {
   const p = j.progress || { scenarios: [] };
   const r = j.result;
-  const scenHtml = (p.scenarios||[]).map(renderScenario).join("");
+  const inputById = {};
+  (j.scenarios || []).forEach(s => { inputById[s.id] = s; });
+  const scenHtml = (p.scenarios||[]).map(s => renderScenario(s, inputById[s.scenario_id])).join("");
   let resultLine = "";
   if (r) {
     const rr = r.result;
@@ -151,6 +172,8 @@ function renderJob(j) {
       <span class="mono meta">${esc(j.id ? j.id.slice(0,8):'')}</span>
       <span class="meta">· ${relTime(j.started_at)}</span>
     </h2>
+    <div class="meta" style="margin:0.4rem 0"><b>question:</b> ${esc(j.question || '')}</div>
+    ${renderPut(j.put)}
     ${resultLine}
     <div style="margin-top:0.5rem">${scenHtml}</div>
   </div>`;
