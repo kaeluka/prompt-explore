@@ -46,7 +46,6 @@ fn scenario() -> Scenario {
 
 fn budget() -> Budget {
     Budget {
-        max_scenarios: 1,
         max_steps_per_trace: 10,
         max_tokens: None,
     }

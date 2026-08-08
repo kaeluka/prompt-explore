@@ -3,28 +3,33 @@
 **Property-based testing for agent behavior.**
 
 prompt-explore investigates behavioral questions about LLM prompts (the
-"prompts under test", PsUT) by *executing* them in a simulated
-environment: an internal LLM plays the tools and maintains world state,
-while the tool searches for **reproducible witness traces** that answer
-the question. Ambiguity is found by execution, not by reading.
+"prompts under test", PsUT) by *executing* them in simulated
+environments: an internal LLM plays the tools and maintains world state,
+rendering each world from an author-supplied scenario narrative. The
+tool reports **reproducible witness traces** that answer the question.
+Ambiguity is found by execution, not by reading.
 
 ## The UX loop
 
-1. **Investigate.** The user provides the PsUT (prompt template,
-   per-variable input specs, tool schemas, mandatory design goals) plus
-   a mandatory investigation question, e.g.
+1. **Author scenarios.** The user (typically via their AI agent) writes
+   scenarios: natural-language world specifications — inventory, facts
+   (including negatives), completeness assertions, rendering rules —
+   plus an opening user message. The harness deliberately does not
+   generate them (see AGENTS.md for authoring guidance).
+2. **Investigate.** The user provides the PUT (prompt template,
+   per-variable input specs, tool schemas, mandatory design goals), the
+   scenarios, and a mandatory investigation question, e.g.
    - *existential*: "are there inputs that cause destructive tool calls?"
    - *differential*: "why does this sometimes cancel, sometimes ask?"
-2. **Witness.** The system generates hypotheses, builds adversarial
-   scenarios, runs the PUT against simulated tools, and reports witness
-   traces with instruction-level attribution. "No witness found within
-   budget" is a first-class, honestly-reported outcome: every scenario
-   tried is surfaced.
-3. **Propose.** Ranked, **explicitly unverified** fix proposals
+3. **Witness.** The system runs the PUT against the simulated worlds,
+   judges every trace, and reports witness traces. "No witness found" is
+   a first-class, honestly-reported outcome: every scenario tried is
+   surfaced.
+4. **Propose.** Ranked, **explicitly unverified** fix proposals
    (reword / split / merge / transform input data / revise design
    goals), with one-click apply in the UI.
-4. **The user owns everything after.** Verification = apply a change,
-   ask the same question again. The tool is the loop body of an
+5. **The user owns everything after.** Verification = apply a change,
+   re-run the same scenarios. The tool is the loop body of an
    interactive optimization loop; the user is the loop.
 
 ## Key design decisions
@@ -51,7 +56,7 @@ core/            the library — all logic lives here, usable standalone
 ├── src/llm/         LlmClient trait + OpenAI-compatible adapter (z.ai, OpenRouter) + mock
 ├── src/simulate/    runner (PUT tool loop) + tool-simulator LLM + world state
 ├── src/judge/       predicate evaluation over traces (sees scenario + design goals, not the PUT)
-├── src/generate/    hypothesize → scenario building → search → propose → apply
+├── src/generate/    run + judge orchestration, propose, apply
 └── examples/        smoke, live_run, investigate_live, judge_live
 server/          thin axum wrapper — HTTP API + web UI. No business logic.
 ├── src/main.rs      job-based API: POST /api/investigations → poll GET /api/investigations/:id;
@@ -72,7 +77,7 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
   bookkeeping, budget stop conditions
 - ✅ Judge: NL-only LLM judge (behavior must actually occur; judge is
   blind to the PUT template). Structural checks were tried and dropped.
-- ✅ Hypothesis generation + adversarial scenario builder + search
+- ✅ Scenario execution (author-supplied narratives) + judge
 - ✅ Witness reporting: every attempt surfaced, including negative results
 - ✅ Proposal generation + apply (the LLM rewrites the target field,
   a deterministic word-level diff is computed for review; goal_revision
@@ -134,6 +139,6 @@ OpenRouter is supported via `OpenAiCompatibleClient::openrouter`.
 ## Contributing
 
 See [AGENTS.md](AGENTS.md) — notably the **dogfooding rule**: when you
-change any of the tool's own prompts (judge, simulator, hypothesizer,
-scenario builder, proposal generator), run the tool against itself and
-record the before/after result in the commit message.
+change any of the tool's own prompts (judge, simulator, proposal
+generator), run the tool against itself and record the before/after
+result in the commit message.

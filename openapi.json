@@ -124,45 +124,6 @@
           }
         }
       }
-    },
-    "/api/scenarios": {
-      "post": {
-        "tags": [],
-        "summary": "Generate scenarios for review WITHOUT running them. Returns the\nhypotheses and full scenarios (narratives included) so the caller\ncan inspect, edit, and curate before running a focused investigation\nwith POST /api/investigations { scenarios: [...] }.",
-        "operationId": "generate_scenarios",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GenerateScenariosRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Generated hypotheses + scenarios for review",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GenerateScenariosResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Generation failed",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -289,15 +250,9 @@
       "Budget": {
         "type": "object",
         "required": [
-          "max_scenarios",
           "max_steps_per_trace"
         ],
         "properties": {
-          "max_scenarios": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          },
           "max_steps_per_trace": {
             "type": "integer",
             "format": "int32",
@@ -371,70 +326,12 @@
           }
         ]
       },
-      "GenerateScenariosRequest": {
-        "type": "object",
-        "required": [
-          "put",
-          "question",
-          "size"
-        ],
-        "properties": {
-          "guidance": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional natural-language guidance (diversity requests, focus\nareas, \"differ from these\" paste-ins, hypotheses to try)."
-          },
-          "max_steps_per_trace": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32",
-            "description": "Cap the world size against this step budget (default: 10).",
-            "minimum": 0
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Model (default: server default `glm-5.2`)."
-          },
-          "put": {
-            "$ref": "#/components/schemas/PromptUnderTest"
-          },
-          "question": {
-            "type": "string"
-          },
-          "size": {
-            "type": "integer",
-            "format": "int32",
-            "description": "How many scenarios to generate.",
-            "minimum": 0
-          }
-        }
-      },
-      "GenerateScenariosResponse": {
-        "type": "object",
-        "required": [
-          "scenarios"
-        ],
-        "properties": {
-          "scenarios": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Scenario"
-            }
-          }
-        }
-      },
       "InvestigateRequest": {
         "type": "object",
         "required": [
           "investigation",
-          "put"
+          "put",
+          "scenarios"
         ],
         "properties": {
           "investigation": {
@@ -445,20 +342,17 @@
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (hypothesizer, builder, runner PUT +\nsimulator, judge, proposer). Omit to use the server default\n(`glm-5.2`)."
+            "description": "Model for every LLM role (runner PUT + simulator, judge,\nproposer). Omit to use the server default (`glm-5.2`)."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
           },
           "scenarios": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "$ref": "#/components/schemas/Scenario"
             },
-            "description": "Explicit scenarios to run, skipping hypothesis + scenario\ngeneration. When present, ALL of them are run against the PUT\n(an explicit list is a contract). Use POST /api/scenarios to\nbuild these for review first."
+            "description": "The scenarios to run. Required; all of them are run (an\nexplicit list is a contract). Scenarios are authored outside\nthe harness — see AGENTS.md's scenario-authoring guidance."
           }
         }
       },

@@ -47,8 +47,8 @@ fn put_roundtrip() {
 fn investigation_deserializes() {
     let json = json!({
         "question": "are there inputs that cause destructive tool calls?",
-        "budget": { "max_scenarios": 20, "max_steps_per_trace": 10, "max_tokens": null }
+        "budget": { "max_steps_per_trace": 10, "max_tokens": null }
     });
     let inv: Investigation = serde_json::from_value(json).unwrap();
-    assert_eq!(inv.budget.max_scenarios, 20);
+    assert_eq!(inv.budget.max_steps_per_trace, 10);
 }

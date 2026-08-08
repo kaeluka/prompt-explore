@@ -40,9 +40,9 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
-| `model` | string? | no | Model for every LLM role (hypothesizer, builder, runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
+| `model` | string? | no | Model for every LLM role (runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `scenarios` | array? | no | Explicit scenarios to run, skipping hypothesis + scenario generation. When present, ALL of them are run against the PUT (an explicit list is a contract). Use POST /api/scenarios to build these for review first. |
+| `scenarios` | [`Scenario`](#scenario)[] | yes | The scenarios to run. Required; all of them are run (an explicit list is a contract). Scenarios are authored outside the harness — see AGENTS.md's scenario-authoring guidance. |
 
 
 | Status | Response |
@@ -61,27 +61,6 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 |---|---|
 | `200` | Job status (and result, when done): [`JobView`](#jobview) |
 | `404` | Unknown job id |
-
-### `POST /api/scenarios`
-
-Generate scenarios for review WITHOUT running them. Returns the hypotheses and full scenarios (narratives included) so the caller can inspect, edit, and curate before running a focused investigation with POST /api/investigations { scenarios: [...] }.
-
-Body: [`GenerateScenariosRequest`](#generatescenariosrequest)
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `guidance` | string? | no | Optional natural-language guidance (diversity requests, focus areas, "differ from these" paste-ins, hypotheses to try). |
-| `max_steps_per_trace` | integer? | no | Cap the world size against this step budget (default: 10). |
-| `model` | string? | no | Model (default: server default `glm-5.2`). |
-| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `question` | string | yes |  |
-| `size` | integer | yes | How many scenarios to generate. |
-
-
-| Status | Response |
-|---|---|
-| `200` | Generated hypotheses + scenarios for review: [`GenerateScenariosResponse`](#generatescenariosresponse) |
-| `500` | Generation failed |
 
 ## Schemas
 
@@ -125,7 +104,6 @@ Body: [`GenerateScenariosRequest`](#generatescenariosrequest)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `max_scenarios` | integer | yes |  |
 | `max_steps_per_trace` | integer | yes |  |
 | `max_tokens` | integer? | no |  |
 
@@ -152,31 +130,14 @@ Body: [`GenerateScenariosRequest`](#generatescenariosrequest)
 | `tag` | `delete` | yes |  |
 | `value` | string | yes |  |
 
-### `GenerateScenariosRequest`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `guidance` | string? | no | Optional natural-language guidance (diversity requests, focus areas, "differ from these" paste-ins, hypotheses to try). |
-| `max_steps_per_trace` | integer? | no | Cap the world size against this step budget (default: 10). |
-| `model` | string? | no | Model (default: server default `glm-5.2`). |
-| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `question` | string | yes |  |
-| `size` | integer | yes | How many scenarios to generate. |
-
-### `GenerateScenariosResponse`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `scenarios` | [`Scenario`](#scenario)[] | yes |  |
-
 ### `InvestigateRequest`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
-| `model` | string? | no | Model for every LLM role (hypothesizer, builder, runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
+| `model` | string? | no | Model for every LLM role (runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `scenarios` | array? | no | Explicit scenarios to run, skipping hypothesis + scenario generation. When present, ALL of them are run against the PUT (an explicit list is a contract). Use POST /api/scenarios to build these for review first. |
+| `scenarios` | [`Scenario`](#scenario)[] | yes | The scenarios to run. Required; all of them are run (an explicit list is a contract). Scenarios are authored outside the harness — see AGENTS.md's scenario-authoring guidance. |
 
 ### `InvestigateResponse`
 

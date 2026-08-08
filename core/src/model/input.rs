@@ -70,7 +70,6 @@ pub struct Investigation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Budget {
-    pub max_scenarios: u32,
     pub max_steps_per_trace: u32,
     pub max_tokens: Option<u64>,
 }

@@ -96,7 +96,6 @@ async fn main() {
     };
 
     let budget = Budget {
-        max_scenarios: 1,
         max_steps_per_trace: 8,
         max_tokens: None,
     };

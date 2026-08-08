@@ -195,7 +195,12 @@
 
   <div class="card">
     <label for="initial_state">Environment state <span class="meta" style="text-transform:none;letter-spacing:0">(optional, natural language — e.g. "cancel_order is broken and returns E_CONN; order 8842 is pending")</span></label>
-    <textarea id="initial_state" rows="2" spellcheck="false" placeholder="Leave empty to let the scenario builder invent a world freely."></textarea>
+    <textarea id="initial_state" rows="2" spellcheck="false" placeholder="Leave empty to let the world speak for itself."></textarea>
+  </div>
+
+  <div class="card">
+    <label for="scenarios_json">Scenarios <span class="meta" style="text-transform:none;letter-spacing:0">(required — JSON array, authored outside this tool; edit before running)</span></label>
+    <textarea id="scenarios_json" rows="8" spellcheck="false" placeholder='[{"id": "...", "hypothesis_id": "...", "put_id": "...", "resolved_inputs": {}, "user_message": "...", "world_state": {}, "simulator_notes": "...", "narrative": "...", "stated_state": null}]'></textarea>
   </div>
 
   <div class="card">
@@ -213,17 +218,13 @@
   <div class="card">
     <label>Budget</label>
     <div class="budget-row">
-      <div><span>max scenarios</span><input type="number" id="b_scenarios" value="8" min="1"></div>
       <div><span>max steps / trace</span><input type="number" id="b_steps" value="6" min="1"></div>
       <div><span>max tokens (optional)</span><input type="number" id="b_tokens" placeholder="—"></div>
     </div>
   </div>
 
   <button id="go">Investigate</button>
-  <button class="secondary" id="gen_scenarios">Generate scenarios for review…</button>
   <div id="status"><div class="spinner"></div><span id="status-text"></span></div>
-
-  <div id="scenario_review"></div>
 
   <div id="out"></div>
 </div>
@@ -474,91 +475,24 @@ document.getElementById("out").addEventListener("click", async (e) => {
   }
 });
 
-// --- Scenario generation + review (two-stage flow) ---
-let reviewedScenarios = null; // null = one-shot mode; array = run these
+// --- Investigation submission ---
 function buildInvestigation() {
   const maxTokens = document.getElementById("b_tokens").value.trim();
   return {
     question: document.getElementById("question").value,
     budget: {
-      max_scenarios: parseInt(document.getElementById("b_scenarios").value) || 8,
       max_steps_per_trace: parseInt(document.getElementById("b_steps").value) || 6,
       max_tokens: maxTokens ? parseInt(maxTokens) : null
     },
     initial_state: document.getElementById("initial_state").value.trim() || null
   };
 }
-function renderScenarioReview(data) {
-  reviewedScenarios = data.scenarios;
-  const pane = document.getElementById("scenario_review");
-  pane.innerHTML = '<h2 class="section-title">Scenarios for review</h2>' +
-    '<p class="meta">Each card is the full scenario JSON — edit the narrative (world spec) before running.</p>' +
-    data.scenarios.map((s, i) => {
-      return `<div class="card" style="margin-top:0.8rem">
-        <p class="meta"><b>${esc(s.id)}</b> · hypothesis ${esc(s.hypothesis_id)}</p>
-        <textarea class="scenario-json" data-i="${i}" rows="16" spellcheck="false" style="width:100%;font-family:monospace;font-size:0.8rem">${esc(JSON.stringify(s, null, 2))}</textarea>
-      </div>`;
-    }).join("") +
-    `<div style="display:flex;gap:0.5rem;margin-top:0.8rem">
-      <button id="run_scenarios">Run these scenarios</button>
-      <button class="secondary" id="discard_scenarios">Discard (back to one-shot)</button>
-    </div>`;
-  document.getElementById("run_scenarios").onclick = runReviewed;
-  document.getElementById("discard_scenarios").onclick = () => {
-    reviewedScenarios = null;
-    document.getElementById("scenario_review").innerHTML = "";
-  };
-}
-document.getElementById("gen_scenarios").onclick = async () => {
-  const btn = document.getElementById("gen_scenarios");
-  const status = document.getElementById("status");
-  const statusText = document.getElementById("status-text");
-  let put;
-  try { put = buildPut(); }
-  catch (e) { statusText.textContent = e.message; status.classList.add("on"); return; }
-  const size = prompt("How many scenarios to generate?", "3");
-  if (!size) return;
-  const guidance = prompt("Optional guidance (diversity / focus / differ-from). Leave blank for none.", "");
-  btn.disabled = true; status.classList.add("on");
-  statusText.textContent = "Generating scenarios…";
-  try {
-    const resp = await fetch("/api/scenarios", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ put, question: document.getElementById("question").value,
-        size: parseInt(size) || 3, guidance: guidance || null })
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    renderScenarioReview(await resp.json());
-    statusText.textContent = ""; status.classList.remove("on");
-  } catch (e) {
-    statusText.textContent = "Error: " + e.message;
-  } finally { btn.disabled = false; }
-};
-async function runReviewed() {
-  const btn = document.getElementById("run_scenarios");
-  const status = document.getElementById("status");
-  const statusText = document.getElementById("status-text");
-  document.getElementById("out").innerHTML = "";
-  // Parse the edited textareas back into scenario objects.
-  const scenarios = [];
-  for (const ta of document.querySelectorAll(".scenario-json")) {
-    try { scenarios.push(JSON.parse(ta.value)); }
-    catch (e) { statusText.textContent = `scenario JSON ${+ta.dataset.i + 1} invalid: ${e.message}`; status.classList.add("on"); return; }
-  }
-  btn.disabled = true; status.classList.add("on");
-  statusText.textContent = "Starting…";
-  try {
-    const resp = await fetch("/api/investigations", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ investigation: buildInvestigation(), put: buildPut(), scenarios })
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    const { id } = await resp.json();
-    localStorage.setItem("pe.currentJob", id);
-    await poll(id, Date.now());
-  } catch (e) {
-    statusText.textContent = "Error: " + e.message;
-  } finally { btn.disabled = false; }
+function buildScenarios() {
+  const raw = document.getElementById("scenarios_json").value.trim();
+  if (!raw) throw new Error("scenarios are required — paste a JSON array of scenario objects");
+  const arr = JSON.parse(raw);
+  if (!Array.isArray(arr) || arr.length === 0) throw new Error("scenarios must be a non-empty JSON array");
+  return arr;
 }
 
 document.getElementById("go").onclick = async () => {
@@ -567,9 +501,11 @@ document.getElementById("go").onclick = async () => {
   const status = document.getElementById("status");
   const statusText = document.getElementById("status-text");
   out.innerHTML = "";
-  let put;
-  try { put = buildPut(); }
-  catch (e) { statusText.textContent = e.message; status.classList.add("on"); return; }
+  let put, scenarios;
+  try {
+    put = buildPut();
+    scenarios = buildScenarios();
+  } catch (e) { statusText.textContent = e.message; status.classList.add("on"); return; }
 
   const investigation = buildInvestigation();
 
@@ -580,7 +516,7 @@ document.getElementById("go").onclick = async () => {
     const resp = await fetch("/api/investigations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ investigation, put })
+      body: JSON.stringify({ investigation, put, scenarios })
     });
     if (!resp.ok) throw new Error(await resp.text());
     const { id } = await resp.json();

@@ -5,8 +5,9 @@ Guidance for AI agents (and humans) working in this repository.
 ## What this is
 
 **prompt-explore** — property-based testing for agent behavior. A user states a
-behavioral question about a prompt under test (PUT); the tool searches simulated
-scenarios for a witness trace, attributes the behavior, and proposes *unverified*
+behavioral question about a prompt under test (PUT) and supplies scenarios
+(author-supplied world narratives); the tool runs them, judges every trace for a
+witness, and proposes *unverified*
 fixes. The user owns everything after the run — the tool is the loop body of an
 interactive optimization loop, the user is the loop.
 
@@ -65,6 +66,29 @@ harness's problem. This is "the user is the loop" extended one level down —
 same loop, new object — and it is the contract a future optimizer agent
 operates under.
 
+**Scenarios are authored outside the harness.** There is deliberately no
+scenario-generation endpoint and no generation-on-submit: an optional
+`scenarios` field with an "absent means generate" default is *easy, not
+simple* — one endpoint, one contract. The operator's agent (e.g. Claude)
+writes scenarios; the harness evaluates them. When authoring a scenario,
+the narrative is the ground truth and must pin four things (all NL, all
+visible to the simulator and judge):
+
+1. **Inventory** — what exists and where, covering every query type the
+   PUT's tools allow (files/paths for a repo; orders and their states for
+   a support agent; per-topic results for a search tool).
+2. **Facts** — including *negative* facts (what does NOT exist, what NEVER
+   happens). LLMs default to inventing positive content; absences must be
+   stated. Often the negative facts are what make the witness decidable.
+3. **Completeness assertions** — "these are ALL the entry points" (closed
+   world) or "these are the relevant results on this topic" (open world).
+4. **Rendering rules** — refuse queries outside the inventory; filler
+   introduces no new facts; never contradict the facts.
+
+Size the world to the investigation's step budget: a small world fully
+explored beats a large world half-explored. And vary the worlds across a
+corpus — same-shape scenarios prove the same thing twice.
+
 ## Repo layout
 
 Cargo workspace:
@@ -109,7 +133,7 @@ also supported via `OpenAiCompatibleClient::openrouter`.
 **Whenever you optimize a prompt, use the opportunity for dogfooding.**
 
 This tool *is* a prompt-optimization tool, and its own prompts (judge, tool
-simulator, hypothesizer, scenario builder, proposal generator) are its most
+simulator, proposal generator) are its most
 important internal artifacts. So when you change any of them:
 
 1. **Run the tool against itself.** Use prompt-explore (the server or a live

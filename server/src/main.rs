@@ -23,9 +23,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use uuid::Uuid;
 
-use prompt_explore::generate::{
-    Hypothesizer, Investigator, LlmRole, ProposalApplier, ScenarioBuilder,
-};
+use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
 use prompt_explore::llm::{OpenAiCompatibleClient, UsageTotals, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
@@ -57,39 +55,13 @@ enum JobStatus {
 struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
-    /// Model for every LLM role (hypothesizer, builder, runner PUT +
-    /// simulator, judge, proposer). Omit to use the server default
-    /// (`glm-5.2`).
+    /// Model for every LLM role (runner PUT + simulator, judge,
+    /// proposer). Omit to use the server default (`glm-5.2`).
     #[serde(default)]
     model: Option<String>,
-    /// Explicit scenarios to run, skipping hypothesis + scenario
-    /// generation. When present, ALL of them are run against the PUT
-    /// (an explicit list is a contract). Use POST /api/scenarios to
-    /// build these for review first.
-    #[serde(default)]
-    scenarios: Option<Vec<Scenario>>,
-}
-
-#[derive(Deserialize, utoipa::ToSchema)]
-struct GenerateScenariosRequest {
-    put: PromptUnderTest,
-    question: String,
-    /// How many scenarios to generate.
-    size: u32,
-    /// Optional natural-language guidance (diversity requests, focus
-    /// areas, "differ from these" paste-ins, hypotheses to try).
-    #[serde(default)]
-    guidance: Option<String>,
-    /// Model (default: server default `glm-5.2`).
-    #[serde(default)]
-    model: Option<String>,
-    /// Cap the world size against this step budget (default: 10).
-    #[serde(default)]
-    max_steps_per_trace: Option<u32>,
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-struct GenerateScenariosResponse {
+    /// The scenarios to run. Required; all of them are run (an
+    /// explicit list is a contract). Scenarios are authored outside
+    /// the harness — see AGENTS.md's scenario-authoring guidance.
     scenarios: Vec<Scenario>,
 }
 
@@ -160,7 +132,7 @@ struct JobView {
         description = "Property-based testing for agent behavior. Job-based API: \
                        start an investigation, poll for the result, apply proposals."
     ),
-    paths(index, create_investigation, get_investigation, apply_proposal, generate_scenarios)
+    paths(index, create_investigation, get_investigation, apply_proposal)
 )]
 struct ApiDoc;
 
@@ -211,7 +183,6 @@ async fn main() {
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/apply", post(apply_proposal))
         .route("/api/openapi.json", get(openapi_json))
-        .route("/api/scenarios", post(generate_scenarios))
         .layer(middleware::from_fn(spec_discovery))
         .with_state(state);
 
@@ -293,23 +264,15 @@ async fn create_investigation(
             model: model.clone(),
         };
         let investigator = Investigator {
-            hypothesizer: role(),
-            builder: role(),
             runner_put: role(),
             runner_sim: role(),
             judge: role(),
             proposer: role(),
-            scenarios_per_hypothesis: 2,
-            max_hypotheses: 4,
         };
 
-        let outcome = if let Some(scenarios) = req.scenarios.clone() {
-            investigator
-                .investigate_scenarios(&req.investigation, &req.put, &scenarios)
-                .await
-        } else {
-            investigator.investigate(&req.investigation, &req.put).await
-        };
+        let outcome = investigator
+            .investigate(&req.investigation, &req.put, &req.scenarios)
+            .await;
 
         let witness_user_message = outcome
             .attempts
@@ -381,56 +344,6 @@ async fn get_investigation(
         result: job.result.clone(),
         error: job.error.clone(),
     }))
-}
-
-/// Generate scenarios for review WITHOUT running them. Returns the
-/// hypotheses and full scenarios (narratives included) so the caller
-/// can inspect, edit, and curate before running a focused investigation
-/// with POST /api/investigations { scenarios: [...] }.
-#[utoipa::path(
-    post,
-    path = "/api/scenarios",
-    request_body = GenerateScenariosRequest,
-    responses(
-        (status = 200, description = "Generated hypotheses + scenarios for review", body = GenerateScenariosResponse),
-        (status = 500, description = "Generation failed", body = String)
-    )
-)]
-async fn generate_scenarios(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<GenerateScenariosRequest>,
-) -> Result<Json<GenerateScenariosResponse>, (StatusCode, String)> {
-    let client = state.client.as_ref().unwrap().clone();
-    let model = req.model.clone().unwrap_or_else(|| MODEL.into());
-    let max_steps = req.max_steps_per_trace.unwrap_or(10);
-    let size = req.size.max(1) as usize;
-
-    let hyp = Hypothesizer::new(client.clone(), &model);
-    let n_hyp = size.clamp(1, 4);
-    let hypotheses = hyp
-        .hypothesize(&req.question, &req.put, n_hyp, req.guidance.as_deref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let builder = ScenarioBuilder::new(client, &model);
-    // Distribute `size` builds across the hypotheses as evenly as possible.
-    let n = hypotheses.len().max(1);
-    let base = size / n;
-    let rem = size % n;
-    let mut scenarios: Vec<Scenario> = Vec::new();
-    for (i, h) in hypotheses.iter().enumerate() {
-        let count = base + if i < rem { 1 } else { 0 };
-        if count == 0 {
-            continue;
-        }
-        let built = builder
-            .build(h, &req.put, count, None, req.guidance.as_deref(), max_steps)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        scenarios.extend(built);
-    }
-
-    Ok(Json(GenerateScenariosResponse { scenarios }))
 }
 
 /// Apply a proposal: the LLM rewrites the target field (template, or
