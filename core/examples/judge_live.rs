@@ -74,6 +74,7 @@ async fn main() {
         simulator_notes: "the customer is impatient and decisive; if asked to \
                           confirm, they say yes"
             .into(),
+        narrative: "".into(),
         stated_state: None,
     };
 

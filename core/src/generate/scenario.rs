@@ -1,9 +1,10 @@
 //! Scenario building: hypothesis + PUT → one or more concrete scenarios.
 //!
-//! Resolves input_vars (constants copied, NlDescriptions made concrete,
-//! hypothesis input_overrides applied), invents a coherent initial
-//! world_state from the tool schemas, and writes the user_message and
-//! simulator_notes that embody the hypothesis.
+//! Each scenario's core is the **narrative**: a world specification
+//! (inventory, facts incl. negatives, completeness assertions, rendering
+//! rules) that is ground truth for the simulator, the judge, and the UI.
+//! The user message, initial world_state, resolved inputs, and simulator
+//! notes accompany it.
 
 use std::sync::Arc;
 
@@ -22,9 +23,14 @@ pub struct ScenarioBuilder {
 
 #[derive(Deserialize)]
 struct LlmScenario {
+    narrative: String,
+    #[serde(default)]
     resolved_inputs: Map<String, Value>,
+    #[serde(default)]
     user_message: String,
+    #[serde(default)]
     world_state: Map<String, Value>,
+    #[serde(default)]
     simulator_notes: String,
 }
 
@@ -44,22 +50,37 @@ impl ScenarioBuilder {
         put: &PromptUnderTest,
         count: usize,
         initial_state: Option<&str>,
+        guidance: Option<&str>,
+        max_steps_per_trace: u32,
     ) -> Result<Vec<Scenario>, LlmError> {
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            if let Some(s) = self.build_one(hypothesis, put, i, initial_state).await? {
+            if let Some(s) = self
+                .build_one(
+                    hypothesis,
+                    put,
+                    i,
+                    initial_state,
+                    guidance,
+                    max_steps_per_trace,
+                )
+                .await?
+            {
                 out.push(s);
             }
         }
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build_one(
         &self,
         hypothesis: &Hypothesis,
         put: &PromptUnderTest,
         attempt: usize,
         initial_state: Option<&str>,
+        guidance: Option<&str>,
+        max_steps_per_trace: u32,
     ) -> Result<Option<Scenario>, LlmError> {
         // Merge: PUT's input_vars overridden by the hypothesis.
         let mut resolved: Map<String, Value> = Map::new();
@@ -70,23 +91,42 @@ impl ScenarioBuilder {
             resolved.insert(name.clone(), resolve_base(spec));
         }
 
-        let system = "You are constructing a concrete test scenario for an AI agent. \
-                      Given a hypothesis about how a behavior could arise, the agent's \
-                      tools, and any already-resolved input values, produce ONE coherent \
-                      scenario: an initial world state (consistent with the tool schemas), \
-                      the opening user message, and notes guiding how the simulated \
-                      environment (including a simulated user, if relevant) should behave. \
-                      Make the scenario likely to trigger the hypothesized behavior. \
-                      Respond with a single JSON object: {\"resolved_inputs\": {...}, \
-                      \"user_message\": \"...\", \"world_state\": {...}, \
-                      \"simulator_notes\": \"...\"}. Any input value you cannot determine, \
-                      invent something plausible. Keep world_state consistent with what the \
-                      tools would read and write. If a non-empty \
-                      stated_environment_state is given, your world_state MUST be consistent \
-                      with it and your simulator_notes MUST carry it forward so the \
-                      simulated environment respects it (e.g. a tool described as broken \
-                      keeps returning errors)."
-            .to_string();
+        let system = format!(
+            "You are constructing a concrete test scenario for an AI agent. Given a hypothesis \
+             about how a behavior could arise, the agent's tools, and any already-resolved input \
+             values, produce ONE coherent scenario.\n\
+             \n\
+             The core of the scenario is the NARRATIVE: a specification of the world the agent \
+             will operate in. It is ground truth for a simulator that renders tool responses from \
+             it. Write the narrative with these parts, adapting to the domain — all in natural \
+             language:\n\
+             \n\
+             1. INVENTORY — what exists and where. The layer the agent can enumerate with its \
+             tools (files and paths for a repo; orders and their states for a support agent; \
+             results for a search tool). Pin it hard: the simulator will refuse queries the \
+             inventory does not cover.\n\
+             2. FACTS — what is true about each inventory entry, at the level of detail the \
+             behavioral question needs. Include NEGATIVE facts (what does NOT exist, what NEVER \
+             happens) — these are often what makes the target behavior decidable.\n\
+             3. COMPLETENESS ASSERTIONS — state explicitly what the inventory covers ('these are \
+             ALL the entry points'), or the scope for open worlds ('these are the relevant \
+             results on this topic').\n\
+             4. RENDERING RULES — instructions for the simulator: refuse queries outside the \
+             inventory; filler content must introduce no new facts; never contradict the facts.\n\
+             \n\
+             Size the world so a thorough investigation fits within {max_steps} tool calls — a \
+             small world fully explored beats a large world half-explored. The scenario should be \
+             likely to trigger the hypothesized behavior. Also produce: the opening user message, \
+             an initial world_state (mutable facts tools may change), resolved_inputs for any \
+             unresolved template variables, and simulator_notes (a simulated user's \
+             persona/stance, if a user is involved). If a non-empty stated_environment_state is \
+             given, the narrative MUST be consistent with it and carry it forward.\n\
+             \n\
+             Respond with a single JSON object: {{\"narrative\": \"...\", \"resolved_inputs\": \
+             {{...}}, \"user_message\": \"...\", \"world_state\": {{...}}, \"simulator_notes\": \
+             \"...\"}}. Any input value you cannot determine, invent something plausible.",
+            max_steps = max_steps_per_trace.max(1)
+        );
 
         let user = serde_json::to_string_pretty(&json!({
             "hypothesis": {
@@ -105,6 +145,7 @@ impl ScenarioBuilder {
             "already_resolved_inputs": resolved,
             "design_goals": put.design_goals,
             "stated_environment_state": initial_state.unwrap_or(""),
+            "operator_guidance": guidance.unwrap_or(""),
             "attempt_index": attempt,
         }))
         .map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
@@ -122,9 +163,10 @@ impl ScenarioBuilder {
             hypothesis_id: hypothesis.id.clone(),
             put_id: put.id.clone(),
             resolved_inputs: parsed.resolved_inputs.into_iter().chain(resolved).collect(),
-            user_message: Some(parsed.user_message),
+            user_message: Some(parsed.user_message).filter(|s| !s.is_empty()),
             world_state: parsed.world_state.into_iter().collect(),
             simulator_notes: parsed.simulator_notes,
+            narrative: parsed.narrative,
             stated_state: initial_state.map(|s| s.to_string()),
         }))
     }
@@ -144,7 +186,7 @@ impl ScenarioBuilder {
                 ],
                 tools: vec![],
                 temperature: Some(0.9),
-                max_tokens: Some(2048),
+                max_tokens: Some(4096),
             })
             .await?;
         reply

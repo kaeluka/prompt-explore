@@ -54,6 +54,11 @@ pub struct InvestigateOutcome {
 pub struct Attempt {
     pub scenario: Scenario,
     pub trace: crate::model::simulation::Trace,
+    /// Whether the judge matched this trace. Denormalised from the
+    /// trace's verdict for convenience; only populated by the
+    /// explicit-scenarios path.
+    #[allow(dead_code)]
+    pub matched: bool,
 }
 
 impl Investigator {
@@ -74,7 +79,7 @@ impl Investigator {
 
         // 1. Hypothesize.
         let hypotheses = match hypothesizer
-            .hypothesize(&investigation.question, put, self.max_hypotheses)
+            .hypothesize(&investigation.question, put, self.max_hypotheses, None)
             .await
         {
             Ok(h) => h,
@@ -99,6 +104,8 @@ impl Investigator {
                     put,
                     want,
                     investigation.initial_state.as_deref(),
+                    None,
+                    investigation.budget.max_steps_per_trace,
                 )
                 .await
             {
@@ -114,40 +121,7 @@ impl Investigator {
             let mut tasks: JoinSet<Option<(Scenario, crate::model::simulation::Trace, bool)>> =
                 JoinSet::new();
             for scenario in scenarios {
-                let put_role = self.runner_put.clone();
-                let sim_role = self.runner_sim.clone();
-                let judge_role = self.judge.clone();
-                let predicate = predicate.clone();
-                let budget = investigation.budget.clone();
-                let put_template = put.template.clone();
-                let put_tools = put.tools.clone();
-                tasks.spawn(async move {
-                    let runner = Runner::new(
-                        put_role.client,
-                        &put_role.model,
-                        sim_role.client,
-                        &sim_role.model,
-                    );
-                    let judge = Judge::new(judge_role.client, &judge_role.model);
-
-                    // A lightweight PUT view for the runner.
-                    let put_view = crate::model::input::PromptUnderTest {
-                        id: String::new(),
-                        template: put_template,
-                        input_vars: Default::default(),
-                        tools: put_tools,
-                        design_goals: String::new(),
-                    };
-                    let trace = runner.run(&put_view, &scenario, &budget).await.ok()?;
-                    let v = judge
-                        .evaluate(&trace, &predicate, Some(&scenario))
-                        .await
-                        .ok()?;
-                    let matched = v.matched;
-                    let mut t = trace;
-                    t.verdict = Some(v);
-                    Some((scenario, t, matched))
-                });
+                self.spawn_run(&mut tasks, &predicate, &investigation.budget, put, scenario);
             }
 
             while let Some(res) = tasks.join_next().await {
@@ -156,6 +130,7 @@ impl Investigator {
                     attempts.push(Attempt {
                         scenario,
                         trace: trace.clone(),
+                        matched,
                     });
                     if matched {
                         let witness = Witness {
@@ -218,6 +193,145 @@ impl Investigator {
             scenarios: all_scenarios,
             attempts,
         }
+    }
+
+    /// Run exactly the given scenarios against the PUT (no hypothesis/
+    /// scenario generation). All provided scenarios are run — an explicit
+    /// list is a contract; the search stops early only in `investigate`.
+    pub async fn investigate_scenarios(
+        &self,
+        investigation: &Investigation,
+        put: &PromptUnderTest,
+        scenarios: &[Scenario],
+    ) -> InvestigateOutcome {
+        let predicate = Predicate {
+            criterion: investigation.question.clone(),
+            success_mode: SuccessMode::Witness,
+        };
+
+        let mut tasks: JoinSet<Option<(Scenario, crate::model::simulation::Trace, bool)>> =
+            JoinSet::new();
+        for scenario in scenarios {
+            self.spawn_run(
+                &mut tasks,
+                &predicate,
+                &investigation.budget,
+                put,
+                scenario.clone(),
+            );
+        }
+
+        let mut attempts = Vec::new();
+        while let Some(res) = tasks.join_next().await {
+            if let Ok(Some((scenario, trace, matched))) = res {
+                attempts.push(Attempt {
+                    scenario,
+                    trace: trace.clone(),
+                    matched,
+                });
+            }
+        }
+
+        let strategies_tried = scenarios
+            .iter()
+            .map(|s| format!("caller-provided scenario '{}'", s.id))
+            .collect::<Vec<_>>();
+
+        // Existential mode: the first matched attempt is the witness.
+        if let Some(att) = attempts.iter().find(|a| a.matched) {
+            let trace = &att.trace;
+            let witness = Witness {
+                attribution: Attribution {
+                    instruction_spans: vec![],
+                    evidence: format!("caller-provided scenario '{}'", att.scenario.id),
+                },
+                traces: vec![trace.clone()],
+            };
+            let proposals =
+                ProposalGenerator::new(self.proposer.client.clone(), &self.proposer.model)
+                    .propose(
+                        put,
+                        &witness.attribution,
+                        &crate::judge::render_transcript(trace),
+                        attempts.last().map(|a| &a.scenario),
+                    )
+                    .await
+                    .unwrap_or_default();
+
+            InvestigateOutcome {
+                result: RunResult {
+                    status: RunStatus::WitnessFound,
+                    scenarios_tried: scenarios.len() as u32,
+                    strategies_tried,
+                    witness: Some(witness),
+                    incidental_findings: vec![],
+                    proposals,
+                    final_state: Some(trace.final_world_state.clone()),
+                },
+                scenarios: scenarios.to_vec(),
+                attempts,
+            }
+        } else {
+            InvestigateOutcome {
+                result: RunResult {
+                    status: RunStatus::NoWitnessWithinBudget,
+                    scenarios_tried: scenarios.len() as u32,
+                    strategies_tried,
+                    witness: None,
+                    incidental_findings: vec![],
+                    proposals: vec![],
+                    final_state: attempts.last().map(|a| a.trace.final_world_state.clone()),
+                },
+                scenarios: scenarios.to_vec(),
+                attempts,
+            }
+        }
+    }
+
+    /// Spawn one run+judge task for a scenario. Shared by both entry
+    /// points so the trace machinery stays identical.
+    fn spawn_run(
+        &self,
+        tasks: &mut JoinSet<Option<(Scenario, crate::model::simulation::Trace, bool)>>,
+        predicate: &Predicate,
+        budget: &crate::model::Budget,
+        put: &PromptUnderTest,
+        scenario: Scenario,
+    ) {
+        let put_role = self.runner_put.clone();
+        let sim_role = self.runner_sim.clone();
+        let judge_role = self.judge.clone();
+        let predicate = predicate.clone();
+        let budget = budget.clone();
+        let put_template = put.template.clone();
+        let put_tools = put.tools.clone();
+        tasks.spawn(async move {
+            let runner = Runner::new(
+                put_role.client,
+                &put_role.model,
+                sim_role.client,
+                &sim_role.model,
+            );
+            let judge = Judge::new(judge_role.client, &judge_role.model);
+
+            // A lightweight PUT view for the runner.
+            let put_view = crate::model::input::PromptUnderTest {
+                id: String::new(),
+                template: put_template,
+                input_vars: Default::default(),
+                tools: put_tools,
+                design_goals: String::new(),
+            };
+            let trace = runner.run(&put_view, &scenario, &budget).await.ok()?;
+            let v = judge
+                .evaluate(&trace, &predicate, Some(&scenario))
+                .await
+                .ok()?;
+            let matched = v.matched;
+            let mut t = trace;
+            t.verdict = Some(v);
+            Some((scenario, t, matched))
+        });
     }
 
     fn fail(&self, msg: String) -> InvestigateOutcome {

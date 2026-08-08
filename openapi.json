@@ -124,6 +124,45 @@
           }
         }
       }
+    },
+    "/api/scenarios": {
+      "post": {
+        "tags": [],
+        "summary": "Generate scenarios for review WITHOUT running them. Returns the\nhypotheses and full scenarios (narratives included) so the caller\ncan inspect, edit, and curate before running a focused investigation\nwith POST /api/investigations { scenarios: [...] }.",
+        "operationId": "generate_scenarios",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateScenariosRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Generated hypotheses + scenarios for review",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateScenariosResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generation failed",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -176,7 +215,8 @@
           "verdict_rationale",
           "steps",
           "final_world_state",
-          "tool_calls"
+          "tool_calls",
+          "narrative"
         ],
         "properties": {
           "final_world_state": {
@@ -192,6 +232,10 @@
           },
           "matched": {
             "type": "boolean"
+          },
+          "narrative": {
+            "type": "string",
+            "description": "The scenario's narrative (world spec), so the consumer can\njudge simulation quality alongside the trace."
           },
           "steps": {
             "type": "array",
@@ -327,6 +371,111 @@
           }
         ]
       },
+      "GenerateScenariosRequest": {
+        "type": "object",
+        "required": [
+          "put",
+          "question",
+          "size"
+        ],
+        "properties": {
+          "guidance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional natural-language guidance (diversity requests, focus\nareas, \"differ from these\" paste-ins, hypotheses to try)."
+          },
+          "max_steps_per_trace": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Cap the world size against this step budget (default: 10).",
+            "minimum": 0
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model (default: server default `glm-5.2`)."
+          },
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest"
+          },
+          "question": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many scenarios to generate.",
+            "minimum": 0
+          }
+        }
+      },
+      "GenerateScenariosResponse": {
+        "type": "object",
+        "required": [
+          "hypotheses",
+          "scenarios"
+        ],
+        "properties": {
+          "hypotheses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Hypothesis"
+            }
+          },
+          "scenarios": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Scenario"
+            }
+          }
+        }
+      },
+      "Hypothesis": {
+        "type": "object",
+        "required": [
+          "id",
+          "claim",
+          "target_instructions",
+          "input_overrides",
+          "scenario_strategy"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_overrides": {
+            "type": "object",
+            "description": "Per-var overrides, e.g. sharpen an NlDescription adversarially.\nMay replace a Constant with a description and vice versa.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VarSpec"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "scenario_strategy": {
+            "type": "string",
+            "description": "Guidance for the scenario generator."
+          },
+          "target_instructions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spans of the prompt template implicated by this hypothesis."
+          }
+        }
+      },
       "InvestigateRequest": {
         "type": "object",
         "required": [
@@ -346,6 +495,16 @@
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
+          },
+          "scenarios": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Scenario"
+            },
+            "description": "Explicit scenarios to run, skipping hypothesis + scenario\ngeneration. When present, ALL of them are run against the PUT\n(an explicit list is a contract). Use POST /api/scenarios to\nbuild these for review first."
           }
         }
       },
@@ -600,6 +759,65 @@
           "no_witness_within_budget",
           "error"
         ]
+      },
+      "Scenario": {
+        "type": "object",
+        "description": "Everything needed to (stochastically) reproduce a trajectory.\nEverything else in a trace is derived.",
+        "required": [
+          "id",
+          "hypothesis_id",
+          "put_id",
+          "resolved_inputs",
+          "world_state",
+          "simulator_notes"
+        ],
+        "properties": {
+          "hypothesis_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "narrative": {
+            "type": "string",
+            "description": "The narrative: the world specification (inventory, facts incl.\nnegative facts, completeness assertions, rendering rules).\nGround truth for the simulator, which renders tool responses\nfrom it; also shown to the judge and in the UI, so the consumer\ncan judge simulation quality. Empty for legacy scenarios."
+          },
+          "put_id": {
+            "type": "string"
+          },
+          "resolved_inputs": {
+            "type": "object",
+            "description": "Concrete template vars (constants copied, descriptions resolved).",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "simulator_notes": {
+            "type": "string",
+            "description": "Persona/stance guidance for the simulator LLM."
+          },
+          "stated_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user-stated environment state, verbatim from the\ninvestigation's `initial_state`. Kept separate from\n`simulator_notes` so judge, simulator, and UI see the user's\nwords, not the scenario builder's paraphrase."
+          },
+          "user_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "world_state": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
       },
       "SideEffect": {
         "type": "string",

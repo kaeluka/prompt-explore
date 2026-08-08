@@ -220,7 +220,10 @@
   </div>
 
   <button id="go">Investigate</button>
+  <button class="secondary" id="gen_scenarios">Generate scenarios for review…</button>
   <div id="status"><div class="spinner"></div><span id="status-text"></span></div>
+
+  <div id="scenario_review"></div>
 
   <div id="out"></div>
 </div>
@@ -391,6 +394,7 @@ function renderResult(data) {
           <p class="meta" style="margin:0.3rem 0">user: ${esc(a.user_message ?? '(none)')}</p>
           <p class="meta" style="margin:0.3rem 0">judge: ${esc(a.verdict_rationale)}</p>
           <details><summary>transcript</summary><div style="margin-top:0.5rem">${renderSteps(a.steps, a.user_message)}</div></details>
+          ${a.narrative && a.narrative.trim() ? `<details class="statenote"><summary>scenario narrative (world spec)</summary><div class="toolresp" style="margin-top:0.4rem;white-space:pre-wrap">${esc(a.narrative)}</div></details>` : ''}
           ${a.final_world_state && Object.keys(a.final_world_state).length ? `<details class="statenote"><summary>final world state</summary><div class="toolresp" style="margin-top:0.4rem">${esc(pretty(a.final_world_state))}</div></details>` : ''}
         </div>`).join("") + `</div>`;
   }
@@ -470,6 +474,97 @@ document.getElementById("out").addEventListener("click", async (e) => {
   }
 });
 
+// --- Scenario generation + review (two-stage flow) ---
+let reviewedScenarios = null; // null = one-shot mode; array = run these
+const HYP_BY_ID = {};
+function buildInvestigation() {
+  const maxTokens = document.getElementById("b_tokens").value.trim();
+  return {
+    question: document.getElementById("question").value,
+    budget: {
+      max_scenarios: parseInt(document.getElementById("b_scenarios").value) || 8,
+      max_steps_per_trace: parseInt(document.getElementById("b_steps").value) || 6,
+      max_tokens: maxTokens ? parseInt(maxTokens) : null
+    },
+    initial_state: document.getElementById("initial_state").value.trim() || null
+  };
+}
+function renderScenarioReview(data) {
+  reviewedScenarios = data.scenarios;
+  data.hypotheses.forEach(h => { HYP_BY_ID[h.id] = h; });
+  const pane = document.getElementById("scenario_review");
+  pane.innerHTML = '<h2 class="section-title">Scenarios for review</h2>' +
+    '<p class="meta">Each card is the full scenario JSON — edit the narrative (world spec) before running. ' +
+    'The hypothesis it tests is shown above it.</p>' +
+    data.scenarios.map((s, i) => {
+      const h = HYP_BY_ID[s.hypothesis_id];
+      return `<div class="card" style="margin-top:0.8rem">
+        <p class="meta"><b>${esc(s.hypothesis_id)}</b>: ${esc(h ? h.claim : "(no hypothesis)")}</p>
+        <textarea class="scenario-json" data-i="${i}" rows="16" spellcheck="false" style="width:100%;font-family:monospace;font-size:0.8rem">${esc(JSON.stringify(s, null, 2))}</textarea>
+      </div>`;
+    }).join("") +
+    `<div style="display:flex;gap:0.5rem;margin-top:0.8rem">
+      <button id="run_scenarios">Run these scenarios</button>
+      <button class="secondary" id="discard_scenarios">Discard (back to one-shot)</button>
+    </div>`;
+  document.getElementById("run_scenarios").onclick = runReviewed;
+  document.getElementById("discard_scenarios").onclick = () => {
+    reviewedScenarios = null;
+    document.getElementById("scenario_review").innerHTML = "";
+  };
+}
+document.getElementById("gen_scenarios").onclick = async () => {
+  const btn = document.getElementById("gen_scenarios");
+  const status = document.getElementById("status");
+  const statusText = document.getElementById("status-text");
+  let put;
+  try { put = buildPut(); }
+  catch (e) { statusText.textContent = e.message; status.classList.add("on"); return; }
+  const size = prompt("How many scenarios to generate?", "3");
+  if (!size) return;
+  const guidance = prompt("Optional guidance (diversity / focus / differ-from). Leave blank for none.", "");
+  btn.disabled = true; status.classList.add("on");
+  statusText.textContent = "Generating scenarios…";
+  try {
+    const resp = await fetch("/api/scenarios", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ put, question: document.getElementById("question").value,
+        size: parseInt(size) || 3, guidance: guidance || null })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    renderScenarioReview(await resp.json());
+    statusText.textContent = ""; status.classList.remove("on");
+  } catch (e) {
+    statusText.textContent = "Error: " + e.message;
+  } finally { btn.disabled = false; }
+};
+async function runReviewed() {
+  const btn = document.getElementById("run_scenarios");
+  const status = document.getElementById("status");
+  const statusText = document.getElementById("status-text");
+  document.getElementById("out").innerHTML = "";
+  // Parse the edited textareas back into scenario objects.
+  const scenarios = [];
+  for (const ta of document.querySelectorAll(".scenario-json")) {
+    try { scenarios.push(JSON.parse(ta.value)); }
+    catch (e) { statusText.textContent = `scenario JSON ${+ta.dataset.i + 1} invalid: ${e.message}`; status.classList.add("on"); return; }
+  }
+  btn.disabled = true; status.classList.add("on");
+  statusText.textContent = "Starting…";
+  try {
+    const resp = await fetch("/api/investigations", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ investigation: buildInvestigation(), put: buildPut(), scenarios })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const { id } = await resp.json();
+    localStorage.setItem("pe.currentJob", id);
+    await poll(id, Date.now());
+  } catch (e) {
+    statusText.textContent = "Error: " + e.message;
+  } finally { btn.disabled = false; }
+}
+
 document.getElementById("go").onclick = async () => {
   const btn = document.getElementById("go");
   const out = document.getElementById("out");
@@ -480,16 +575,7 @@ document.getElementById("go").onclick = async () => {
   try { put = buildPut(); }
   catch (e) { statusText.textContent = e.message; status.classList.add("on"); return; }
 
-  const maxTokens = document.getElementById("b_tokens").value.trim();
-  const investigation = {
-    question: document.getElementById("question").value,
-    budget: {
-      max_scenarios: parseInt(document.getElementById("b_scenarios").value) || 8,
-      max_steps_per_trace: parseInt(document.getElementById("b_steps").value) || 6,
-      max_tokens: maxTokens ? parseInt(maxTokens) : null
-    },
-    initial_state: document.getElementById("initial_state").value.trim() || null
-  };
+  const investigation = buildInvestigation();
 
   btn.disabled = true;
   status.classList.add("on");

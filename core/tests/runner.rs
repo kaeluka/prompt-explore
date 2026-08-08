@@ -39,6 +39,7 @@ fn scenario() -> Scenario {
         user_message: Some("cancel my order A-1234!".into()),
         world_state: HashMap::from([("orders".into(), json!({"A-1234": {"status": "shipped"}}))]),
         simulator_notes: "customer is angry".into(),
+        narrative: "".into(),
         stated_state: None,
     }
 }

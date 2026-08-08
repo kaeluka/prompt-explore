@@ -18,6 +18,13 @@ pub struct Scenario {
     pub world_state: HashMap<String, Value>,
     /// Persona/stance guidance for the simulator LLM.
     pub simulator_notes: String,
+    /// The narrative: the world specification (inventory, facts incl.
+    /// negative facts, completeness assertions, rendering rules).
+    /// Ground truth for the simulator, which renders tool responses
+    /// from it; also shown to the judge and in the UI, so the consumer
+    /// can judge simulation quality. Empty for legacy scenarios.
+    #[serde(default)]
+    pub narrative: String,
     /// The user-stated environment state, verbatim from the
     /// investigation's `initial_state`. Kept separate from
     /// `simulator_notes` so judge, simulator, and UI see the user's

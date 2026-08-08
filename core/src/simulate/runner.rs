@@ -150,20 +150,7 @@ impl Runner {
             Some(tool) => match validate_args(tool, &tc.arguments) {
                 Err(err) => format!("error: invalid arguments: {err}").into(),
                 Ok(args) => {
-                    // The user-stated environment state rides the same
-                    // notes channel the scenario already uses — verbatim,
-                    // not compiled or enforced. The simulator is asked to
-                    // respect it; when it doesn't, that's visible in the
-                    // trace and the judge (which also sees the state) can
-                    // catch the inconsistency.
-                    let notes = match &scenario.stated_state {
-                        Some(s) => format!(
-                            "{}\n\nUSER-SPECIFIED ENVIRONMENT STATE (the operator requires \
-                             this of the environment — respect it exactly): {}",
-                            scenario.simulator_notes, s
-                        ),
-                        None => scenario.simulator_notes.clone(),
-                    };
+                    let notes = build_simulator_notes(scenario);
                     let sim = self
                         .simulator
                         .respond(
@@ -199,6 +186,35 @@ impl Runner {
         };
         Ok((outcome, state_after))
     }
+}
+
+/// Assemble the simulator's context: persona/stance notes, the world
+/// specification (narrative — ground truth the simulator renders from,
+/// refusing queries outside its inventory), and the user-stated
+/// environment state. All verbatim; nothing compiled or enforced.
+fn build_simulator_notes(scenario: &Scenario) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !scenario.simulator_notes.trim().is_empty() {
+        parts.push(scenario.simulator_notes.clone());
+    }
+    if !scenario.narrative.trim().is_empty() {
+        parts.push(format!(
+            "WORLD SPECIFICATION (ground truth for this environment — \
+             render responses from it; refuse queries its inventory does \
+             not cover; never contradict its facts or introduce new ones \
+             in filler): {}",
+            scenario.narrative
+        ));
+    }
+    if let Some(s) = &scenario.stated_state {
+        if !s.trim().is_empty() {
+            parts.push(format!(
+                "USER-SPECIFIED ENVIRONMENT STATE (the operator requires \
+                 this of the environment — respect it exactly): {s}"
+            ));
+        }
+    }
+    parts.join("\n\n")
 }
 
 fn initial_messages(put: &PromptUnderTest, scenario: &Scenario) -> Vec<Message> {

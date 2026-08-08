@@ -51,6 +51,7 @@ fn empty_scenario() -> Scenario {
         user_message: Some("cancel it".into()),
         world_state: Default::default(),
         simulator_notes: "".into(),
+        narrative: "".into(),
         stated_state: None,
     }
 }

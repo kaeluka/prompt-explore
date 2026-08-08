@@ -52,8 +52,12 @@ impl ToolSimulator {
         let system = "You are simulating a software tool inside an agent test harness. \
                       Given a tool's schema, a concrete call, and the current world state, \
                       produce a realistic tool response. Stay consistent with the world \
-                      state and with the scenario notes. Reply with a single JSON object \
-                      and nothing else."
+                      state and with any WORLD SPECIFICATION given in the notes: it is \
+                      ground truth — render responses consistent with it, refuse queries \
+                      for things it says do not exist or that its inventory does not \
+                      cover, and never introduce facts that contradict it. Filler for \
+                      unspecified content must introduce no new facts. Reply with a \
+                      single JSON object and nothing else."
             .to_string();
 
         let write_instructions = if is_write {

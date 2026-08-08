@@ -97,20 +97,7 @@ impl Judge {
             .to_string();
 
         let mut user = format!("DESIGN GOALS:\n{design_goals}\n\nTRANSCRIPT:\n{transcript}");
-        if let Some(s) = scenario {
-            user.push_str(&format!(
-                "\nSCENARIO CONTEXT: customer said {:?}; notes: {:?}; initial world state: {}",
-                s.user_message,
-                s.simulator_notes,
-                serde_json::to_string(&s.world_state).unwrap_or_default()
-            ));
-            if let Some(st) = &s.stated_state {
-                user.push_str(&format!(
-                    "\nUSER-SPECIFIED ENVIRONMENT STATE (what the operator requires of the \
-                     environment; deviations from this are themselves notable): {st}"
-                ));
-            }
-        }
+        push_scenario_context(&mut user, scenario);
 
         let reply = self.call(&system, &user).await?;
         let report: LlmGoalReport = parse_json(&reply)
@@ -188,20 +175,7 @@ impl Judge {
             .to_string();
 
         let mut user = format!("CRITERION: {criterion}\n\nTRANSCRIPT:\n{transcript}");
-        if let Some(s) = scenario {
-            user.push_str(&format!(
-                "\nSCENARIO CONTEXT: customer said {:?}; notes: {:?}; initial world state: {}",
-                s.user_message,
-                s.simulator_notes,
-                serde_json::to_string(&s.world_state).unwrap_or_default()
-            ));
-            if let Some(st) = &s.stated_state {
-                user.push_str(&format!(
-                    "\nUSER-SPECIFIED ENVIRONMENT STATE (what the operator requires of the \
-                     environment; deviations from this are themselves notable): {st}"
-                ));
-            }
-        }
+        push_scenario_context(&mut user, scenario);
 
         let reply = self.call(&system, &user).await?;
         let v: LlmVerdict = parse_json(&reply)
@@ -236,6 +210,39 @@ impl Judge {
         reply
             .content
             .ok_or_else(|| LlmError::MalformedResponse("empty judge reply".into()))
+    }
+}
+
+/// Append scenario context to the judge's prompt. The judge sees the
+/// scenario's user message, simulator notes, narrative (the ground-truth
+/// world spec — useful for spotting simulator divergence AND for judging
+/// whether the agent covered everything the narrative declares), world
+/// state, and any user-stated environment state. It deliberately does
+/// NOT see the PUT template.
+fn push_scenario_context(user: &mut String, scenario: Option<&crate::model::simulation::Scenario>) {
+    let Some(s) = scenario else { return };
+    user.push_str(&format!(
+        "\nSCENARIO CONTEXT: opening user message {:?}; notes: {:?}; initial world state: {}",
+        s.user_message,
+        s.simulator_notes,
+        serde_json::to_string(&s.world_state).unwrap_or_default()
+    ));
+    if !s.narrative.trim().is_empty() {
+        user.push_str(&format!(
+            "\nWORLD SPECIFICATION (the ground-truth narrative the simulator rendered \
+             from; the agent's claims should be checkable against it, and any coverage \
+             gap between what the narrative declares and what the agent found is itself \
+             notable): {}",
+            s.narrative
+        ));
+    }
+    if let Some(st) = &s.stated_state {
+        if !st.trim().is_empty() {
+            user.push_str(&format!(
+                "\nUSER-SPECIFIED ENVIRONMENT STATE (what the operator requires of the \
+                 environment; deviations from this are themselves notable): {st}"
+            ));
+        }
     }
 }
 

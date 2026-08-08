@@ -42,6 +42,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `model` | string? | no | Model for every LLM role (hypothesizer, builder, runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
+| `scenarios` | array? | no | Explicit scenarios to run, skipping hypothesis + scenario generation. When present, ALL of them are run against the PUT (an explicit list is a contract). Use POST /api/scenarios to build these for review first. |
 
 
 | Status | Response |
@@ -60,6 +61,27 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 |---|---|
 | `200` | Job status (and result, when done): [`JobView`](#jobview) |
 | `404` | Unknown job id |
+
+### `POST /api/scenarios`
+
+Generate scenarios for review WITHOUT running them. Returns the hypotheses and full scenarios (narratives included) so the caller can inspect, edit, and curate before running a focused investigation with POST /api/investigations { scenarios: [...] }.
+
+Body: [`GenerateScenariosRequest`](#generatescenariosrequest)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `guidance` | string? | no | Optional natural-language guidance (diversity requests, focus areas, "differ from these" paste-ins, hypotheses to try). |
+| `max_steps_per_trace` | integer? | no | Cap the world size against this step budget (default: 10). |
+| `model` | string? | no | Model (default: server default `glm-5.2`). |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
+| `question` | string | yes |  |
+| `size` | integer | yes | How many scenarios to generate. |
+
+
+| Status | Response |
+|---|---|
+| `200` | Generated hypotheses + scenarios for review: [`GenerateScenariosResponse`](#generatescenariosresponse) |
+| `500` | Generation failed |
 
 ## Schemas
 
@@ -85,6 +107,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `final_world_state` | map&lt;string, any&gt; | yes | World state at the end of the trace (after all applied patches). |
 | `hypothesis_id` | string | yes |  |
 | `matched` | boolean | yes |  |
+| `narrative` | string | yes | The scenario's narrative (world spec), so the consumer can judge simulation quality alongside the trace. |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
 | `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
 | `user_message` | string? | no |  |
@@ -129,6 +152,34 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `tag` | `delete` | yes |  |
 | `value` | string | yes |  |
 
+### `GenerateScenariosRequest`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `guidance` | string? | no | Optional natural-language guidance (diversity requests, focus areas, "differ from these" paste-ins, hypotheses to try). |
+| `max_steps_per_trace` | integer? | no | Cap the world size against this step budget (default: 10). |
+| `model` | string? | no | Model (default: server default `glm-5.2`). |
+| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
+| `question` | string | yes |  |
+| `size` | integer | yes | How many scenarios to generate. |
+
+### `GenerateScenariosResponse`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `hypotheses` | [`Hypothesis`](#hypothesis)[] | yes |  |
+| `scenarios` | [`Scenario`](#scenario)[] | yes |  |
+
+### `Hypothesis`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `claim` | string | yes |  |
+| `id` | string | yes |  |
+| `input_overrides` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes | Per-var overrides, e.g. sharpen an NlDescription adversarially. May replace a Constant with a description and vice versa. |
+| `scenario_strategy` | string | yes | Guidance for the scenario generator. |
+| `target_instructions` | string[] | yes | Spans of the prompt template implicated by this hypothesis. |
+
 ### `InvestigateRequest`
 
 | Field | Type | Required | Description |
@@ -136,6 +187,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `model` | string? | no | Model for every LLM role (hypothesizer, builder, runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
+| `scenarios` | array? | no | Explicit scenarios to run, skipping hypothesis + scenario generation. When present, ALL of them are run against the PUT (an explicit list is a contract). Use POST /api/scenarios to build these for review first. |
 
 ### `InvestigateResponse`
 
@@ -213,6 +265,22 @@ Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
 ### `RunStatus`
 
 Values: `witness_found`, `no_witness_within_budget`, `error`
+
+### `Scenario`
+
+Everything needed to (stochastically) reproduce a trajectory. Everything else in a trace is derived.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `hypothesis_id` | string | yes |  |
+| `id` | string | yes |  |
+| `narrative` | string | no | The narrative: the world specification (inventory, facts incl. negative facts, completeness assertions, rendering rules). Ground truth for the simulator, which renders tool responses from it; also shown to the judge and in the UI, so the consumer can judge simulation quality. Empty for legacy scenarios. |
+| `put_id` | string | yes |  |
+| `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete template vars (constants copied, descriptions resolved). |
+| `simulator_notes` | string | yes | Persona/stance guidance for the simulator LLM. |
+| `stated_state` | string? | no | The user-stated environment state, verbatim from the investigation's `initial_state`. Kept separate from `simulator_notes` so judge, simulator, and UI see the user's words, not the scenario builder's paraphrase. |
+| `user_message` | string? | no |  |
+| `world_state` | map&lt;string, any&gt; | yes |  |
 
 ### `SideEffect`
 
