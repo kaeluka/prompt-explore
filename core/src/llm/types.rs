@@ -60,5 +60,10 @@ pub struct ChatResponse {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
+    /// Prompt tokens served from the provider's cache (a subset of
+    /// `input_tokens`, usually billed at a lower rate). Zero when the
+    /// provider doesn't report it.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     pub output_tokens: u64,
 }

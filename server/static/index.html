@@ -283,6 +283,13 @@ function buildPut() {
   };
 }
 
+function fmt(u) {
+  if (!u) return "";
+  const cached = u.cache_read_tokens
+    ? ` <span class="meta">(${u.cache_read_tokens.toLocaleString()} cached)</span>`
+    : "";
+  return `${u.input_tokens.toLocaleString()} in${cached} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm calls · ${u.tool_calls} tool calls`;
+}
 function pretty(v) {
   if (v == null) return "";
   if (typeof v === "string") {
@@ -338,6 +345,7 @@ function renderResult(data) {
   let html = `<div class="card">
     <h2 class="section-title"><span class="badge ${esc(r.status)}">${esc(r.status)}</span></h2>
     <p class="meta">${r.scenarios_tried} scenario(s) tried · ${data.scenarios_generated} generated</p>
+    <p class="meta"><b>${fmt(data.usage)}</b></p>
     <h2 class="section-title" style="margin-top:1rem">Strategies tried</h2>
     <ul class="strategies">` +
     r.strategies_tried.map(s => `<li>${esc(s)}</li>`).join("") + `</ul></div>`;

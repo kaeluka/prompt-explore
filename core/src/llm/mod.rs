@@ -5,9 +5,11 @@
 pub mod client;
 pub mod mock;
 pub mod openai;
+pub mod track;
 pub mod types;
 
 pub use client::{LlmClient, LlmError};
 pub use mock::MockLlmClient;
 pub use openai::OpenAiCompatibleClient;
+pub use track::{UsageTotals, UsageTracker};
 pub use types::*;

@@ -88,6 +88,10 @@ impl LlmClient for OpenAiCompatibleClient {
             tool_calls,
             usage: response.usage.map(|u| Usage {
                 input_tokens: u.prompt_tokens as u64,
+                cache_read_tokens: u
+                    .prompt_tokens_details
+                    .and_then(|d| d.cached_tokens)
+                    .unwrap_or(0) as u64,
                 output_tokens: u.completion_tokens as u64,
             }),
         })

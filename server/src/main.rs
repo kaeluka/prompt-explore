@@ -24,7 +24,7 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
-use prompt_explore::llm::OpenAiCompatibleClient;
+use prompt_explore::llm::{OpenAiCompatibleClient, UsageTotals, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
 use prompt_explore::model::simulation::TraceStep;
@@ -55,6 +55,11 @@ enum JobStatus {
 struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
+    /// Model for every LLM role (hypothesizer, builder, runner PUT +
+    /// simulator, judge, proposer). Omit to use the server default
+    /// (`glm-5.2`).
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -80,6 +85,8 @@ struct InvestigateResponse {
     witness_user_message: Option<String>,
     /// Every completed run — the evidence behind a negative result.
     attempts: Vec<AttemptView>,
+    /// Cumulative token usage and call counts across the whole run.
+    usage: UsageTotals,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
@@ -93,6 +100,8 @@ struct AttemptView {
     steps: Vec<TraceStep>,
     /// World state at the end of the trace (after all applied patches).
     final_world_state: HashMap<String, Value>,
+    /// Number of tool calls the simulated PUT made in this trace.
+    tool_calls: usize,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -240,11 +249,13 @@ async fn create_investigation(
 
     let state2 = state.clone();
     let id2 = id.clone();
+    let model = req.model.clone().unwrap_or_else(|| MODEL.into());
     tokio::spawn(async move {
-        let client = state2.client.as_ref().unwrap().clone();
+        let inner = state2.client.as_ref().unwrap().clone();
+        let tracker = Arc::new(UsageTracker::new(inner));
         let role = || LlmRole {
-            client: client.clone(),
-            model: MODEL.into(),
+            client: tracker.clone(),
+            model: model.clone(),
         };
         let investigator = Investigator {
             hypothesizer: role(),
@@ -281,6 +292,12 @@ async fn create_investigation(
                 verdict_confidence: a.trace.verdict.as_ref().and_then(|v| v.confidence),
                 steps: a.trace.steps.clone(),
                 final_world_state: a.trace.final_world_state.clone(),
+                tool_calls: a
+                    .trace
+                    .steps
+                    .iter()
+                    .filter(|s| s.tool_call.is_some())
+                    .count(),
             })
             .collect();
 
@@ -292,6 +309,7 @@ async fn create_investigation(
                 scenarios_generated: outcome.scenarios.len(),
                 witness_user_message,
                 attempts,
+                usage: tracker.totals(),
             });
         }
     });

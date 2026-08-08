@@ -32,6 +32,7 @@ async fn mock_replays_script_and_records_requests() {
             tool_calls: vec![],
             usage: Some(Usage {
                 input_tokens: 10,
+                cache_read_tokens: 0,
                 output_tokens: 5,
             }),
         },

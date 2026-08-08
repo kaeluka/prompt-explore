@@ -40,6 +40,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
+| `model` | string? | no | Model for every LLM role (hypothesizer, builder, runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 
 
@@ -85,6 +86,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `hypothesis_id` | string | yes |  |
 | `matched` | boolean | yes |  |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
+| `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
 | `user_message` | string? | no |  |
 | `verdict_confidence` | number? | no |  |
 | `verdict_rationale` | string | yes |  |
@@ -132,6 +134,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
+| `model` | string? | no | Model for every LLM role (hypothesizer, builder, runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 
 ### `InvestigateResponse`
@@ -141,6 +144,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `attempts` | [`AttemptView`](#attemptview)[] | yes | Every completed run — the evidence behind a negative result. |
 | `result` | [`RunResult`](#runresult) | yes |  |
 | `scenarios_generated` | integer | yes |  |
+| `usage` | [`UsageTotals`](#usagetotals) | yes | Cumulative token usage and call counts across the whole run. |
 | `witness_user_message` | string? | no | The opening user message of the witness scenario, so the UI can show the full conversation (the trace steps start with the agent's first reply). |
 
 ### `Investigation`
@@ -248,6 +252,18 @@ Values: `read`, `write`
 | `tool_call` | [`ToolCall`](#toolcall)? | no |  |
 | `tool_response` | any | no |  |
 | `world_state_after` | object? | no | Present on write-tool steps. |
+
+### `UsageTotals`
+
+Cumulative usage across every call routed through a `UsageTracker`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cache_read_tokens` | integer | yes |  |
+| `input_tokens` | integer | yes |  |
+| `llm_calls` | integer | yes | Completions requested across all roles (hypothesizer, builder, runner PUT + simulator, judge, proposer). |
+| `output_tokens` | integer | yes |  |
+| `tool_calls` | integer | yes | Tool calls the model requested. Only the simulated PUT has tools, so this counts tool calls in simulated traces. |
 
 ### `VarSpec`
 

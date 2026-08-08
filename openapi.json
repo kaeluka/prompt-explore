@@ -175,7 +175,8 @@
           "matched",
           "verdict_rationale",
           "steps",
-          "final_world_state"
+          "final_world_state",
+          "tool_calls"
         ],
         "properties": {
           "final_world_state": {
@@ -198,6 +199,11 @@
               "$ref": "#/components/schemas/TraceStep"
             },
             "description": "Structured steps, rendered as HTML by the UI."
+          },
+          "tool_calls": {
+            "type": "integer",
+            "description": "Number of tool calls the simulated PUT made in this trace.",
+            "minimum": 0
           },
           "user_message": {
             "type": [
@@ -331,6 +337,13 @@
           "investigation": {
             "$ref": "#/components/schemas/Investigation"
           },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model for every LLM role (hypothesizer, builder, runner PUT +\nsimulator, judge, proposer). Omit to use the server default\n(`glm-5.2`)."
+          },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
           }
@@ -341,7 +354,8 @@
         "required": [
           "result",
           "scenarios_generated",
-          "attempts"
+          "attempts",
+          "usage"
         ],
         "properties": {
           "attempts": {
@@ -357,6 +371,10 @@
           "scenarios_generated": {
             "type": "integer",
             "minimum": 0
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageTotals",
+            "description": "Cumulative token usage and call counts across the whole run."
           },
           "witness_user_message": {
             "type": [
@@ -700,6 +718,46 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "UsageTotals": {
+        "type": "object",
+        "description": "Cumulative usage across every call routed through a `UsageTracker`.",
+        "required": [
+          "input_tokens",
+          "cache_read_tokens",
+          "output_tokens",
+          "llm_calls",
+          "tool_calls"
+        ],
+        "properties": {
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "llm_calls": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Completions requested across all roles (hypothesizer, builder,\nrunner PUT + simulator, judge, proposer).",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tool_calls": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tool calls the model requested. Only the simulated PUT has\ntools, so this counts tool calls in simulated traces.",
+            "minimum": 0
           }
         }
       },
