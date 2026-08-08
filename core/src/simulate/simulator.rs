@@ -85,32 +85,67 @@ impl ToolSimulator {
         }))
         .map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
 
-        let reply = self
-            .client
-            .complete(ChatRequest {
-                model: self.model.clone(),
-                messages: vec![
-                    Message::System { content: system },
-                    Message::User { content: user },
-                ],
-                tools: vec![],
-                temperature: Some(0.7),
-                max_tokens: Some(2048),
-            })
-            .await?;
+        // Reasoning-style models can burn the whole token budget on
+        // hidden reasoning and return empty content, so budget
+        // generously and retry an empty reply once before failing the
+        // scenario.
+        let mut last_err: Option<LlmError> = None;
+        let mut reply_content: Option<String> = None;
+        for _attempt in 0..2 {
+            let reply = self
+                .client
+                .complete(ChatRequest {
+                    model: self.model.clone(),
+                    messages: vec![
+                        Message::System { content: system.clone() },
+                        Message::User { content: user.clone() },
+                    ],
+                    tools: vec![],
+                    temperature: Some(0.7),
+                    max_tokens: Some(8192),
+                })
+                .await;
+            match reply {
+                Ok(r) => match r.content {
+                    Some(c) if !c.trim().is_empty() => {
+                        reply_content = Some(c);
+                        break;
+                    }
+                    _ => {
+                        last_err = Some(LlmError::MalformedResponse(
+                            "empty simulator reply".into(),
+                        ));
+                    }
+                },
+                Err(e) => last_err = Some(e),
+            }
+        }
 
-        let content = reply
-            .content
-            .ok_or_else(|| LlmError::MalformedResponse("empty simulator reply".into()))?;
-        let parsed: SimReply = parse_json(&content).ok_or_else(|| {
-            LlmError::MalformedResponse(format!("simulator reply not JSON: {content}"))
-        })?;
+        let content = reply_content
+            .ok_or_else(|| last_err.unwrap_or_else(|| LlmError::MalformedResponse("empty simulator reply".into())))?;
+        let parsed: SimReply = parse_json(&content)
+            .or_else(|| fallback_sim_reply(&content))
+            .ok_or_else(|| {
+                LlmError::MalformedResponse(format!("simulator reply not JSON: {content}"))
+            })?;
 
         Ok(SimOutcome {
             response: parsed.response,
             state_patch: if is_write { parsed.state_patch } else { None },
         })
     }
+}
+
+/// Weaker models sometimes skip the `{"response": ...}` envelope and return
+/// the bare tool result. That result is semantically complete, so accept it
+/// as the response with no state patch.
+fn fallback_sim_reply(content: &str) -> Option<SimReply> {
+    serde_json::from_str::<Value>(crate::llm::parse::extract_json(content))
+        .ok()
+        .map(|response| SimReply {
+            response,
+            state_patch: None,
+        })
 }
 
 /// Shallow-merge a patch into world state; null values delete keys.
