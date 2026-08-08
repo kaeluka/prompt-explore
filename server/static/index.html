@@ -66,6 +66,7 @@
     <span class="sub">job overview</span>
     <span class="auto">
       <label class="meta"><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
+      <span id="paused-hint" class="meta" style="display:none">⏸ paused — close logs to resume</span>
       <button class="toggle" id="expandall">expand all logs</button>
     </span>
   </header>
@@ -139,16 +140,18 @@ function renderJob(j) {
 }
 
 async function refresh() {
+  const el = document.getElementById('jobs');
+  // Don't rebuild while a log is open: a full innerHTML swap fights the
+  // user's toggles. Pause until all logs are closed.
+  const paused = !!el.querySelector('details[open]');
+  const hint = document.getElementById('paused-hint');
+  if (hint) hint.style.display = paused ? '' : 'none';
+  if (paused) return;
   try {
     const list = await fetch(API()).then(r => r.json());
-    const el = document.getElementById('jobs');
     if (!list.length) { el.innerHTML = '<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>'; return; }
     const views = await Promise.all(list.map(s => fetch(API(s.id)).then(r => r.json())));
-    // Snapshot which logs are open before re-rendering, so auto-refresh
-    // doesn't snap them shut.
-    const openKeys = new Set([...document.querySelectorAll('#jobs details[open][data-key]')].map(d => d.dataset.key));
     el.innerHTML = views.map(renderJob).join("");
-    document.querySelectorAll('#jobs details[data-key]').forEach(d => { if (openKeys.has(d.dataset.key)) d.setAttribute('open',''); });
   } catch (e) { console.error(e); }
 }
 document.getElementById('expandall').onclick = () => {
