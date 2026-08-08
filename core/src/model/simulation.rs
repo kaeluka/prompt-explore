@@ -47,8 +47,7 @@ pub struct Trace {
 pub struct Verdict {
     /// Does this trace satisfy the predicate (∧ design_goals)?
     pub matched: bool,
-    /// The judge's confidence in its own verdict (1.0 for structural
-    /// checks, which are deterministic).
+    /// The judge's confidence in its own verdict (self-reported).
     pub confidence: Option<f32>,
     pub rationale: String,
     /// Where in the trace the match happened.
