@@ -167,18 +167,7 @@ Body: [`GenerateScenariosRequest`](#generatescenariosrequest)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `hypotheses` | [`Hypothesis`](#hypothesis)[] | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes |  |
-
-### `Hypothesis`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `claim` | string | yes |  |
-| `id` | string | yes |  |
-| `input_overrides` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes | Per-var overrides, e.g. sharpen an NlDescription adversarially. May replace a Constant with a description and vice versa. |
-| `scenario_strategy` | string | yes | Guidance for the scenario generator. |
-| `target_instructions` | string[] | yes | Spans of the prompt template implicated by this hypothesis. |
 
 ### `InvestigateRequest`
 

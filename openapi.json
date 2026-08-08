@@ -419,60 +419,14 @@
       "GenerateScenariosResponse": {
         "type": "object",
         "required": [
-          "hypotheses",
           "scenarios"
         ],
         "properties": {
-          "hypotheses": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Hypothesis"
-            }
-          },
           "scenarios": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Scenario"
             }
-          }
-        }
-      },
-      "Hypothesis": {
-        "type": "object",
-        "required": [
-          "id",
-          "claim",
-          "target_instructions",
-          "input_overrides",
-          "scenario_strategy"
-        ],
-        "properties": {
-          "claim": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "input_overrides": {
-            "type": "object",
-            "description": "Per-var overrides, e.g. sharpen an NlDescription adversarially.\nMay replace a Constant with a description and vice versa.",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/VarSpec"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "scenario_strategy": {
-            "type": "string",
-            "description": "Guidance for the scenario generator."
-          },
-          "target_instructions": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Spans of the prompt template implicated by this hypothesis."
           }
         }
       },

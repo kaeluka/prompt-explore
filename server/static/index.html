@@ -476,7 +476,6 @@ document.getElementById("out").addEventListener("click", async (e) => {
 
 // --- Scenario generation + review (two-stage flow) ---
 let reviewedScenarios = null; // null = one-shot mode; array = run these
-const HYP_BY_ID = {};
 function buildInvestigation() {
   const maxTokens = document.getElementById("b_tokens").value.trim();
   return {
@@ -491,15 +490,12 @@ function buildInvestigation() {
 }
 function renderScenarioReview(data) {
   reviewedScenarios = data.scenarios;
-  data.hypotheses.forEach(h => { HYP_BY_ID[h.id] = h; });
   const pane = document.getElementById("scenario_review");
   pane.innerHTML = '<h2 class="section-title">Scenarios for review</h2>' +
-    '<p class="meta">Each card is the full scenario JSON — edit the narrative (world spec) before running. ' +
-    'The hypothesis it tests is shown above it.</p>' +
+    '<p class="meta">Each card is the full scenario JSON — edit the narrative (world spec) before running.</p>' +
     data.scenarios.map((s, i) => {
-      const h = HYP_BY_ID[s.hypothesis_id];
       return `<div class="card" style="margin-top:0.8rem">
-        <p class="meta"><b>${esc(s.hypothesis_id)}</b>: ${esc(h ? h.claim : "(no hypothesis)")}</p>
+        <p class="meta"><b>${esc(s.id)}</b> · hypothesis ${esc(s.hypothesis_id)}</p>
         <textarea class="scenario-json" data-i="${i}" rows="16" spellcheck="false" style="width:100%;font-family:monospace;font-size:0.8rem">${esc(JSON.stringify(s, null, 2))}</textarea>
       </div>`;
     }).join("") +

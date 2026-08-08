@@ -29,7 +29,6 @@ use prompt_explore::generate::{
 use prompt_explore::llm::{OpenAiCompatibleClient, UsageTotals, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
-use prompt_explore::model::predicate::Hypothesis;
 use prompt_explore::model::simulation::{Scenario, TraceStep};
 use serde_json::Value;
 
@@ -91,7 +90,6 @@ struct GenerateScenariosRequest {
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct GenerateScenariosResponse {
-    hypotheses: Vec<Hypothesis>,
     scenarios: Vec<Scenario>,
 }
 
@@ -432,10 +430,7 @@ async fn generate_scenarios(
         scenarios.extend(built);
     }
 
-    Ok(Json(GenerateScenariosResponse {
-        hypotheses,
-        scenarios,
-    }))
+    Ok(Json(GenerateScenariosResponse { scenarios }))
 }
 
 /// Apply a proposal: the LLM rewrites the target field (template, or
