@@ -91,6 +91,14 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
 - ⬜ Dedicated simulated-user model (persona, consistency across
   turns — basic user replies already work via a tool whose description
   says it responds with the user's answer)
+- ⬜ Pluggable LLM backends: use *any* OpenAI-format endpoint, not
+  just z.ai, via a dedicated crate (or a thin abstraction) for
+  provider-agnostic OpenAI-compatible clients.
+- ⬜ Per-role model selection: pick the model that *simulates tools*
+  separately from the model that *runs the PUT conversation*. Important
+  for cost optimisation — finding the cheapest model that still works
+  requires keeping a decent model as the simulator (it has to roleplay
+  a believable environment), even while the PUT runs on a cheap one.
 - ⬜ Multi-prompt scenarios: a dedicated endpoint that uses
   single-prompt investigations as a *tool* to explore pipelines
   (e.g. one agent's output feeding another's input). The API is
