@@ -196,7 +196,7 @@ fn print_help() {
     println!();
     println!("ENVIRONMENT:");
     println!("    ZAI_API_KEY          Required. z.ai API key for LLM access.");
-    println!("    PROMPT_EXPLORE_ADDR  Bind address (default: 127.0.0.1:8080).");
+    println!("    PROMPT_EXPLORE_ADDR  Bind address (default: 0.0.0.0:8080, LAN-reachable).");
 }
 
 #[tokio::main]
@@ -238,7 +238,7 @@ async fn main() {
         .layer(middleware::from_fn(spec_discovery))
         .with_state(state);
 
-    let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     eprintln!("prompt-explore server listening on http://{addr}");
     axum::serve(listener, app).await.unwrap();
