@@ -64,6 +64,26 @@
       }
     },
     "/api/investigations": {
+      "get": {
+        "tags": [],
+        "summary": "List all jobs (for the dashboard). Running jobs first, then by\nrecency. Returns summaries only — poll a job's id for full progress.",
+        "operationId": "list_investigations",
+        "responses": {
+          "200": {
+            "description": "All jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [],
         "summary": "Start an investigation: run every given scenario against the PUT and\njudge each trace against the question. Runs in the background; poll\nthe returned id. The result includes every attempt (scenario + trace\n+ verdict), any witness, unverified fix proposals, and token usage.",
@@ -95,7 +115,7 @@
     "/api/investigations/{id}": {
       "get": {
         "tags": [],
-        "summary": "Poll an investigation job. `status: done` includes the full result;\n`running` means keep polling; `failed` carries an error message.",
+        "summary": "Poll an investigation job. `progress` is always present (live steps\nwhile running, frozen when done); `result` is present once done.",
         "operationId": "get_investigation",
         "parameters": [
           {
@@ -110,7 +130,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Job status (and result, when done)",
+            "description": "Job status + live progress (+ result when done)",
             "content": {
               "application/json": {
                 "schema": {
@@ -437,10 +457,39 @@
           "failed"
         ]
       },
+      "JobSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "started_at",
+          "scenarios"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "scenarios": {
+            "type": "integer",
+            "description": "How many scenarios this job is running.",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        }
+      },
       "JobView": {
         "type": "object",
         "required": [
-          "status"
+          "status",
+          "started_at",
+          "progress"
         ],
         "properties": {
           "error": {
@@ -448,6 +497,10 @@
               "string",
               "null"
             ]
+          },
+          "progress": {
+            "$ref": "#/components/schemas/RunProgress",
+            "description": "Live progress — per-scenario state + steps simulated so far.\nPopulated while running; frozen (all scenarios done/failed) when\nthe job finishes. Lets a dashboard show a tool-call log as it\nhappens."
           },
           "result": {
             "oneOf": [
@@ -458,6 +511,11 @@
                 "$ref": "#/components/schemas/InvestigateResponse"
               }
             ]
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
@@ -542,6 +600,21 @@
           "data_transform",
           "goal_revision"
         ]
+      },
+      "RunProgress": {
+        "type": "object",
+        "description": "Live progress of a run, exposed while it's in flight: one entry per\nscenario, with its steps accumulated as they're simulated. The runner\npushes; the server/UI poll and render (e.g. a tool-call log, collapsed\nby default).",
+        "required": [
+          "scenarios"
+        ],
+        "properties": {
+          "scenarios": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScenarioProgress"
+            }
+          }
+        }
       },
       "RunResult": {
         "type": "object",
@@ -708,6 +781,91 @@
             "description": "Where it failed: `\"runner\"` (PUT execution or tool simulation)\nor `\"judge\"`."
           }
         }
+      },
+      "ScenarioProgress": {
+        "type": "object",
+        "description": "One scenario's progress within a run.",
+        "required": [
+          "scenario_id",
+          "state",
+          "steps"
+        ],
+        "properties": {
+          "scenario_id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ScenarioState"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceStep"
+            },
+            "description": "Steps simulated so far (tool calls + responses + model output)."
+          }
+        }
+      },
+      "ScenarioState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "running"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Completed a judged trace.",
+            "required": [
+              "matched",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "done"
+                ]
+              },
+              "matched": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Errored before producing a judged trace.",
+            "required": [
+              "stage",
+              "error",
+              "kind"
+            ],
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              },
+              "stage": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "The state of one scenario within a run."
       },
       "SideEffect": {
         "type": "string",

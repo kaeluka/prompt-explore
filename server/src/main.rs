@@ -27,7 +27,7 @@ use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
 use prompt_explore::llm::{OpenAiCompatibleClient, UsageTotals, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
-use prompt_explore::model::simulation::{Scenario, TraceStep};
+use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
 use serde_json::Value;
 
 const MODEL: &str = "glm-5.2";
@@ -41,6 +41,10 @@ struct Job {
     status: JobStatus,
     result: Option<InvestigateResponse>,
     error: Option<String>,
+    /// Live progress: populated as steps are simulated.
+    progress: Arc<std::sync::Mutex<RunProgress>>,
+    /// Wall-clock start, epoch millis.
+    started_at: u64,
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
@@ -120,13 +124,28 @@ struct JobCreated {
     id: String,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 struct JobView {
     status: JobStatus,
+    started_at: u64,
+    /// Live progress — per-scenario state + steps simulated so far.
+    /// Populated while running; frozen (all scenarios done/failed) when
+    /// the job finishes. Lets a dashboard show a tool-call log as it
+    /// happens.
+    progress: RunProgress,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<InvestigateResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Serialize, Clone, utoipa::ToSchema)]
+struct JobSummary {
+    id: String,
+    status: JobStatus,
+    started_at: u64,
+    /// How many scenarios this job is running.
+    scenarios: usize,
 }
 
 #[derive(utoipa::OpenApi)]
@@ -145,7 +164,7 @@ struct JobView {
                        re-run the same scenarios to check. The API is job-based: POST returns \
                        a job id immediately; poll GET /api/investigations/{id} for the result."
     ),
-    paths(index, create_investigation, get_investigation, apply_proposal)
+    paths(index, list_investigations, create_investigation, get_investigation, apply_proposal)
 )]
 struct ApiDoc;
 
@@ -192,7 +211,10 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index))
         .route("/openapi.json", get(openapi_json))
-        .route("/api/investigations", post(create_investigation))
+        .route(
+            "/api/investigations",
+            get(list_investigations).post(create_investigation),
+        )
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/apply", post(apply_proposal))
         .route("/api/openapi.json", get(openapi_json))
@@ -260,12 +282,19 @@ async fn create_investigation(
     Json(req): Json<InvestigateRequest>,
 ) -> (StatusCode, Json<JobCreated>) {
     let id = Uuid::new_v4().to_string();
+    let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
             status: JobStatus::Running,
             result: None,
             error: None,
+            progress: progress.clone(),
+            started_at,
         },
     );
 
@@ -287,7 +316,12 @@ async fn create_investigation(
         };
 
         let outcome = investigator
-            .investigate(&req.investigation, &req.put, &req.scenarios)
+            .investigate(
+                &req.investigation,
+                &req.put,
+                &req.scenarios,
+                Some(progress.clone()),
+            )
             .await;
 
         let witness_user_message = outcome
@@ -339,14 +373,41 @@ async fn create_investigation(
     (StatusCode::ACCEPTED, Json(JobCreated { id }))
 }
 
-/// Poll an investigation job. `status: done` includes the full result;
-/// `running` means keep polling; `failed` carries an error message.
+/// List all jobs (for the dashboard). Running jobs first, then by
+/// recency. Returns summaries only — poll a job's id for full progress.
+#[utoipa::path(
+    get,
+    path = "/api/investigations",
+    responses((status = 200, description = "All jobs", body = [JobSummary]))
+)]
+async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<JobSummary>> {
+    let jobs = state.jobs.lock().unwrap();
+    let mut rows: Vec<JobSummary> = jobs
+        .iter()
+        .map(|(id, j)| JobSummary {
+            id: id.clone(),
+            status: j.status,
+            started_at: j.started_at,
+            scenarios: j.progress.lock().unwrap().scenarios.len(),
+        })
+        .collect();
+    // Running first, then newest-started first.
+    rows.sort_by(|a, b| {
+        let ar = a.status == JobStatus::Running;
+        let br = b.status == JobStatus::Running;
+        br.cmp(&ar).then_with(|| b.started_at.cmp(&a.started_at))
+    });
+    Json(rows)
+}
+
+/// Poll an investigation job. `progress` is always present (live steps
+/// while running, frozen when done); `result` is present once done.
 #[utoipa::path(
     get,
     path = "/api/investigations/{id}",
     params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
     responses(
-        (status = 200, description = "Job status (and result, when done)", body = JobView),
+        (status = 200, description = "Job status + live progress (+ result when done)", body = JobView),
         (status = 404, description = "Unknown job id")
     )
 )]
@@ -358,6 +419,8 @@ async fn get_investigation(
     let job = jobs.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(JobView {
         status: job.status,
+        started_at: job.started_at,
+        progress: job.progress.lock().unwrap().clone(),
         result: job.result.clone(),
         error: job.error.clone(),
     }))

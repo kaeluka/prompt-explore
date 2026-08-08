@@ -108,7 +108,7 @@ async fn main() {
     let InvestigateOutcome {
         result, scenarios, ..
     } = investigator
-        .investigate(&investigation, &put, &[scenario])
+        .investigate(&investigation, &put, &[scenario], None)
         .await;
 
     println!("=== SCENARIOS TRIED ===");

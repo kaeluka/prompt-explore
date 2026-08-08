@@ -102,7 +102,7 @@ async fn main() {
 
     let runner = Runner::new(client.clone(), MODEL, client, MODEL);
     let trace = runner
-        .run(&put, &scenario, &budget)
+        .run(&put, &scenario, &budget, None)
         .await
         .expect("run failed");
 

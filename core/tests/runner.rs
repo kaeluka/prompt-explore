@@ -88,7 +88,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
         "sim-model",
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget())
+        .run(&support_put(), &scenario(), &budget(), None)
         .await
         .unwrap();
 
@@ -138,7 +138,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         "sim-model",
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget())
+        .run(&support_put(), &scenario(), &budget(), None)
         .await
         .unwrap();
 
@@ -164,7 +164,10 @@ async fn empty_tool_array_means_single_shot() {
         Arc::new(sim_model),
         "sim-model",
     );
-    let trace = runner.run(&put, &scenario(), &budget()).await.unwrap();
+    let trace = runner
+        .run(&put, &scenario(), &budget(), None)
+        .await
+        .unwrap();
 
     assert_eq!(trace.steps.len(), 1);
 }

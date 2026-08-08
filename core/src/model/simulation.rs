@@ -5,6 +5,64 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Live progress of a run, exposed while it's in flight: one entry per
+/// scenario, with its steps accumulated as they're simulated. The runner
+/// pushes; the server/UI poll and render (e.g. a tool-call log, collapsed
+/// by default).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunProgress {
+    pub scenarios: Vec<ScenarioProgress>,
+}
+
+/// One scenario's progress within a run.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ScenarioProgress {
+    pub scenario_id: String,
+    pub state: ScenarioState,
+    /// Steps simulated so far (tool calls + responses + model output).
+    pub steps: Vec<TraceStep>,
+}
+
+/// The state of one scenario within a run.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScenarioState {
+    Running,
+    /// Completed a judged trace.
+    Done {
+        matched: bool,
+    },
+    /// Errored before producing a judged trace.
+    Failed {
+        stage: String,
+        error: String,
+    },
+}
+
+impl RunProgress {
+    /// Set a scenario's state (called by the investigation as tasks finish).
+    pub fn set_state(&mut self, scenario_id: &str, state: ScenarioState) {
+        if let Some(s) = self
+            .scenarios
+            .iter_mut()
+            .find(|s| s.scenario_id == scenario_id)
+        {
+            s.state = state;
+        }
+    }
+
+    /// Append a simulated step to a scenario (called by the runner).
+    pub fn push_step(&mut self, scenario_id: &str, step: TraceStep) {
+        if let Some(s) = self
+            .scenarios
+            .iter_mut()
+            .find(|s| s.scenario_id == scenario_id)
+        {
+            s.steps.push(step);
+        }
+    }
+}
+
 /// A test case: a world specification plus a protagonist. The harness
 /// runs the prompt under test inside this world — the simulator LLM
 /// renders tool responses from the `narrative` — and judges whether the

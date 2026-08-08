@@ -6,12 +6,12 @@
 //! for a response (+ state patch on writes), apply the patch in code,
 //! and continue. Deterministic bookkeeping; LLMs only for semantics.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ToolDef};
-use crate::model::simulation::{Scenario, ToolCall, Trace, TraceStep};
+use crate::model::simulation::{RunProgress, Scenario, ToolCall, Trace, TraceStep};
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
 use super::simulator::{ToolSimulator, apply_patch};
@@ -49,6 +49,7 @@ impl Runner {
         put: &PromptUnderTest,
         scenario: &Scenario,
         budget: &Budget,
+        progress: Option<Arc<Mutex<RunProgress>>>,
     ) -> Result<Trace, RunnerError> {
         let mut messages = initial_messages(put, scenario);
         let tools: Vec<ToolDef> = put.tools.iter().map(convert_tool).collect();
@@ -88,11 +89,16 @@ impl Runner {
 
             if response.tool_calls.is_empty() {
                 steps.push(TraceStep {
-                    model_output: response.content.unwrap_or_default(),
+                    model_output: response.content.clone().unwrap_or_default(),
                     tool_call: None,
                     tool_response: None,
                     world_state_after: None,
                 });
+                if let Some(p) = &progress {
+                    if let Ok(mut g) = p.lock() {
+                        g.push_step(&scenario.id, steps.last().unwrap().clone());
+                    }
+                }
                 break;
             }
 
@@ -114,9 +120,14 @@ impl Runner {
                         args: serde_json::from_str(&tc.arguments)
                             .unwrap_or(Value::String(tc.arguments.clone())),
                     }),
-                    tool_response: Some(tool_response),
-                    world_state_after: state_after,
+                    tool_response: Some(tool_response.clone()),
+                    world_state_after: state_after.clone(),
                 });
+                if let Some(p) = &progress {
+                    if let Ok(mut g) = p.lock() {
+                        g.push_step(&scenario.id, steps.last().unwrap().clone());
+                    }
+                }
 
                 if steps.len() >= budget.max_steps_per_trace as usize {
                     break;

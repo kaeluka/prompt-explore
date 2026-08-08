@@ -61,17 +61,33 @@ enum RunOne {
 
 impl Investigator {
     /// Run exactly the given scenarios against the PUT. All of them —
-    /// an explicit list is a contract.
+    /// an explicit list is a contract. If `progress` is given, it's
+    /// populated live (steps as simulated, states as tasks finish) for
+    /// polling/UI.
     pub async fn investigate(
         &self,
         investigation: &Investigation,
         put: &PromptUnderTest,
         scenarios: &[Scenario],
+        progress: Option<Arc<std::sync::Mutex<crate::model::simulation::RunProgress>>>,
     ) -> InvestigateOutcome {
         let predicate = Predicate {
             criterion: investigation.question.clone(),
             success_mode: SuccessMode::Witness,
         };
+
+        if let Some(p) = &progress {
+            if let Ok(mut g) = p.lock() {
+                g.scenarios = scenarios
+                    .iter()
+                    .map(|s| crate::model::simulation::ScenarioProgress {
+                        scenario_id: s.id.clone(),
+                        state: crate::model::simulation::ScenarioState::Running,
+                        steps: Vec::new(),
+                    })
+                    .collect();
+            }
+        }
 
         let mut tasks: JoinSet<RunOne> = JoinSet::new();
         for scenario in scenarios {
@@ -81,6 +97,7 @@ impl Investigator {
                 &investigation.budget,
                 put,
                 scenario.clone(),
+                progress.clone(),
             );
         }
 
@@ -88,16 +105,39 @@ impl Investigator {
         let mut failures = Vec::new();
         while let Some(res) = tasks.join_next().await {
             match res {
-                Ok(RunOne::Done(scenario, trace, matched)) => attempts.push(Attempt {
-                    scenario,
-                    trace: trace.clone(),
-                    matched,
-                }),
-                Ok(RunOne::Failed(scenario, stage, error)) => failures.push(ScenarioFailure {
-                    scenario_id: scenario.id.clone(),
-                    stage: stage.into(),
-                    error,
-                }),
+                Ok(RunOne::Done(scenario, trace, matched)) => {
+                    if let Some(p) = &progress {
+                        if let Ok(mut g) = p.lock() {
+                            g.set_state(
+                                &scenario.id,
+                                crate::model::simulation::ScenarioState::Done { matched },
+                            );
+                        }
+                    }
+                    attempts.push(Attempt {
+                        scenario,
+                        trace: trace.clone(),
+                        matched,
+                    });
+                }
+                Ok(RunOne::Failed(scenario, stage, error)) => {
+                    if let Some(p) = &progress {
+                        if let Ok(mut g) = p.lock() {
+                            g.set_state(
+                                &scenario.id,
+                                crate::model::simulation::ScenarioState::Failed {
+                                    stage: stage.into(),
+                                    error: error.clone(),
+                                },
+                            );
+                        }
+                    }
+                    failures.push(ScenarioFailure {
+                        scenario_id: scenario.id.clone(),
+                        stage: stage.into(),
+                        error,
+                    })
+                }
                 Err(join_err) => failures.push(ScenarioFailure {
                     scenario_id: "?".into(),
                     stage: "runner".into(),
@@ -198,6 +238,7 @@ impl Investigator {
         budget: &crate::model::Budget,
         put: &PromptUnderTest,
         scenario: Scenario,
+        progress: Option<Arc<std::sync::Mutex<crate::model::simulation::RunProgress>>>,
     ) {
         let put_role = self.runner_put.clone();
         let sim_role = self.runner_sim.clone();
@@ -223,7 +264,10 @@ impl Investigator {
                 tools: put_tools,
                 design_goals: String::new(),
             };
-            let trace = match runner.run(&put_view, &scenario, &budget).await {
+            let trace = match runner
+                .run(&put_view, &scenario, &budget, progress.clone())
+                .await
+            {
                 Ok(t) => t,
                 Err(e) => return RunOne::Failed(scenario, "runner", e.to_string()),
             };

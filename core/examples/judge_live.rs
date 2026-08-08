@@ -84,7 +84,7 @@ async fn main() {
     };
 
     let runner = Runner::new(client.clone(), MODEL, client.clone(), MODEL);
-    let trace = runner.run(&put, &scenario, &budget).await.unwrap();
+    let trace = runner.run(&put, &scenario, &budget, None).await.unwrap();
 
     println!("{}", render_transcript(&trace));
 

@@ -31,6 +31,14 @@ Body: [`ApplyRequest`](#applyrequest)
 | `200` | Updated prompt plus template/goals diffs: [`ApplyResponse`](#applyresponse) |
 | `500` | LLM apply failed |
 
+### `GET /api/investigations`
+
+List all jobs (for the dashboard). Running jobs first, then by recency. Returns summaries only — poll a job's id for full progress.
+
+| Status | Response |
+|---|---|
+| `200` | All jobs: [`JobSummary`](#jobsummary)[] |
+
 ### `POST /api/investigations`
 
 Start an investigation: run every given scenario against the PUT and judge each trace against the question. Runs in the background; poll the returned id. The result includes every attempt (scenario + trace + verdict), any witness, unverified fix proposals, and token usage.
@@ -51,7 +59,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 
 ### `GET /api/investigations/{id}`
 
-Poll an investigation job. `status: done` includes the full result; `running` means keep polling; `failed` carries an error message.
+Poll an investigation job. `progress` is always present (live steps while running, frozen when done); `result` is present once done.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -59,7 +67,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 
 | Status | Response |
 |---|---|
-| `200` | Job status (and result, when done): [`JobView`](#jobview) |
+| `200` | Job status + live progress (+ result when done): [`JobView`](#jobview) |
 | `404` | Unknown job id |
 
 ## Schemas
@@ -169,12 +177,23 @@ An investigation: run the given scenarios against the PUT and judge every trace 
 
 Values: `running`, `done`, `failed`
 
+### `JobSummary`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `scenarios` | integer | yes | How many scenarios this job is running. |
+| `started_at` | integer | yes |  |
+| `status` | [`JobStatus`](#jobstatus) | yes |  |
+
 ### `JobView`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string? | no |  |
+| `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + steps simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
 | `result` | [`InvestigateResponse`](#investigateresponse)? | no |  |
+| `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
 
 ### `PromptUnderTest`
@@ -201,6 +220,14 @@ One prompt under test: the system-prompt template, input variables, tool surface
 ### `ProposalKind`
 
 Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
+
+### `RunProgress`
+
+Live progress of a run, exposed while it's in flight: one entry per scenario, with its steps accumulated as they're simulated. The runner pushes; the server/UI poll and render (e.g. a tool-call log, collapsed by default).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `scenarios` | [`ScenarioProgress`](#scenarioprogress)[] | yes |  |
 
 ### `RunResult`
 
@@ -244,6 +271,41 @@ A scenario that errored during a run.
 | `error` | string | yes | The error message. |
 | `scenario_id` | string | yes |  |
 | `stage` | string | yes | Where it failed: `"runner"` (PUT execution or tool simulation) or `"judge"`. |
+
+### `ScenarioProgress`
+
+One scenario's progress within a run.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `scenario_id` | string | yes |  |
+| `state` | [`ScenarioState`](#scenariostate) | yes |  |
+| `steps` | [`TraceStep`](#tracestep)[] | yes | Steps simulated so far (tool calls + responses + model output). |
+
+### `ScenarioState`
+
+The state of one scenario within a run.
+
+**Variant `running`**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `running` | yes |  |
+
+**Variant `done`**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `done` | yes |  |
+| `matched` | boolean | yes |  |
+
+**Variant `failed`**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes |  |
+| `kind` | `failed` | yes |  |
+| `stage` | string | yes |  |
 
 ### `SideEffect`
 
