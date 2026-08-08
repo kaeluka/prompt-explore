@@ -225,6 +225,9 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index))
         .route("/openapi.json", get(openapi_json))
+        .route("/vendor/preact.mjs", get(vendor_preact))
+        .route("/vendor/hooks.mjs", get(vendor_hooks))
+        .route("/vendor/htm.mjs", get(vendor_htm))
         .route(
             "/api/investigations",
             get(list_investigations).post(create_investigation),
@@ -481,3 +484,16 @@ async fn apply_proposal(
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+const VENDOR_PREACT: &str = include_str!("../static/vendor/preact.mjs");
+const VENDOR_HOOKS: &str = include_str!("../static/vendor/hooks.mjs");
+const VENDOR_HTM: &str = include_str!("../static/vendor/htm.mjs");
+
+async fn vendor_preact() -> impl axum::response::IntoResponse {
+    ([("content-type", "text/javascript;charset=utf-8")], VENDOR_PREACT)
+}
+async fn vendor_hooks() -> impl axum::response::IntoResponse {
+    ([("content-type", "text/javascript;charset=utf-8")], VENDOR_HOOKS)
+}
+async fn vendor_htm() -> impl axum::response::IntoResponse {
+    ([("content-type", "text/javascript;charset=utf-8")], VENDOR_HTM)
+}
