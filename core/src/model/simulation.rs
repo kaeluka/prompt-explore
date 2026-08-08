@@ -5,30 +5,52 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Everything needed to (stochastically) reproduce a trajectory.
-/// Everything else in a trace is derived.
+/// A test case: a world specification plus a protagonist. The harness
+/// runs the prompt under test inside this world — the simulator LLM
+/// renders tool responses from the `narrative` — and judges whether the
+/// questioned behavior occurred in the resulting trace.
+///
+/// Scenarios are authored OUTSIDE the harness (by the operator's agent);
+/// this API never generates them. Authoring guidance: the narrative
+/// should pin (1) an inventory of what exists, covering every query type
+/// the PUT's tools allow, (2) facts, including negative facts (what does
+/// NOT exist or happen), (3) completeness assertions ("these are ALL the
+/// entry points"), and (4) rendering rules (refuse queries outside the
+/// inventory; filler introduces no new facts).
+///
+/// Everything needed to (stochastically) reproduce a trajectory lives
+/// here; everything else in a trace is derived.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
+    /// Free-form label, echoed back in reports.
     pub id: String,
+    /// Provenance label: what this scenario was authored to test.
+    /// Informational only.
     pub hypothesis_id: String,
+    /// Provenance: which prompt this scenario was authored for. NOT
+    /// enforced — a scenario may be run against any PUT.
     pub put_id: String,
-    /// Concrete template vars (constants copied, descriptions resolved).
+    /// Concrete values for the PUT template's {{variables}}.
     pub resolved_inputs: HashMap<String, Value>,
+    /// The opening message from the user/protagonist. For a tool-less
+    /// PUT this is the entire work input.
     pub user_message: Option<String>,
+    /// Mutable world facts, updated by write-tool patches during the
+    /// trace. Static truth belongs in the narrative, not here.
     pub world_state: HashMap<String, Value>,
-    /// Persona/stance guidance for the simulator LLM.
+    /// Persona/stance guidance for a simulated user, if the scenario
+    /// involves one.
     pub simulator_notes: String,
-    /// The narrative: the world specification (inventory, facts incl.
-    /// negative facts, completeness assertions, rendering rules).
-    /// Ground truth for the simulator, which renders tool responses
-    /// from it; also shown to the judge and in the UI, so the consumer
-    /// can judge simulation quality. Empty for legacy scenarios.
+    /// The world specification — ground truth the simulator renders
+    /// tool responses from, and the judge checks claims against.
+    /// Natural language; see the struct docs for the four parts it
+    /// should pin.
     #[serde(default)]
     pub narrative: String,
-    /// The user-stated environment state, verbatim from the
+    /// Operator-stated environment state, verbatim from the
     /// investigation's `initial_state`. Kept separate from
-    /// `simulator_notes` so judge, simulator, and UI see the user's
-    /// words, not the scenario builder's paraphrase.
+    /// `simulator_notes` so judge, simulator, and UI see the operator's
+    /// words, not a paraphrase.
     #[serde(default)]
     pub stated_state: Option<String>,
 }

@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. Job-based API: start an investigation, poll for the result, apply proposals.
+Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. Proposed prompt fixes are always unverified — apply them (POST /api/apply), then re-run the same scenarios to check. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.
 
 Version: `0.1.0` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -33,7 +33,7 @@ Body: [`ApplyRequest`](#applyrequest)
 
 ### `POST /api/investigations`
 
-Start an investigation. Runs in the background; poll the returned id.
+Start an investigation: run every given scenario against the PUT and judge each trace against the question. Runs in the background; poll the returned id. The result includes every attempt (scenario + trace + verdict), any witness, unverified fix proposals, and token usage.
 
 Body: [`InvestigateRequest`](#investigaterequest)
 
@@ -42,7 +42,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `model` | string? | no | Model for every LLM role (runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `scenarios` | [`Scenario`](#scenario)[] | yes | The scenarios to run. Required; all of them are run (an explicit list is a contract). Scenarios are authored outside the harness — see AGENTS.md's scenario-authoring guidance. |
+| `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 
 
 | Status | Response |
@@ -137,7 +137,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `model` | string? | no | Model for every LLM role (runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `scenarios` | [`Scenario`](#scenario)[] | yes | The scenarios to run. Required; all of them are run (an explicit list is a contract). Scenarios are authored outside the harness — see AGENTS.md's scenario-authoring guidance. |
+| `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 
 ### `InvestigateResponse`
 
@@ -151,11 +151,13 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 
 ### `Investigation`
 
+An investigation: run the given scenarios against the PUT and judge every trace against the question.
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `budget` | [`Budget`](#budget) | yes |  |
 | `initial_state` | string? | no | Optional user-specified starting environment state, in natural language (e.g. "cancel_order is broken and returns E_CONN; order 123 is already shipped"). It is NOT compiled or enforced: it flows into scenario building, the simulator notes, and the judge's scenario context as-is. Free-text — pasting a previous run's returned `final_state` JSON works fine. |
-| `question` | string | yes | The mandatory question, e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" |
+| `question` | string | yes | The mandatory behavioral question, used VERBATIM as the judge's criterion — e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" A witness is a trace where the judge finds the questioned behavior actually occurred. |
 
 ### `JobCreated`
 
@@ -177,11 +179,11 @@ Values: `running`, `done`, `failed`
 
 ### `PromptUnderTest`
 
-One prompt under test: template, input variables, tool surface, and (mandatory) design goals.
+One prompt under test: the system-prompt template, input variables, tool surface, and (mandatory) design goals. The harness executes this prompt inside scenario worlds and judges the resulting traces.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `design_goals` | string | yes | MANDATORY. The yardstick for judging behavior; also itself an optimization target (flagged via `ProposalKind::GoalRevision`). |
+| `design_goals` | string | yes | MANDATORY. The yardstick for judging behavior: the intent the prompt is supposed to uphold. Also itself an optimization target (flagged via `ProposalKind::GoalRevision`). |
 | `id` | string | yes |  |
 | `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes |  |
 | `template` | string | yes |  |
@@ -218,19 +220,19 @@ Values: `witness_found`, `no_witness_within_budget`, `error`
 
 ### `Scenario`
 
-Everything needed to (stochastically) reproduce a trajectory. Everything else in a trace is derived.
+A test case: a world specification plus a protagonist. The harness runs the prompt under test inside this world — the simulator LLM renders tool responses from the `narrative` — and judges whether the questioned behavior occurred in the resulting trace.  Scenarios are authored OUTSIDE the harness (by the operator's agent); this API never generates them. Authoring guidance: the narrative should pin (1) an inventory of what exists, covering every query type the PUT's tools allow, (2) facts, including negative facts (what does NOT exist or happen), (3) completeness assertions ("these are ALL the entry points"), and (4) rendering rules (refuse queries outside the inventory; filler introduces no new facts).  Everything needed to (stochastically) reproduce a trajectory lives here; everything else in a trace is derived.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `hypothesis_id` | string | yes |  |
-| `id` | string | yes |  |
-| `narrative` | string | no | The narrative: the world specification (inventory, facts incl. negative facts, completeness assertions, rendering rules). Ground truth for the simulator, which renders tool responses from it; also shown to the judge and in the UI, so the consumer can judge simulation quality. Empty for legacy scenarios. |
-| `put_id` | string | yes |  |
-| `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete template vars (constants copied, descriptions resolved). |
-| `simulator_notes` | string | yes | Persona/stance guidance for the simulator LLM. |
-| `stated_state` | string? | no | The user-stated environment state, verbatim from the investigation's `initial_state`. Kept separate from `simulator_notes` so judge, simulator, and UI see the user's words, not the scenario builder's paraphrase. |
-| `user_message` | string? | no |  |
-| `world_state` | map&lt;string, any&gt; | yes |  |
+| `hypothesis_id` | string | yes | Provenance label: what this scenario was authored to test. Informational only. |
+| `id` | string | yes | Free-form label, echoed back in reports. |
+| `narrative` | string | no | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. Natural language; see the struct docs for the four parts it should pin. |
+| `put_id` | string | yes | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. |
+| `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete values for the PUT template's {{variables}}. |
+| `simulator_notes` | string | yes | Persona/stance guidance for a simulated user, if the scenario involves one. |
+| `stated_state` | string? | no | Operator-stated environment state, verbatim from the investigation's `initial_state`. Kept separate from `simulator_notes` so judge, simulator, and UI see the operator's words, not a paraphrase. |
+| `user_message` | string? | no | The opening message from the user/protagonist. For a tool-less PUT this is the entire work input. |
+| `world_state` | map&lt;string, any&gt; | yes | Mutable world facts, updated by write-tool patches during the trace. Static truth belongs in the narrative, not here. |
 
 ### `SideEffect`
 

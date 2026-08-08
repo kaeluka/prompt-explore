@@ -89,6 +89,13 @@ Size the world to the investigation's step budget: a small world fully
 explored beats a large world half-explored. And vary the worlds across a
 corpus — same-shape scenarios prove the same thing twice.
 
+**The API is self-explanatory to an agent.** An agent reading only
+`openapi.json` must be able to use the API correctly — without reading the
+codebase. Schema and endpoint descriptions therefore carry *concepts*, not
+just field names: what a scenario IS (a test case: a world spec plus a
+protagonist) and what it is FOR. When you change the API, write for that
+reader.
+
 ## Repo layout
 
 Cargo workspace:

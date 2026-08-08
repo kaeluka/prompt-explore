@@ -59,9 +59,10 @@ struct InvestigateRequest {
     /// proposer). Omit to use the server default (`glm-5.2`).
     #[serde(default)]
     model: Option<String>,
-    /// The scenarios to run. Required; all of them are run (an
-    /// explicit list is a contract). Scenarios are authored outside
-    /// the harness — see AGENTS.md's scenario-authoring guidance.
+    /// The test cases to run. Required; ALL of them are run (an explicit
+    /// list is a contract — the step/token budget applies per trace, not
+    /// to the count). Scenarios are authored outside this API and are
+    /// editable before running: reviewing them is the intended workflow.
     scenarios: Vec<Scenario>,
 }
 
@@ -129,8 +130,16 @@ struct JobView {
     info(
         title = "prompt-explore API",
         version = env!("CARGO_PKG_VERSION"),
-        description = "Property-based testing for agent behavior. Job-based API: \
-                       start an investigation, poll for the result, apply proposals."
+        description = "Property-based testing for agent behavior. You AUTHOR scenarios \
+                       (test cases: a world specification plus a protagonist — see the \
+                       Scenario schema) and submit them with a prompt under test (PUT) and \
+                       a behavioral question. Every scenario is run: an LLM simulates the \
+                       world from the scenario's narrative, the PUT acts in it, and a judge \
+                       evaluates each resulting trace against your question. A witness is a \
+                       trace where the questioned behavior actually occurred. Proposed prompt \
+                       fixes are always unverified — apply them (POST /api/apply), then \
+                       re-run the same scenarios to check. The API is job-based: POST returns \
+                       a job id immediately; poll GET /api/investigations/{id} for the result."
     ),
     paths(index, create_investigation, get_investigation, apply_proposal)
 )]
@@ -230,7 +239,10 @@ async fn index() -> impl axum::response::IntoResponse {
     }
 }
 
-/// Start an investigation. Runs in the background; poll the returned id.
+/// Start an investigation: run every given scenario against the PUT and
+/// judge each trace against the question. Runs in the background; poll
+/// the returned id. The result includes every attempt (scenario + trace
+/// + verdict), any witness, unverified fix proposals, and token usage.
 #[utoipa::path(
     post,
     path = "/api/investigations",

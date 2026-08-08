@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. Job-based API: start an investigation, poll for the result, apply proposals.",
+    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. Proposed prompt fixes are always unverified — apply them (POST /api/apply), then re-run the same scenarios to check. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.",
     "license": {
       "name": ""
     },
@@ -66,7 +66,7 @@
     "/api/investigations": {
       "post": {
         "tags": [],
-        "summary": "Start an investigation. Runs in the background; poll the returned id.",
+        "summary": "Start an investigation: run every given scenario against the PUT and\njudge each trace against the question. Runs in the background; poll\nthe returned id. The result includes every attempt (scenario + trace\n+ verdict), any witness, unverified fix proposals, and token usage.",
         "operationId": "create_investigation",
         "requestBody": {
           "content": {
@@ -352,7 +352,7 @@
             "items": {
               "$ref": "#/components/schemas/Scenario"
             },
-            "description": "The scenarios to run. Required; all of them are run (an\nexplicit list is a contract). Scenarios are authored outside\nthe harness — see AGENTS.md's scenario-authoring guidance."
+            "description": "The test cases to run. Required; ALL of them are run (an explicit\nlist is a contract — the step/token budget applies per trace, not\nto the count). Scenarios are authored outside this API and are\neditable before running: reviewing them is the intended workflow."
           }
         }
       },
@@ -394,6 +394,7 @@
       },
       "Investigation": {
         "type": "object",
+        "description": "An investigation: run the given scenarios against the PUT and judge\nevery trace against the question.",
         "required": [
           "question",
           "budget"
@@ -411,7 +412,7 @@
           },
           "question": {
             "type": "string",
-            "description": "The mandatory question, e.g. \"are there inputs that cause\ndestructive tool calls?\" or \"why does this sometimes cancel,\nsometimes ask to confirm?\""
+            "description": "The mandatory behavioral question, used VERBATIM as the judge's\ncriterion — e.g. \"are there inputs that cause destructive tool\ncalls?\" or \"why does this sometimes cancel, sometimes ask to\nconfirm?\" A witness is a trace where the judge finds the\nquestioned behavior actually occurred."
           }
         }
       },
@@ -463,7 +464,7 @@
       },
       "PromptUnderTest": {
         "type": "object",
-        "description": "One prompt under test: template, input variables, tool surface,\nand (mandatory) design goals.",
+        "description": "One prompt under test: the system-prompt template, input variables,\ntool surface, and (mandatory) design goals. The harness executes this\nprompt inside scenario worlds and judges the resulting traces.",
         "required": [
           "id",
           "template",
@@ -474,7 +475,7 @@
         "properties": {
           "design_goals": {
             "type": "string",
-            "description": "MANDATORY. The yardstick for judging behavior; also itself an\noptimization target (flagged via `ProposalKind::GoalRevision`)."
+            "description": "MANDATORY. The yardstick for judging behavior: the intent the\nprompt is supposed to uphold. Also itself an optimization target\n(flagged via `ProposalKind::GoalRevision`)."
           },
           "id": {
             "type": "string"
@@ -610,7 +611,7 @@
       },
       "Scenario": {
         "type": "object",
-        "description": "Everything needed to (stochastically) reproduce a trajectory.\nEverything else in a trace is derived.",
+        "description": "A test case: a world specification plus a protagonist. The harness\nruns the prompt under test inside this world — the simulator LLM\nrenders tool responses from the `narrative` — and judges whether the\nquestioned behavior occurred in the resulting trace.\n\nScenarios are authored OUTSIDE the harness (by the operator's agent);\nthis API never generates them. Authoring guidance: the narrative\nshould pin (1) an inventory of what exists, covering every query type\nthe PUT's tools allow, (2) facts, including negative facts (what does\nNOT exist or happen), (3) completeness assertions (\"these are ALL the\nentry points\"), and (4) rendering rules (refuse queries outside the\ninventory; filler introduces no new facts).\n\nEverything needed to (stochastically) reproduce a trajectory lives\nhere; everything else in a trace is derived.",
         "required": [
           "id",
           "hypothesis_id",
@@ -621,21 +622,24 @@
         ],
         "properties": {
           "hypothesis_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Provenance label: what this scenario was authored to test.\nInformational only."
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "Free-form label, echoed back in reports."
           },
           "narrative": {
             "type": "string",
-            "description": "The narrative: the world specification (inventory, facts incl.\nnegative facts, completeness assertions, rendering rules).\nGround truth for the simulator, which renders tool responses\nfrom it; also shown to the judge and in the UI, so the consumer\ncan judge simulation quality. Empty for legacy scenarios."
+            "description": "The world specification — ground truth the simulator renders\ntool responses from, and the judge checks claims against.\nNatural language; see the struct docs for the four parts it\nshould pin."
           },
           "put_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Provenance: which prompt this scenario was authored for. NOT\nenforced — a scenario may be run against any PUT."
           },
           "resolved_inputs": {
             "type": "object",
-            "description": "Concrete template vars (constants copied, descriptions resolved).",
+            "description": "Concrete values for the PUT template's {{variables}}.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -643,23 +647,25 @@
           },
           "simulator_notes": {
             "type": "string",
-            "description": "Persona/stance guidance for the simulator LLM."
+            "description": "Persona/stance guidance for a simulated user, if the scenario\ninvolves one."
           },
           "stated_state": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The user-stated environment state, verbatim from the\ninvestigation's `initial_state`. Kept separate from\n`simulator_notes` so judge, simulator, and UI see the user's\nwords, not the scenario builder's paraphrase."
+            "description": "Operator-stated environment state, verbatim from the\ninvestigation's `initial_state`. Kept separate from\n`simulator_notes` so judge, simulator, and UI see the operator's\nwords, not a paraphrase."
           },
           "user_message": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The opening message from the user/protagonist. For a tool-less\nPUT this is the entire work input."
           },
           "world_state": {
             "type": "object",
+            "description": "Mutable world facts, updated by write-tool patches during the\ntrace. Static truth belongs in the narrative, not here.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
