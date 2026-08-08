@@ -82,7 +82,8 @@ struct ApplyResponse {
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct InvestigateResponse {
     result: RunResult,
-    scenarios_generated: usize,
+    /// How many of the input scenarios completed a trace.
+    scenarios_run: usize,
     /// The opening user message of the witness scenario, so the UI can
     /// show the full conversation (the trace steps start with the
     /// agent's first reply).
@@ -323,7 +324,7 @@ async fn create_investigation(
             job.status = JobStatus::Done;
             job.result = Some(InvestigateResponse {
                 result: outcome.result,
-                scenarios_generated: outcome.scenarios.len(),
+                scenarios_run: outcome.scenarios.len(),
                 witness_user_message,
                 attempts,
                 usage: tracker.totals(),

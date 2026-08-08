@@ -237,13 +237,14 @@
         "properties": {
           "evidence": {
             "type": "string",
-            "description": "e.g. ablation summary"
+            "description": "Free-text attribution note (e.g. the scenario id that produced\nthe witness)."
           },
           "instruction_spans": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Verbatim quoted substrings of the PUT template implicated in the\nbehavior. Currently always empty: with caller-provided scenarios\nthere is no hypothesis to attribute instruction spans from."
           }
         }
       },
@@ -256,6 +257,7 @@
           "max_steps_per_trace": {
             "type": "integer",
             "format": "int32",
+            "description": "Max steps per trace. A STEP is one tool call OR one final\ncompletion (the turn with no tool call that ends the trace). A\ncompletion that requests several tool calls counts as several\nsteps. The main cost dial for tool-loop PUTs.",
             "minimum": 0
           },
           "max_tokens": {
@@ -264,6 +266,7 @@
               "null"
             ],
             "format": "int64",
+            "description": "Optional per-trace token cap (input+output, summed across turns).",
             "minimum": 0
           }
         }
@@ -360,7 +363,7 @@
         "type": "object",
         "required": [
           "result",
-          "scenarios_generated",
+          "scenarios_run",
           "attempts",
           "usage"
         ],
@@ -375,8 +378,9 @@
           "result": {
             "$ref": "#/components/schemas/RunResult"
           },
-          "scenarios_generated": {
+          "scenarios_run": {
             "type": "integer",
+            "description": "How many of the input scenarios completed a trace.",
             "minimum": 0
           },
           "usage": {
@@ -402,13 +406,6 @@
         "properties": {
           "budget": {
             "$ref": "#/components/schemas/Budget"
-          },
-          "initial_state": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional user-specified starting environment state, in natural\nlanguage (e.g. \"cancel_order is broken and returns E_CONN; order\n123 is already shipped\"). It is NOT compiled or enforced: it\nflows into scenario building, the simulator notes, and the\njudge's scenario context as-is. Free-text — pasting a previous\nrun's returned `final_state` JSON works fine."
           },
           "question": {
             "type": "string",
@@ -475,13 +472,14 @@
         "properties": {
           "design_goals": {
             "type": "string",
-            "description": "MANDATORY. The yardstick for judging behavior: the intent the\nprompt is supposed to uphold. Also itself an optimization target\n(flagged via `ProposalKind::GoalRevision`)."
+            "description": "MANDATORY. The author's stated intent for the prompt — the\nyardstick it's supposed to uphold, and itself an optimization\ntarget (`GoalRevision` proposals). Advisory in the current\nverdict: the judge's criterion is the `question` alone; design\ngoals are not automatically enforced during a run."
           },
           "id": {
             "type": "string"
           },
           "input_vars": {
             "type": "object",
+            "description": "Documents the template's expected `{{variables}}` and how to\ngenerate values. With scenarios authored externally, this is\nmetadata for authors; concrete values come from each scenario's\n`resolved_inputs`, which the runner substitutes into the template.",
             "additionalProperties": {
               "$ref": "#/components/schemas/VarSpec"
             },
@@ -490,7 +488,8 @@
             }
           },
           "template": {
-            "type": "string"
+            "type": "string",
+            "description": "The system-prompt template. `{{var}}` placeholders are substituted\nfrom the scenario's `resolved_inputs`. The opening user turn is\nseparate — it comes from the scenario's `user_message`, not the\ntemplate."
           },
           "tools": {
             "type": "array",
@@ -554,7 +553,7 @@
               "object",
               "null"
             ],
-            "description": "The latest world state: from the witness trace when one was\nfound, otherwise from the last completed attempt. Feed it back\nas `initial_state` of a follow-up investigation to chain runs.",
+            "description": "The world state at the end: the witness trace's when one was\nfound, otherwise the last completed attempt's. Informational.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -565,7 +564,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Goal violations found incidentally during the search."
+            "description": "Reserved for goal violations found incidentally; currently always\nempty (goal checking is not wired into the run path)."
           },
           "proposals": {
             "type": "array",
@@ -577,6 +576,7 @@
           "scenarios_tried": {
             "type": "integer",
             "format": "int32",
+            "description": "How many scenarios completed a trace.",
             "minimum": 0
           },
           "status": {
@@ -587,7 +587,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Hypothesis summaries — shown on negative results."
+            "description": "Per-scenario provenance labels (e.g. \"caller-provided scenario\n'id'\"), surfaced so negative results show what was tried."
           },
           "witness": {
             "oneOf": [
@@ -654,7 +654,7 @@
               "string",
               "null"
             ],
-            "description": "Operator-stated environment state, verbatim from the\ninvestigation's `initial_state`. Kept separate from\n`simulator_notes` so judge, simulator, and UI see the operator's\nwords, not a paraphrase."
+            "description": "Operator-required environment facts for THIS scenario (e.g.\n\"cancel_order is broken and returns E_CONN\"). Appended to the\nsimulator's context so it respects them. Independent per scenario;\nthere is no investigation-level environment-state field."
           },
           "user_message": {
             "type": [
@@ -767,7 +767,8 @@
         ],
         "properties": {
           "model_output": {
-            "type": "string"
+            "type": "string",
+            "description": "The model's text output for this turn (empty on non-first tool\ncalls within one completion)."
           },
           "tool_call": {
             "oneOf": [
@@ -775,17 +776,20 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ToolCall"
+                "$ref": "#/components/schemas/ToolCall",
+                "description": "The tool the model asked to call, if any. A completion that\nrequests N tool calls becomes N steps."
               }
             ]
           },
-          "tool_response": {},
+          "tool_response": {
+            "description": "The simulated tool response."
+          },
           "world_state_after": {
             "type": [
               "object",
               "null"
             ],
-            "description": "Present on write-tool steps.",
+            "description": "Present on write-tool steps: world state after the patch applied.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -909,7 +913,7 @@
           },
           "matched": {
             "type": "boolean",
-            "description": "Does this trace satisfy the predicate (∧ design_goals)?"
+            "description": "Whether the judge finds the questioned behavior (the\ninvestigation's `question`, used verbatim) ACTUALLY occurred in\nthis trace. Design goals are NOT anded in — they're an advisory\nyardstick and a separate optimization target, not enforced here."
           },
           "matched_step_indices": {
             "type": "array",
@@ -939,7 +943,7 @@
             "items": {
               "$ref": "#/components/schemas/Trace"
             },
-            "description": "1 trace for existential questions, 2 for divergence."
+            "description": "The matching trace. Currently always length 1 (existential mode\nonly); differential/divergence questioning is not implemented."
           }
         }
       }

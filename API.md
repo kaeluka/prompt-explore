@@ -97,15 +97,15 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `evidence` | string | yes | e.g. ablation summary |
-| `instruction_spans` | string[] | yes |  |
+| `evidence` | string | yes | Free-text attribution note (e.g. the scenario id that produced the witness). |
+| `instruction_spans` | string[] | yes | Verbatim quoted substrings of the PUT template implicated in the behavior. Currently always empty: with caller-provided scenarios there is no hypothesis to attribute instruction spans from. |
 
 ### `Budget`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `max_steps_per_trace` | integer | yes |  |
-| `max_tokens` | integer? | no |  |
+| `max_steps_per_trace` | integer | yes | Max steps per trace. A STEP is one tool call OR one final completion (the turn with no tool call that ends the trace). A completion that requests several tool calls counts as several steps. The main cost dial for tool-loop PUTs. |
+| `max_tokens` | integer? | no | Optional per-trace token cap (input+output, summed across turns). |
 
 ### `DiffPart`
 
@@ -145,7 +145,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 |---|---|---|---|
 | `attempts` | [`AttemptView`](#attemptview)[] | yes | Every completed run — the evidence behind a negative result. |
 | `result` | [`RunResult`](#runresult) | yes |  |
-| `scenarios_generated` | integer | yes |  |
+| `scenarios_run` | integer | yes | How many of the input scenarios completed a trace. |
 | `usage` | [`UsageTotals`](#usagetotals) | yes | Cumulative token usage and call counts across the whole run. |
 | `witness_user_message` | string? | no | The opening user message of the witness scenario, so the UI can show the full conversation (the trace steps start with the agent's first reply). |
 
@@ -156,7 +156,6 @@ An investigation: run the given scenarios against the PUT and judge every trace 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `budget` | [`Budget`](#budget) | yes |  |
-| `initial_state` | string? | no | Optional user-specified starting environment state, in natural language (e.g. "cancel_order is broken and returns E_CONN; order 123 is already shipped"). It is NOT compiled or enforced: it flows into scenario building, the simulator notes, and the judge's scenario context as-is. Free-text — pasting a previous run's returned `final_state` JSON works fine. |
 | `question` | string | yes | The mandatory behavioral question, used VERBATIM as the judge's criterion — e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" A witness is a trace where the judge finds the questioned behavior actually occurred. |
 
 ### `JobCreated`
@@ -183,10 +182,10 @@ One prompt under test: the system-prompt template, input variables, tool surface
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `design_goals` | string | yes | MANDATORY. The yardstick for judging behavior: the intent the prompt is supposed to uphold. Also itself an optimization target (flagged via `ProposalKind::GoalRevision`). |
+| `design_goals` | string | yes | MANDATORY. The author's stated intent for the prompt — the yardstick it's supposed to uphold, and itself an optimization target (`GoalRevision` proposals). Advisory in the current verdict: the judge's criterion is the `question` alone; design goals are not automatically enforced during a run. |
 | `id` | string | yes |  |
-| `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes |  |
-| `template` | string | yes |  |
+| `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes | Documents the template's expected `{{variables}}` and how to generate values. With scenarios authored externally, this is metadata for authors; concrete values come from each scenario's `resolved_inputs`, which the runner substitutes into the template. |
+| `template` | string | yes | The system-prompt template. `{{var}}` placeholders are substituted from the scenario's `resolved_inputs`. The opening user turn is separate — it comes from the scenario's `user_message`, not the template. |
 | `tools` | [`ToolSchema`](#toolschema)[] | yes | This prompt's tool surface, exactly as the model sees it. Empty = no tool loop (but intent lives in `design_goals`, not here). |
 
 ### `Proposal`
@@ -206,12 +205,12 @@ Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `final_state` | object? | no | The latest world state: from the witness trace when one was found, otherwise from the last completed attempt. Feed it back as `initial_state` of a follow-up investigation to chain runs. |
-| `incidental_findings` | string[] | yes | Goal violations found incidentally during the search. |
+| `final_state` | object? | no | The world state at the end: the witness trace's when one was found, otherwise the last completed attempt's. Informational. |
+| `incidental_findings` | string[] | yes | Reserved for goal violations found incidentally; currently always empty (goal checking is not wired into the run path). |
 | `proposals` | [`Proposal`](#proposal)[] | yes | May be non-empty even on negative results (defensive hardening). Always unverified; the user owns everything after the run. |
-| `scenarios_tried` | integer | yes |  |
+| `scenarios_tried` | integer | yes | How many scenarios completed a trace. |
 | `status` | [`RunStatus`](#runstatus) | yes |  |
-| `strategies_tried` | string[] | yes | Hypothesis summaries — shown on negative results. |
+| `strategies_tried` | string[] | yes | Per-scenario provenance labels (e.g. "caller-provided scenario 'id'"), surfaced so negative results show what was tried. |
 | `witness` | [`Witness`](#witness)? | no |  |
 
 ### `RunStatus`
@@ -230,7 +229,7 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 | `put_id` | string | yes | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. |
 | `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete values for the PUT template's {{variables}}. |
 | `simulator_notes` | string | yes | Persona/stance guidance for a simulated user, if the scenario involves one. |
-| `stated_state` | string? | no | Operator-stated environment state, verbatim from the investigation's `initial_state`. Kept separate from `simulator_notes` so judge, simulator, and UI see the operator's words, not a paraphrase. |
+| `stated_state` | string? | no | Operator-required environment facts for THIS scenario (e.g. "cancel_order is broken and returns E_CONN"). Appended to the simulator's context so it respects them. Independent per scenario; there is no investigation-level environment-state field. |
 | `user_message` | string? | no | The opening message from the user/protagonist. For a tool-less PUT this is the entire work input. |
 | `world_state` | map&lt;string, any&gt; | yes | Mutable world facts, updated by write-tool patches during the trace. Static truth belongs in the narrative, not here. |
 
@@ -268,10 +267,10 @@ Values: `read`, `write`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `model_output` | string | yes |  |
+| `model_output` | string | yes | The model's text output for this turn (empty on non-first tool calls within one completion). |
 | `tool_call` | [`ToolCall`](#toolcall)? | no |  |
-| `tool_response` | any | no |  |
-| `world_state_after` | object? | no | Present on write-tool steps. |
+| `tool_response` | any | no | The simulated tool response. |
+| `world_state_after` | object? | no | Present on write-tool steps: world state after the patch applied. |
 
 ### `UsageTotals`
 
@@ -315,7 +314,7 @@ Extensible per-variable data-generation spec.  New variants must be additive; th
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `confidence` | number? | no | The judge's confidence in its own verdict (self-reported). |
-| `matched` | boolean | yes | Does this trace satisfy the predicate (∧ design_goals)? |
+| `matched` | boolean | yes | Whether the judge finds the questioned behavior (the investigation's `question`, used verbatim) ACTUALLY occurred in this trace. Design goals are NOT anded in — they're an advisory yardstick and a separate optimization target, not enforced here. |
 | `matched_step_indices` | integer[] | yes | Where in the trace the match happened. |
 | `rationale` | string | yes |  |
 
@@ -324,4 +323,4 @@ Extensible per-variable data-generation spec.  New variants must be additive; th
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `attribution` | [`Attribution`](#attribution) | yes |  |
-| `traces` | [`Trace`](#trace)[] | yes | 1 trace for existential questions, 2 for divergence. |
+| `traces` | [`Trace`](#trace)[] | yes | The matching trace. Currently always length 1 (existential mode only); differential/divergence questioning is not implemented. |

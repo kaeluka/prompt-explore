@@ -71,7 +71,6 @@ async fn main() {
             max_steps_per_trace: 6,
             max_tokens: None,
         },
-        initial_state: None,
     };
 
     // A hand-authored scenario (the harness no longer generates them).

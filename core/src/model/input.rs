@@ -10,14 +10,24 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptUnderTest {
     pub id: String,
+    /// The system-prompt template. `{{var}}` placeholders are substituted
+    /// from the scenario's `resolved_inputs`. The opening user turn is
+    /// separate — it comes from the scenario's `user_message`, not the
+    /// template.
     pub template: String,
+    /// Documents the template's expected `{{variables}}` and how to
+    /// generate values. With scenarios authored externally, this is
+    /// metadata for authors; concrete values come from each scenario's
+    /// `resolved_inputs`, which the runner substitutes into the template.
     pub input_vars: HashMap<String, VarSpec>,
     /// This prompt's tool surface, exactly as the model sees it.
     /// Empty = no tool loop (but intent lives in `design_goals`, not here).
     pub tools: Vec<ToolSchema>,
-    /// MANDATORY. The yardstick for judging behavior: the intent the
-    /// prompt is supposed to uphold. Also itself an optimization target
-    /// (flagged via `ProposalKind::GoalRevision`).
+    /// MANDATORY. The author's stated intent for the prompt — the
+    /// yardstick it's supposed to uphold, and itself an optimization
+    /// target (`GoalRevision` proposals). Advisory in the current
+    /// verdict: the judge's criterion is the `question` alone; design
+    /// goals are not automatically enforced during a run.
     pub design_goals: String,
 }
 
@@ -64,18 +74,15 @@ pub struct Investigation {
     /// questioned behavior actually occurred.
     pub question: String,
     pub budget: Budget,
-    /// Optional user-specified starting environment state, in natural
-    /// language (e.g. "cancel_order is broken and returns E_CONN; order
-    /// 123 is already shipped"). It is NOT compiled or enforced: it
-    /// flows into scenario building, the simulator notes, and the
-    /// judge's scenario context as-is. Free-text — pasting a previous
-    /// run's returned `final_state` JSON works fine.
-    #[serde(default)]
-    pub initial_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Budget {
+    /// Max steps per trace. A STEP is one tool call OR one final
+    /// completion (the turn with no tool call that ends the trace). A
+    /// completion that requests several tool calls counts as several
+    /// steps. The main cost dial for tool-loop PUTs.
     pub max_steps_per_trace: u32,
+    /// Optional per-trace token cap (input+output, summed across turns).
     pub max_tokens: Option<u64>,
 }

@@ -9,18 +9,20 @@ use super::simulation::Trace;
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunResult {
     pub status: RunStatus,
+    /// How many scenarios completed a trace.
     pub scenarios_tried: u32,
-    /// Hypothesis summaries — shown on negative results.
+    /// Per-scenario provenance labels (e.g. "caller-provided scenario
+    /// 'id'"), surfaced so negative results show what was tried.
     pub strategies_tried: Vec<String>,
     pub witness: Option<Witness>,
-    /// Goal violations found incidentally during the search.
+    /// Reserved for goal violations found incidentally; currently always
+    /// empty (goal checking is not wired into the run path).
     pub incidental_findings: Vec<String>,
     /// May be non-empty even on negative results (defensive hardening).
     /// Always unverified; the user owns everything after the run.
     pub proposals: Vec<Proposal>,
-    /// The latest world state: from the witness trace when one was
-    /// found, otherwise from the last completed attempt. Feed it back
-    /// as `initial_state` of a follow-up investigation to chain runs.
+    /// The world state at the end: the witness trace's when one was
+    /// found, otherwise the last completed attempt's. Informational.
     #[serde(default)]
     pub final_state: Option<HashMap<String, Value>>,
 }
@@ -35,15 +37,20 @@ pub enum RunStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Witness {
-    /// 1 trace for existential questions, 2 for divergence.
+    /// The matching trace. Currently always length 1 (existential mode
+    /// only); differential/divergence questioning is not implemented.
     pub traces: Vec<Trace>,
     pub attribution: Attribution,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Attribution {
+    /// Verbatim quoted substrings of the PUT template implicated in the
+    /// behavior. Currently always empty: with caller-provided scenarios
+    /// there is no hypothesis to attribute instruction spans from.
     pub instruction_spans: Vec<String>,
-    /// e.g. ablation summary
+    /// Free-text attribution note (e.g. the scenario id that produced
+    /// the witness).
     pub evidence: String,
 }
 

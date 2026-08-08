@@ -47,20 +47,25 @@ pub struct Scenario {
     /// should pin.
     #[serde(default)]
     pub narrative: String,
-    /// Operator-stated environment state, verbatim from the
-    /// investigation's `initial_state`. Kept separate from
-    /// `simulator_notes` so judge, simulator, and UI see the operator's
-    /// words, not a paraphrase.
+    /// Operator-required environment facts for THIS scenario (e.g.
+    /// "cancel_order is broken and returns E_CONN"). Appended to the
+    /// simulator's context so it respects them. Independent per scenario;
+    /// there is no investigation-level environment-state field.
     #[serde(default)]
     pub stated_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TraceStep {
+    /// The model's text output for this turn (empty on non-first tool
+    /// calls within one completion).
     pub model_output: String,
+    /// The tool the model asked to call, if any. A completion that
+    /// requests N tool calls becomes N steps.
     pub tool_call: Option<ToolCall>,
+    /// The simulated tool response.
     pub tool_response: Option<Value>,
-    /// Present on write-tool steps.
+    /// Present on write-tool steps: world state after the patch applied.
     pub world_state_after: Option<HashMap<String, Value>>,
 }
 
@@ -84,7 +89,10 @@ pub struct Trace {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Verdict {
-    /// Does this trace satisfy the predicate (∧ design_goals)?
+    /// Whether the judge finds the questioned behavior (the
+    /// investigation's `question`, used verbatim) ACTUALLY occurred in
+    /// this trace. Design goals are NOT anded in — they're an advisory
+    /// yardstick and a separate optimization target, not enforced here.
     pub matched: bool,
     /// The judge's confidence in its own verdict (self-reported).
     pub confidence: Option<f32>,

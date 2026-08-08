@@ -194,11 +194,6 @@
   </div>
 
   <div class="card">
-    <label for="initial_state">Environment state <span class="meta" style="text-transform:none;letter-spacing:0">(optional, natural language — e.g. "cancel_order is broken and returns E_CONN; order 8842 is pending")</span></label>
-    <textarea id="initial_state" rows="2" spellcheck="false" placeholder="Leave empty to let the world speak for itself."></textarea>
-  </div>
-
-  <div class="card">
     <label for="scenarios_json">Scenarios <span class="meta" style="text-transform:none;letter-spacing:0">(required — JSON array, authored outside this tool; edit before running)</span></label>
     <textarea id="scenarios_json" rows="8" spellcheck="false" placeholder='[{"id": "...", "hypothesis_id": "...", "put_id": "...", "resolved_inputs": {}, "user_message": "...", "world_state": {}, "simulator_notes": "...", "narrative": "...", "stated_state": null}]'></textarea>
   </div>
@@ -348,7 +343,7 @@ function renderResult(data) {
   const r = data.result;
   let html = `<div class="card">
     <h2 class="section-title"><span class="badge ${esc(r.status)}">${esc(r.status)}</span></h2>
-    <p class="meta">${r.scenarios_tried} scenario(s) tried · ${data.scenarios_generated} generated</p>
+    <p class="meta">${r.scenarios_tried} scenario(s) run</p>
     <p class="meta"><b>${fmt(data.usage)}</b></p>
     <h2 class="section-title" style="margin-top:1rem">Strategies tried</h2>
     <ul class="strategies">` +
@@ -483,8 +478,7 @@ function buildInvestigation() {
     budget: {
       max_steps_per_trace: parseInt(document.getElementById("b_steps").value) || 6,
       max_tokens: maxTokens ? parseInt(maxTokens) : null
-    },
-    initial_state: document.getElementById("initial_state").value.trim() || null
+    }
   };
 }
 function buildScenarios() {
