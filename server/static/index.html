@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>prompt-explore · jobs</title>
 <style>
   :root {
@@ -16,14 +15,14 @@
   body { margin: 0; background: var(--bg); color: var(--text);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.55; }
   .wrap { max-width: 940px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
-  header { display: flex; align-items: baseline; gap: 0.7rem; margin-bottom: 1.2rem; }
+  header { display: flex; align-items: baseline; gap: 0.7rem; margin-bottom: 1.2rem; flex-wrap: wrap; }
   header h1 { font-size: 1.15rem; margin: 0; }
   header .sub { color: var(--text-dim); font-size: 0.85rem; }
   header .auto { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
   .meta { color: var(--text-dim); font-size: 0.85rem; }
   .card { background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 1rem 1.1rem; margin: 0.7rem 0; }
-  .card h2 { font-size: 0.92rem; margin: 0; display: flex; align-items: center; gap: 0.6rem; }
+  .card h2 { font-size: 0.92rem; margin: 0; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
   .mono { font-family: var(--mono); }
   .badge { display: inline-block; font-size: 0.74rem; font-weight: 700;
     padding: 0.16rem 0.55rem; border-radius: 999px; letter-spacing: 0.02em; }
@@ -48,9 +47,7 @@
   .step { font-family: var(--mono); font-size: 0.76rem; color: var(--text-dim);
     margin: 0.25rem 0; padding: 0.3rem 0.45rem; background: var(--panel-2);
     border-radius: 5px; border-left: 2px solid var(--border); }
-  .step .n { color: var(--accent); }
   .step .tool { color: var(--text); font-weight: 600; }
-  .step .resp { display: block; margin-top: 0.2rem; white-space: pre-wrap; word-break: break-word; max-height: 9em; overflow: auto; }
   .chat { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem; }
   .bubble { max-width: 82%; padding: 0.4rem 0.6rem; border-radius: 9px; font-size: 0.8rem; }
   .bubble.put { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); }
@@ -73,7 +70,6 @@
     <span class="sub">job overview</span>
     <span class="auto">
       <label class="meta"><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
-      <span id="paused-hint" class="meta" style="display:none">⏸ paused — close logs to resume</span>
       <button class="toggle" id="expandall">expand all logs</button>
     </span>
   </header>
@@ -86,55 +82,60 @@ function fmtUsage(u){ if(!u) return ""; const c=u.cache_read_tokens?` <span clas
 function pretty(v){ try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
 function relTime(ms){ const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; }
 
+// --- chat bubbles (PUT left, sim right) ---
 function bubble(side, role, bodyHtml, bodyClass) {
-  return `<div class="bubble ${side}"><div class="role">${role}</div><div class="body${bodyClass ? ' '+bodyClass : ''}">${bodyHtml}</div></div>`;
+  return `<div class="bubble ${side}"><div class="role">${role}</div><div class="body${bodyClass?' '+bodyClass:''}">${bodyHtml}</div></div>`;
 }
-function renderChat(s) {
+function stepBubbles(st) {
   const out = [];
-  // Opening user message — the protagonist's first turn (sim side).
-  if (s.user_message && s.user_message.trim())
-    out.push(bubble("sim", "USER", esc(s.user_message)));
-  (s.steps || []).forEach(st => {
-    // PUT LLM (left): its text, then any tool call it makes.
-    if (st.model_output && st.model_output.trim())
-      out.push(bubble("put", "PUT", esc(st.model_output)));
-    if (st.tool_call) {
-      const a = st.tool_call.args;
-      const args = typeof a === "string" ? a : JSON.stringify(a);
-      out.push(bubble("put", "PUT · tool", `🔧 ${esc(st.tool_call.name)}(${esc(args)})`, "tool"));
-    }
-    // Simulation LLM (right): the tool response.
-    if (st.tool_response != null) {
-      const t = typeof st.tool_response === "string" ? st.tool_response : JSON.stringify(st.tool_response, null, 2);
-      out.push(bubble("sim", "SIM", esc(t)));
-    }
-  });
-  return `<div class="chat">${out.join("") || '<span class="meta">(no messages yet)</span>'}</div>`;
+  if (st.model_output && st.model_output.trim()) out.push(bubble("put","PUT",esc(st.model_output)));
+  if (st.tool_call) {
+    const a = st.tool_call.args;
+    const args = typeof a === "string" ? a : JSON.stringify(a);
+    out.push(bubble("put","PUT · tool",`🔧 ${esc(st.tool_call.name)}(${esc(args)})`,"tool"));
+  }
+  if (st.tool_response != null) {
+    const t = typeof st.tool_response === "string" ? st.tool_response : JSON.stringify(st.tool_response, null, 2);
+    out.push(bubble("sim","SIM",esc(t)));
+  }
+  return out.join("");
+}
+// Render chat bubbles for steps[fromIndex:]. The opening USER bubble is
+// rendered separately (once) so appends don't duplicate it.
+function stepBubblesFrom(steps, from) {
+  return (steps||[]).slice(from).map(stepBubbles).join("");
+}
+function userBubble(s) {
+  return (s.user_message && s.user_message.trim()) ? bubble("sim","USER",esc(s.user_message)) : "";
+}
+function chatInner(s) {
+  return userBubble(s) + stepBubblesFrom(s.steps, 0);
+}
+
+function scenBadge(s) {
+  const st = s.state||{}, kind = st.kind||"running";
+  if (kind === "running") return `<span class="badge scen-badge running"><span class="spinner"></span> running</span>`;
+  if (kind === "done") return `<span class="badge scen-badge ${st.matched?'witness_found':'no_witness_within_budget'}">${st.matched?'witness':'no match'}</span>`;
+  if (kind === "failed") return `<span class="badge scen-badge error">failed: ${esc(st.stage)}</span>`;
+  return "";
 }
 
 function renderScenario(s, input) {
-  const st = s.state || {};
-  const kind = st.kind || "running";
-  let badge = "";
-  if (kind === "running") badge = `<span class="badge running"><span class="spinner"></span> running</span>`;
-  else if (kind === "done") badge = `<span class="badge ${st.matched ? 'witness_found':'no_witness_within_budget'}">${st.matched ? 'witness':'no match'}</span>`;
-  else if (kind === "failed") badge = `<span class="badge error">failed: ${esc(st.stage)}</span>`;
+  const st = s.state||{}, kind = st.kind||"running";
   const failNote = kind === "failed" ? `<div class="note" style="margin:0.3rem 0">${esc(st.error)}</div>` : '';
-  // The scenario spec (ground truth to read the conversation against).
-  const spec = input ? `<details>
+  const spec = input ? `<details class="spec">
     <summary>scenario spec (narrative)</summary>
     <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${esc(input.narrative || '(no narrative)')}</div>
     ${input.simulator_notes ? `<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${esc(input.simulator_notes)}</div>`:''}
     ${input.world_state && Object.keys(input.world_state).length ? `<details class="statenote"><summary class="meta">world state</summary><pre class="step" style="max-height:9em;overflow:auto">${esc(pretty(input.world_state))}</pre></details>`:''}
   </details>` : '';
-  return `<div class="scen">
-    <div class="scen-head"><span class="scen-id">${esc(s.scenario_id)}</span> ${badge}
-      <span class="meta">${(s.steps||[]).length} turn(s)</span></div>
+  return `<div class="scen" data-scen="${esc(s.scenario_id)}">
+    <div class="scen-head"><span class="scen-id">${esc(s.scenario_id)}</span> ${scenBadge(s)}
+      <span class="meta scen-count">${(s.steps||[]).length} turn(s)</span></div>
     ${failNote}
     ${spec}
-    <details>
-      <summary>conversation</summary>
-      ${renderChat(s)}
+    <details class="conv"><summary>conversation</summary>
+      <div class="chat" data-steps="${(s.steps||[]).length}">${chatInner(s)}</div>
     </details>
   </div>`;
 }
@@ -142,63 +143,112 @@ function renderScenario(s, input) {
 function renderPut(put) {
   if (!put) return '';
   const tools = (put.tools||[]).map(t => `<span class="badge" style="background:var(--panel-2)">${esc(t.name)}</span>`).join(' ');
-  return `<details style="margin-top:0.4rem">
+  return `<details class="put" style="margin-top:0.4rem">
     <summary class="meta">prompt under test</summary>
     <div class="meta" style="margin:0.3rem 0"><b>design goals:</b> ${esc(put.design_goals||'')}</div>
     ${tools ? `<div class="meta" style="margin:0.3rem 0"><b>tools:</b> ${tools}</div>`:''}
     <details style="margin-top:0.3rem"><summary class="meta">template</summary><div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0;font-size:0.78rem">${esc(put.template||'')}</div></details>
   </details>`;
 }
+
+function renderResultLine(j) {
+  const r = j.result; if (!r) return '';
+  const rr = r.result;
+  let html = `<div class="result" style="margin-top:0.5rem">
+    <span class="badge ${esc(rr.status)}">${esc(rr.status)}</span>
+    <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} judged${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
+    ${r.usage ? `<div class="meta" style="margin-top:0.2rem">${fmtUsage(r.usage)}</div>`:''}
+  </div>`;
+  if (rr.failures && rr.failures.length) {
+    html += `<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f=>`<div class="step"><span class="tool">${esc(f.scenario_id)}</span> (${esc(f.stage)}): ${esc(f.error)}</div>`).join('')}</div></details>`;
+  }
+  return html;
+}
+
 function renderJob(j) {
   const p = j.progress || { scenarios: [] };
-  const r = j.result;
-  const inputById = {};
-  (j.scenarios || []).forEach(s => { inputById[s.id] = s; });
+  const inputById = {}; (j.scenarios||[]).forEach(s => { inputById[s.id] = s; });
   const scenHtml = (p.scenarios||[]).map(s => renderScenario(s, inputById[s.scenario_id])).join("");
-  let resultLine = "";
-  if (r) {
-    const rr = r.result;
-    resultLine = `<div style="margin-top:0.5rem">
-      <span class="badge ${esc(rr.status)}">${esc(rr.status)}</span>
-      <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} judged${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
-      ${r.usage ? `<div class="meta" style="margin-top:0.2rem">${fmtUsage(r.usage)}</div>`:''}
-    </div>`;
-    if (rr.failures && rr.failures.length) {
-      resultLine += `<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f=>`<div class="step"><span class="tool">${esc(f.scenario_id)}</span> (${esc(f.stage)}): ${esc(f.error)}</div>`).join('')}</div></details>`;
-    }
-  }
-  return `<div class="card">
-    <h2><span class="badge ${esc(j.status)}">${esc(j.status)}</span>
+  return `<div class="card" data-job="${esc(j.id)}">
+    <h2><span class="badge job-status ${esc(j.status)}">${esc(j.status)}</span>
       <span class="mono meta">${esc(j.id ? j.id.slice(0,8):'')}</span>
-      <span class="meta">· ${relTime(j.started_at)}</span>
+      <span class="meta job-time">· ${relTime(j.started_at)}</span>
     </h2>
     <div class="meta" style="margin:0.4rem 0"><b>question:</b> ${esc(j.question || '')}</div>
     ${renderPut(j.put)}
-    ${resultLine}
-    <div style="margin-top:0.5rem">${scenHtml}</div>
+    <div class="result-wrap">${renderResultLine(j)}</div>
+    <div class="scens" style="margin-top:0.5rem">${scenHtml}</div>
   </div>`;
+}
+
+// --- surgical in-place patching (preserves open logs + scroll) ---
+function patchScenario(se, s) {
+  const badge = se.querySelector('.scen-badge');
+  const newBadge = scenBadge(s);
+  if (badge && newBadge) badge.outerHTML = newBadge;
+  const cnt = se.querySelector('.scen-count');
+  if (cnt) cnt.textContent = `${(s.steps||[]).length} turn(s)`;
+  const conv = se.querySelector('.conv');
+  if (!conv) return;
+  const chat = conv.querySelector('.chat');
+  if (!chat) return;
+  const rendered = parseInt(chat.dataset.steps || '0', 10);
+  const steps = s.steps || [];
+  if (conv.open) {
+    // Open: append only new bubbles, preserving scroll.
+    if (steps.length > rendered) {
+      chat.insertAdjacentHTML("beforeend", stepBubblesFrom(steps, rendered));
+      chat.dataset.steps = String(steps.length);
+    }
+  } else {
+    // Closed: safe to rebuild fully.
+    chat.innerHTML = chatInner(s);
+    chat.dataset.steps = String(steps.length);
+  }
+}
+
+function patchJob(card, j) {
+  const badge = card.querySelector('.job-status');
+  if (badge) { badge.className = `badge job-status ${esc(j.status)}`; badge.textContent = j.status; }
+  const t = card.querySelector('.job-time');
+  if (t) t.textContent = `· ${relTime(j.started_at)}`;
+  const rw = card.querySelector('.result-wrap');
+  if (rw) rw.innerHTML = renderResultLine(j);
+
+  const inputById = {}; (j.scenarios||[]).forEach(s => { inputById[s.id] = s; });
+  const scens = card.querySelector('.scens');
+  if (!scens) return;
+  const want = new Set((j.progress.scenarios||[]).map(s => s.scenario_id));
+  scens.querySelectorAll('[data-scen]').forEach(e => { if (!want.has(e.dataset.scen)) e.remove(); });
+  (j.progress.scenarios||[]).forEach(s => {
+    let se = scens.querySelector(`[data-scen="${CSS.escape(s.scenario_id)}"]`);
+    if (se) patchScenario(se, s);
+    else { const tmp = document.createElement('div'); tmp.innerHTML = renderScenario(s, inputById[s.scenario_id]); if (tmp.firstElementChild) scens.appendChild(tmp.firstElementChild); }
+  });
 }
 
 async function refresh() {
   const el = document.getElementById('jobs');
-  // Don't rebuild while a log is open: a full innerHTML swap fights the
-  // user's toggles. Pause until all logs are closed.
-  const paused = !!el.querySelector('details[open]');
-  const hint = document.getElementById('paused-hint');
-  if (hint) hint.style.display = paused ? '' : 'none';
-  if (paused) return;
   try {
     const list = await fetch(API()).then(r => r.json());
     if (!list.length) { el.innerHTML = '<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>'; return; }
     const views = await Promise.all(list.map(s => fetch(API(s.id)).then(r => r.json())));
-    el.innerHTML = views.map(renderJob).join("");
+    const wantIds = new Set(views.map(v => v.id));
+    el.querySelectorAll('[data-job]').forEach(c => { if (!wantIds.has(c.dataset.job)) c.remove(); });
+    views.forEach(v => {
+      const card = el.querySelector(`[data-job="${CSS.escape(v.id)}"]`);
+      if (card) patchJob(card, v);
+      else { const tmp = document.createElement('div'); tmp.innerHTML = renderJob(v); if (tmp.firstElementChild) el.appendChild(tmp.firstElementChild); }
+    });
   } catch (e) { console.error(e); }
 }
+
 document.getElementById('expandall').onclick = () => {
-  const open = [...document.querySelectorAll('#jobs details[open]')].length < [...document.querySelectorAll('#jobs details')].length;
-  document.querySelectorAll('#jobs details').forEach(d => { if (open) d.setAttribute('open',''); else d.removeAttribute('open'); });
+  const all = [...document.querySelectorAll('#jobs details')];
+  const open = all.some(d => d.hasAttribute('open'));
+  all.forEach(d => { if (open) d.removeAttribute('open'); else d.setAttribute('open',''); });
 };
-let timer = setInterval(() => { if (document.getElementById('autorefresh').checked) refresh(); }, 2500);
+setInterval(() => { if (document.getElementById('autorefresh').checked) refresh(); }, 2500);
 refresh();
 </script>
 </body>
