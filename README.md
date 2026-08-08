@@ -96,9 +96,13 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
 - ⬜ Dedicated simulated-user model (persona, consistency across
   turns — basic user replies already work via a tool whose description
   says it responds with the user's answer)
-- ⬜ Pluggable LLM backends: use *any* OpenAI-format endpoint, not
-  just z.ai, via a dedicated crate (or a thin abstraction) for
-  provider-agnostic OpenAI-compatible clients.
+- ⬜ Support other LLM APIs, not just z.ai: server-side provider
+  selection via env config (base URL + API key + default model), so
+  any OpenAI-format endpoint (OpenRouter, Together, local vLLM…)
+  works without code changes. The client adapter is already
+  provider-agnostic (`OpenAiCompatibleClient::new(base, key)` with
+  z.ai / OpenRouter constructors); the *server* hardcodes z.ai today
+  (`OpenAiCompatibleClient::zai`, `ZAI_API_KEY`, glm-5.2 default).
 - ⬜ Per-role model selection: pick the model that *simulates tools*
   separately from the model that *runs the PUT conversation*. Important
   for cost optimisation — finding the cheapest model that still works
