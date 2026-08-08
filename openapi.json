@@ -613,6 +613,7 @@
         "enum": [
           "witness_found",
           "no_witness_within_budget",
+          "partial",
           "error"
         ]
       },

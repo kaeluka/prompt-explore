@@ -216,7 +216,7 @@ Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
 
 ### `RunStatus`
 
-Values: `witness_found`, `no_witness_within_budget`, `error`
+Values: `witness_found`, `no_witness_within_budget`, `partial`, `error`
 
 ### `Scenario`
 

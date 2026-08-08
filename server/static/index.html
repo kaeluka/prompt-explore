@@ -124,6 +124,8 @@
     border: 1px solid rgba(81,207,138,0.35); }
   .badge.error { background: rgba(245,181,86,0.14); color: var(--amber);
     border: 1px solid rgba(245,181,86,0.35); }
+  .badge.partial { background: rgba(245,181,86,0.14); color: var(--amber);
+    border: 1px solid rgba(245,181,86,0.35); }
   .badge.kind { background: rgba(124,108,255,0.14); color: #b7aaff;
     border: 1px solid rgba(124,108,255,0.35); font-size: 0.72rem; }
 
@@ -345,6 +347,7 @@ function renderResult(data) {
     <h2 class="section-title"><span class="badge ${esc(r.status)}">${esc(r.status)}</span></h2>
     <p class="meta">${r.scenarios_tried} scenario(s) run</p>
     <p class="meta"><b>${fmt(data.usage)}</b></p>
+    ${r.failures && r.failures.length ? `<div class="note" style="margin-top:0.6rem"><b>${r.failures.length} scenario(s) failed:</b><ul class="strategies">` + r.failures.map(f => `<li><b>${esc(f.scenario_id)}</b> (${esc(f.stage)}): ${esc(f.error.slice(0, 300))}</li>`).join("") + `</ul></div>` : ''}
     <h2 class="section-title" style="margin-top:1rem">Strategies tried</h2>
     <ul class="strategies">` +
     r.strategies_tried.map(s => `<li>${esc(s)}</li>`).join("") + `</ul></div>`;

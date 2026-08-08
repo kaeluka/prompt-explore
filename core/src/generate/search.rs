@@ -166,9 +166,15 @@ impl Investigator {
                 attempts,
             }
         } else {
+            // No witness. Distinguish a complete sweep from a partial one.
+            let status = if failures.is_empty() {
+                RunStatus::NoWitnessWithinBudget
+            } else {
+                RunStatus::Partial
+            };
             InvestigateOutcome {
                 result: RunResult {
-                    status: RunStatus::NoWitnessWithinBudget,
+                    status,
                     scenarios_tried: scenarios.len() as u32,
                     strategies_tried,
                     witness: None,

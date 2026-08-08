@@ -50,8 +50,16 @@ pub struct ScenarioFailure {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
+    /// A trace where the questioned behavior occurred was found.
     WitnessFound,
+    /// All scenarios completed a judged trace; none matched.
     NoWitnessWithinBudget,
+    /// No witness, and the run was partial: some scenarios completed a
+    /// judged trace (see `attempts`) and some errored (see `failures`).
+    /// A no-witness read here is weaker than a complete one — part of
+    /// the experiment never produced a trace.
+    Partial,
+    /// Every scenario errored; nothing was judged.
     Error,
 }
 
