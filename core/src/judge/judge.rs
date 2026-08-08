@@ -98,9 +98,17 @@ impl Judge {
         let mut user = format!("DESIGN GOALS:\n{design_goals}\n\nTRANSCRIPT:\n{transcript}");
         if let Some(s) = scenario {
             user.push_str(&format!(
-                "\nSCENARIO CONTEXT: customer said {:?}; notes: {:?}",
-                s.user_message, s.simulator_notes
+                "\nSCENARIO CONTEXT: customer said {:?}; notes: {:?}; initial world state: {}",
+                s.user_message,
+                s.simulator_notes,
+                serde_json::to_string(&s.world_state).unwrap_or_default()
             ));
+            if let Some(st) = &s.stated_state {
+                user.push_str(&format!(
+                    "\nUSER-SPECIFIED ENVIRONMENT STATE (what the operator requires of the \
+                     environment; deviations from this are themselves notable): {st}"
+                ));
+            }
         }
 
         let reply = self.call(&system, &user).await?;
@@ -181,9 +189,17 @@ impl Judge {
         let mut user = format!("CRITERION: {criterion}\n\nTRANSCRIPT:\n{transcript}");
         if let Some(s) = scenario {
             user.push_str(&format!(
-                "\nSCENARIO CONTEXT: customer said {:?}; notes: {:?}",
-                s.user_message, s.simulator_notes
+                "\nSCENARIO CONTEXT: customer said {:?}; notes: {:?}; initial world state: {}",
+                s.user_message,
+                s.simulator_notes,
+                serde_json::to_string(&s.world_state).unwrap_or_default()
             ));
+            if let Some(st) = &s.stated_state {
+                user.push_str(&format!(
+                    "\nUSER-SPECIFIED ENVIRONMENT STATE (what the operator requires of the \
+                     environment; deviations from this are themselves notable): {st}"
+                ));
+            }
         }
 
         let reply = self.call(&system, &user).await?;

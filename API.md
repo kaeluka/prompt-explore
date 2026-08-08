@@ -84,6 +84,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `final_world_state` | map&lt;string, any&gt; | yes | World state at the end of the trace (after all applied patches). |
 | `hypothesis_id` | string | yes |  |
 | `matched` | boolean | yes |  |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
@@ -150,6 +151,7 @@ Poll an investigation job. `status: done` includes the full result; `running` me
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `budget` | [`Budget`](#budget) | yes |  |
+| `initial_state` | string? | no | Optional user-specified starting environment state, in natural language (e.g. "cancel_order is broken and returns E_CONN; order 123 is already shipped"). It is NOT compiled or enforced: it flows into scenario building, the simulator notes, and the judge's scenario context as-is. Free-text — pasting a previous run's returned `final_state` JSON works fine. |
 | `question` | string | yes | The mandatory question, e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" |
 | `target_put` | string | yes | Id of the prompt under test — a run executes exactly one prompt. |
 
@@ -210,6 +212,7 @@ Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `final_state` | object? | no | The latest world state: from the witness trace when one was found, otherwise from the last completed attempt. Feed it back as `initial_state` of a follow-up investigation to chain runs. |
 | `incidental_findings` | string[] | yes | Goal violations found incidentally during the search. |
 | `proposals` | [`Proposal`](#proposal)[] | yes | May be non-empty even on negative results (defensive hardening). Always unverified; the user owns everything after the run. |
 | `scenarios_tried` | integer | yes |  |
@@ -246,6 +249,7 @@ Values: `read`, `write`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `final_world_state` | map&lt;string, any&gt; | no | The world state at the end of the run (after all applied patches). Empty if no write tool ever ran. |
 | `scenario_id` | string | yes |  |
 | `steps` | [`TraceStep`](#tracestep)[] | yes |  |
 | `verdict` | [`Verdict`](#verdict)? | no |  |

@@ -42,6 +42,7 @@ fn scenario() -> Scenario {
             json!({"A-1234": {"status": "shipped"}}),
         )]),
         simulator_notes: "customer is angry".into(),
+        stated_state: None,
     }
 }
 

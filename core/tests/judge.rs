@@ -13,6 +13,7 @@ use prompt_explore::model::simulation::{Scenario, Trace, TraceStep, ToolCall};
 fn trace_with_cancel() -> Trace {
     Trace {
         scenario_id: "s".into(),
+        final_world_state: Default::default(),
         verdict: None,
         steps: vec![
             TraceStep {
@@ -50,6 +51,7 @@ fn empty_scenario() -> Scenario {
         user_message: Some("cancel it".into()),
         world_state: Default::default(),
         simulator_notes: "".into(),
+        stated_state: None,
     }
 }
 

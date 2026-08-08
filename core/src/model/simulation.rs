@@ -18,6 +18,12 @@ pub struct Scenario {
     pub world_state: HashMap<String, Value>,
     /// Persona/stance guidance for the simulator LLM.
     pub simulator_notes: String,
+    /// The user-stated environment state, verbatim from the
+    /// investigation's `initial_state`. Kept separate from
+    /// `simulator_notes` so judge, simulator, and UI see the user's
+    /// words, not the scenario builder's paraphrase.
+    #[serde(default)]
+    pub stated_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -39,6 +45,10 @@ pub struct ToolCall {
 pub struct Trace {
     pub scenario_id: String,
     pub steps: Vec<TraceStep>,
+    /// The world state at the end of the run (after all applied
+    /// patches). Empty if no write tool ever ran.
+    #[serde(default)]
+    pub final_world_state: HashMap<String, Value>,
     /// Set by the judge after the runner produces the trace.
     pub verdict: Option<Verdict>,
 }

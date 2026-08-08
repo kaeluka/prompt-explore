@@ -91,6 +91,7 @@ async fn main() {
             json!({"B-7788": {"status": "processing", "total": 129.99}}),
         )]),
         simulator_notes: "the customer is vague about what they want".into(),
+        stated_state: None,
     };
 
     let budget = Budget {

@@ -127,6 +127,7 @@ impl Runner {
         Ok(Trace {
             scenario_id: scenario.id.clone(),
             steps,
+            final_world_state: world_state.into_iter().collect(),
             verdict: None,
         })
     }
@@ -149,6 +150,20 @@ impl Runner {
             Some(tool) => match validate_args(tool, &tc.arguments) {
                 Err(err) => format!("error: invalid arguments: {err}").into(),
                 Ok(args) => {
+                    // The user-stated environment state rides the same
+                    // notes channel the scenario already uses — verbatim,
+                    // not compiled or enforced. The simulator is asked to
+                    // respect it; when it doesn't, that's visible in the
+                    // trace and the judge (which also sees the state) can
+                    // catch the inconsistency.
+                    let notes = match &scenario.stated_state {
+                        Some(s) => format!(
+                            "{}\n\nUSER-SPECIFIED ENVIRONMENT STATE (the operator requires \
+                             this of the environment — respect it exactly): {}",
+                            scenario.simulator_notes, s
+                        ),
+                        None => scenario.simulator_notes.clone(),
+                    };
                     let sim = self
                         .simulator
                         .respond(
@@ -158,7 +173,7 @@ impl Runner {
                                 args,
                             },
                             world_state,
-                            &scenario.simulator_notes,
+                            &notes,
                         )
                         .await
                         .map_err(RunnerError::Simulator)?;

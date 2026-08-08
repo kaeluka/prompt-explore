@@ -1,6 +1,8 @@
 //! Run output: witnesses, attribution, and (unverified) proposals.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 use super::simulation::Trace;
 
@@ -16,6 +18,11 @@ pub struct RunResult {
     /// May be non-empty even on negative results (defensive hardening).
     /// Always unverified; the user owns everything after the run.
     pub proposals: Vec<Proposal>,
+    /// The latest world state: from the witness trace when one was
+    /// found, otherwise from the last completed attempt. Feed it back
+    /// as `initial_state` of a follow-up investigation to chain runs.
+    #[serde(default)]
+    pub final_state: Option<HashMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]

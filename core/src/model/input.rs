@@ -73,6 +73,14 @@ pub struct Investigation {
     /// Id of the prompt under test — a run executes exactly one prompt.
     pub target_put: String,
     pub budget: Budget,
+    /// Optional user-specified starting environment state, in natural
+    /// language (e.g. "cancel_order is broken and returns E_CONN; order
+    /// 123 is already shipped"). It is NOT compiled or enforced: it
+    /// flows into scenario building, the simulator notes, and the
+    /// judge's scenario context as-is. Free-text — pasting a previous
+    /// run's returned `final_state` JSON works fine.
+    #[serde(default)]
+    pub initial_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

@@ -103,7 +103,10 @@ impl Investigator {
                 break;
             }
             let want = self.scenarios_per_hypothesis.min(budget_remaining);
-            let scenarios = match builder.build(hypothesis, put, want).await {
+            let scenarios = match builder
+                .build(hypothesis, put, want, investigation.initial_state.as_deref())
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     strategies_tried.push(format!("[build error for {}] {e}", hypothesis.id));
@@ -195,6 +198,7 @@ impl Investigator {
                                 witness: Some(witness),
                                 incidental_findings: vec![],
                                 proposals,
+                                final_state: Some(trace.final_world_state.clone()),
                             },
                             scenarios: all_scenarios,
             attempts,
@@ -215,6 +219,7 @@ impl Investigator {
                 witness: None,
                 incidental_findings: vec![],
                 proposals: vec![],
+                final_state: attempts.last().map(|a| a.trace.final_world_state.clone()),
             },
             scenarios: all_scenarios,
             attempts,
@@ -230,6 +235,7 @@ impl Investigator {
                 witness: None,
                 incidental_findings: vec![],
                 proposals: vec![],
+                final_state: None,
             },
             scenarios: vec![],
             attempts: vec![],

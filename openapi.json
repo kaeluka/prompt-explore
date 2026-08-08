@@ -191,9 +191,18 @@
           "hypothesis_id",
           "matched",
           "verdict_rationale",
-          "steps"
+          "steps",
+          "final_world_state"
         ],
         "properties": {
+          "final_world_state": {
+            "type": "object",
+            "description": "World state at the end of the trace (after all applied patches).",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "hypothesis_id": {
             "type": "string"
           },
@@ -386,6 +395,13 @@
           "budget": {
             "$ref": "#/components/schemas/Budget"
           },
+          "initial_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional user-specified starting environment state, in natural\nlanguage (e.g. \"cancel_order is broken and returns E_CONN; order\n123 is already shipped\"). It is NOT compiled or enforced: it\nflows into scenario building, the simulator notes, and the\njudge's scenario context as-is. Free-text — pasting a previous\nrun's returned `final_state` JSON works fine."
+          },
           "question": {
             "type": "string",
             "description": "The mandatory question, e.g. \"are there inputs that cause\ndestructive tool calls?\" or \"why does this sometimes cancel,\nsometimes ask to confirm?\""
@@ -556,6 +572,17 @@
           "proposals"
         ],
         "properties": {
+          "final_state": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The latest world state: from the witness trace when one was\nfound, otherwise from the last completed attempt. Feed it back\nas `initial_state` of a follow-up investigation to chain runs.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "incidental_findings": {
             "type": "array",
             "items": {
@@ -662,6 +689,14 @@
           "steps"
         ],
         "properties": {
+          "final_world_state": {
+            "type": "object",
+            "description": "The world state at the end of the run (after all applied\npatches). Empty if no write tool ever ran.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "scenario_id": {
             "type": "string"
           },

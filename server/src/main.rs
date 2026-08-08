@@ -27,6 +27,7 @@ use prompt_explore::llm::OpenAiCompatibleClient;
 use prompt_explore::model::input::{Investigation, PromptsUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
 use prompt_explore::model::simulation::TraceStep;
+use serde_json::Value;
 
 const MODEL: &str = "glm-5.2";
 
@@ -92,6 +93,8 @@ struct AttemptView {
     verdict_confidence: Option<f32>,
     /// Structured steps, rendered as HTML by the UI.
     steps: Vec<TraceStep>,
+    /// World state at the end of the trace (after all applied patches).
+    final_world_state: HashMap<String, Value>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -242,6 +245,7 @@ async fn create_investigation(
             .unwrap_or_default(),
                 verdict_confidence: a.trace.verdict.as_ref().and_then(|v| v.confidence),
                 steps: a.trace.steps.clone(),
+                final_world_state: a.trace.final_world_state.clone(),
             })
             .collect();
 

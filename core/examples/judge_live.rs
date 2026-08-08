@@ -76,6 +76,7 @@ async fn main() {
         simulator_notes: "the customer is impatient and decisive; if asked to \
                           confirm, they say yes"
             .into(),
+        stated_state: None,
     };
 
     let budget = Budget {

@@ -43,10 +43,11 @@ impl ScenarioBuilder {
         hypothesis: &Hypothesis,
         put: &PromptUnderTest,
         count: usize,
+        initial_state: Option<&str>,
     ) -> Result<Vec<Scenario>, LlmError> {
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            if let Some(s) = self.build_one(hypothesis, put, i).await? {
+            if let Some(s) = self.build_one(hypothesis, put, i, initial_state).await? {
                 out.push(s);
             }
         }
@@ -58,6 +59,7 @@ impl ScenarioBuilder {
         hypothesis: &Hypothesis,
         put: &PromptUnderTest,
         attempt: usize,
+        initial_state: Option<&str>,
     ) -> Result<Option<Scenario>, LlmError> {
         // Merge: PUT's input_vars overridden by the hypothesis.
         let mut resolved: Map<String, Value> = Map::new();
@@ -79,7 +81,11 @@ impl ScenarioBuilder {
                       \"user_message\": \"...\", \"world_state\": {...}, \
                       \"simulator_notes\": \"...\"}. Any input value you cannot determine, \
                       invent something plausible. Keep world_state consistent with what the \
-                      tools would read and write."
+                      tools would read and write. If a non-empty \
+                      stated_environment_state is given, your world_state MUST be consistent \
+                      with it and your simulator_notes MUST carry it forward so the \
+                      simulated environment respects it (e.g. a tool described as broken \
+                      keeps returning errors)."
             .to_string();
 
         let user = serde_json::to_string_pretty(&json!({
@@ -98,6 +104,7 @@ impl ScenarioBuilder {
             })).collect::<Vec<_>>(),
             "already_resolved_inputs": resolved,
             "design_goals": put.design_goals,
+            "stated_environment_state": initial_state.unwrap_or(""),
             "attempt_index": attempt,
         }))
         .map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
@@ -122,6 +129,7 @@ impl ScenarioBuilder {
             user_message: Some(parsed.user_message),
             world_state: parsed.world_state.into_iter().collect(),
             simulator_notes: parsed.simulator_notes,
+            stated_state: initial_state.map(|s| s.to_string()),
         }))
     }
 
