@@ -93,7 +93,7 @@ function renderStep(i, st) {
   return `<div class="step"><span class="n">${i}</span>${body}</div>`;
 }
 
-function renderScenario(jobId, s) {
+function renderScenario(s) {
   const st = s.state || {};
   const kind = st.kind || "running";
   let badge = "";
@@ -106,7 +106,7 @@ function renderScenario(jobId, s) {
     <div class="scen-head"><span class="scen-id">${esc(s.scenario_id)}</span> ${badge}
       <span class="meta">${(s.steps||[]).length} step(s)</span></div>
     ${failNote}
-    <details data-key="${esc(jobId)}:${esc(s.scenario_id)}:log">
+    <details>
       <summary>tool-call log</summary>
       <div style="margin-top:0.35rem">${steps || '<span class="meta">(no steps yet)</span>'}</div>
     </details>
@@ -116,7 +116,7 @@ function renderScenario(jobId, s) {
 function renderJob(j) {
   const p = j.progress || { scenarios: [] };
   const r = j.result;
-  const scenHtml = (p.scenarios||[]).map(s => renderScenario(j.id, s)).join("");
+  const scenHtml = (p.scenarios||[]).map(renderScenario).join("");
   let resultLine = "";
   if (r) {
     const rr = r.result;
@@ -126,7 +126,7 @@ function renderJob(j) {
       ${r.usage ? `<div class="meta" style="margin-top:0.2rem">${fmtUsage(r.usage)}</div>`:''}
     </div>`;
     if (rr.failures && rr.failures.length) {
-      resultLine += `<details data-key="${esc(j.id)}:failures" style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f=>`<div class="step"><span class="tool">${esc(f.scenario_id)}</span> (${esc(f.stage)}): ${esc(f.error)}</div>`).join('')}</div></details>`;
+      resultLine += `<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f=>`<div class="step"><span class="tool">${esc(f.scenario_id)}</span> (${esc(f.stage)}): ${esc(f.error)}</div>`).join('')}</div></details>`;
     }
   }
   return `<div class="card">
