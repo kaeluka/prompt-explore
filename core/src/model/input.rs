@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One prompt under test: the system-prompt template, input variables,
-/// tool surface, and (mandatory) design goals. The harness executes this
-/// prompt inside scenario worlds and judges the resulting traces.
+/// tool surface, and design goals. The harness executes this prompt
+/// inside scenario worlds and surfaces the resulting traces for the
+/// caller to judge.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptUnderTest {
     pub id: String,
@@ -25,11 +26,11 @@ pub struct PromptUnderTest {
     /// This prompt's tool surface, exactly as the model sees it.
     /// Empty = no tool loop (but intent lives in `design_goals`, not here).
     pub tools: Vec<ToolSchema>,
-    /// MANDATORY. The author's stated intent for the prompt — the
-    /// yardstick it's supposed to uphold, and itself an optimization
-    /// target. Advisory in the current
-    /// verdict: the judge's criterion is the `question` alone; design
-    /// goals are not automatically enforced during a run.
+    /// The author's stated intent for the prompt — documentation the
+    /// caller reads when judging traces. No longer judged in-harness
+    /// (the judge was removed): it is surfaced with the result as
+    /// framing, not enforced. Still an optimization target for the
+    /// caller, who holds the intent.
     pub design_goals: String,
 }
 
@@ -55,16 +56,21 @@ pub enum SideEffect {
     Write,
 }
 
-/// An investigation: run the given scenarios against the PUT and judge
-/// every trace against the question.
+/// An investigation: run the given scenarios against the PUT and
+/// surface the resulting traces. Nothing is judged in-harness — the
+/// caller reads the traces and judges.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Investigation {
-    /// The mandatory behavioral question, used VERBATIM as the judge's
-    /// criterion — e.g. "are there inputs that cause destructive tool
-    /// calls?" or "why does this sometimes cancel, sometimes ask to
-    /// confirm?" A witness is a trace where the judge finds the
-    /// questioned behavior actually occurred.
-    pub question: String,
+    /// Advisory framing for the CALLER — what the caller is worried
+    /// about. Surfaced with the result to guide reading the traces;
+    /// never used as an oracle. The harness runs scenarios and surfaces
+    /// evidence; the caller is the judge. Optional — omit it when you
+    /// just want to observe behavior with no particular axe to grind.
+    ///
+    /// e.g. "are there inputs that cause destructive tool calls?" or
+    /// "why does this sometimes cancel, sometimes ask to confirm?"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     pub budget: Budget,
 }
 

@@ -131,7 +131,7 @@ impl Runner {
                     .handle_tool_call(
                         put, tc, &mut world_state, &mut messages, &mut sim,
                     )
-                    .await?;;
+                    .await?;
 
                 steps.push(TraceStep {
                     model_output: if i == 0 {
@@ -162,7 +162,6 @@ impl Runner {
         Ok(Trace {
             steps,
             final_world_state: world_state.into_iter().collect(),
-            verdict: None,
             resolved_inputs,
         })
     }

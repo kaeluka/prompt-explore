@@ -1,7 +1,8 @@
-//! Generation layer: the investigation orchestrator (`search`). (Scenario
-//! generation was removed — scenarios are authored outside the harness.
-//! Proposal generation and application were also removed: the witness and
-//! trace are the deliverable; the fix is the caller's job. See AGENTS.md.)
+//! Generation layer: the investigation orchestrator (`search`). Scenarios
+//! are authored outside the harness; the orchestrator runs every one
+//! against the PUT and surfaces the traces. There is no judge and no
+//! proposal generation — the traces are the deliverable and the caller
+//! is the judge. See AGENTS.md.
 
 pub mod search;
 

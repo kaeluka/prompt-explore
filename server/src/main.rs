@@ -53,9 +53,11 @@ struct Job {
     progress: Arc<std::sync::Mutex<RunProgress>>,
     /// Wall-clock start, epoch millis.
     started_at: u64,
-    /// The investigation question (the judge's criterion) — shown so a
-    /// reader can judge the unfolding trace against it.
-    question: String,
+    /// The investigation question (advisory framing for the caller —
+    /// what they are worried about). Shown so a reader can read the
+    /// unfolding trace with that concern in mind. Nothing is judged
+    /// against it.
+    question: Option<String>,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative, world_state, simulator_notes),
@@ -75,9 +77,9 @@ enum JobStatus {
 struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
-    /// Model for every LLM role (runner PUT + judge). Omit to
-    /// use the server default (`glm-5.2`). Provider is selected by
-    /// namespace prefix, e.g. `zai_coding::glm-5.2`,
+    /// Model for every LLM role (the PUT runner and the tool
+    /// simulator). Omit to use the server default (`glm-5.2`). Provider
+    /// is selected by namespace prefix, e.g. `zai_coding::glm-5.2`,
     /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare
     /// name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
     /// See `GET /api/models` for available namespaced model strings.
@@ -85,7 +87,7 @@ struct InvestigateRequest {
     /// This is the model you are TESTING: when experimenting to find
     /// which model works well for your prompt, this is the one you vary
     /// across runs. Keep `sim_model` fixed while you do (see below), so
-    /// each candidate PUT is judged in the same simulated environment.
+    /// each candidate PUT runs in the same simulated environment.
     #[serde(default)]
     model: Option<String>,
     /// Model for the tool SIMULATOR only (the LLM that roleplays the
@@ -106,15 +108,6 @@ struct InvestigateRequest {
     ///    cheaper. Pick a strong model here and leave it set.
     #[serde(default)]
     sim_model: Option<String>,
-    /// Model for the JUDGE only (the LLM that evaluates each trace against
-    /// your question). Defaults to `model`. The judge is the
-    /// safety-critical role: a weak judge fails to catch what a weak PUT
-    /// does, so it should be at least as strong as the PUT, ideally
-    /// stronger. Splitting it out lets you keep a strong judge while you
-    /// vary the PUT model — and a stronger judge also catches simulator
-    /// divergence (tool responses that contradict the narrative).
-    #[serde(default)]
-    judge_model: Option<String>,
     /// The test cases to run. Required; ALL of them are run (an explicit
     /// list is a contract — the step/token budget applies per trace, not
     /// to the count). Scenarios are authored outside this API and are
@@ -127,11 +120,8 @@ struct InvestigateResponse {
     result: RunResult,
     /// How many of the input scenarios completed a trace.
     scenarios_run: usize,
-    /// The opening user message of the witness scenario, so the UI can
-    /// show the full conversation (the trace steps start with the
-    /// agent's first reply).
-    witness_user_message: Option<String>,
-    /// Every completed run — the evidence behind a negative result.
+    /// Every completed run — the evidence. The caller reads these traces
+    /// and judges; the harness produces no verdict.
     attempts: Vec<AttemptView>,
     /// Cumulative token usage and call counts across the whole run.
     usage: UsageTotals,
@@ -143,9 +133,6 @@ struct AttemptView {
     /// self-describing: here is the world, the input domain, the opening
     /// turn, and the trace they produced.
     scenario: Scenario,
-    matched: bool,
-    verdict_rationale: String,
-    verdict_confidence: Option<f32>,
     /// Structured steps, rendered as HTML by the UI.
     steps: Vec<TraceStep>,
     /// World state at the end of the trace (after all applied patches).
@@ -168,14 +155,14 @@ struct JobCreated {
 struct JobView {
     status: JobStatus,
     /// Which LLM phase the investigation is currently in (see RunPhase:
-    /// scenarios / checking_goals / proposing). This is the observable
-    /// status of the job's LLM work — a job may read `status: running`
-    /// with every scenario done while in `checking_goals` (the advisory
-    /// design-goal tail). Mirrors `progress.phase`.
+    /// scenarios). This is the observable status of the job's LLM work.
+    /// Mirrors `progress.phase`.
     phase: prompt_explore::model::simulation::RunPhase,
     started_at: u64,
-    /// The investigation question (the judge's criterion).
-    question: String,
+    /// The investigation question (advisory framing for the caller —
+    /// what they are worried about). Optional; surfaced to guide reading
+    /// the traces. Nothing is judged against it.
+    question: Option<String>,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative = ground truth, etc.).
@@ -207,16 +194,18 @@ struct JobSummary {
         version = env!("CARGO_PKG_VERSION"),
         description = "Property-based testing for agent behavior. You AUTHOR scenarios \
                        (test cases: a world, an input domain, and a protagonist — see the \
-                       Scenario schema) and submit them with a prompt under test (PUT) and \
-                       a behavioral question. Every scenario is run: the simulator picks \
-                       concrete inputs from the input domain, renders the world's tools, the \
-                       PUT acts in it, and a judge evaluates each resulting trace against \
-                       your question. A witness is a trace where the questioned behavior \
-                       actually occurred. The deliverable is the witness (or a clean \
-                       no-witness sweep) plus the traces — the \
-                       caller finds and owns the fix; this API does not propose fixes. The \
-                       API is job-based: POST returns a job id immediately; poll GET \
-                       /api/investigations/{id} for the result.
+                       Scenario schema) and submit them with a prompt under test (PUT) and an \
+                       optional behavioral question. Every scenario is run: the simulator picks \
+                       concrete inputs from the input domain, renders the world's tools, and the \
+                       PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every \
+                       scenario — the world, the input domain, the resolved inputs, and the full \
+                       trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
+                       The question is advisory framing — it states what the caller is worried \
+                       about and is surfaced with the result to guide reading the traces — not \
+                       an oracle. Traces are informative even when nothing is obviously wrong; \
+                       the deliverable is the set of traces, and the caller reads them and \
+                       decides what (if anything) to fix. The API is job-based: POST returns \
+                       a job id immediately; poll GET /api/investigations/{id} for the result.
 
  \
                        DESIGN INTENT — why it works this way:
@@ -239,20 +228,20 @@ struct JobSummary {
                        hints for the simulator, NOT pinned outputs.
  \
                        • The answer to simulation unreliability is TRANSPARENCY, not \
-                       enforcement. Every tool response is in the trace; the judge sees the \
-                       same narrative and can flag a response that contradicts the stated \
-                       facts. Divergence is SURFACED for you to read, not silently fixed.
+                       enforcement. Every tool response is in the trace and the caller sees \
+                       the same narrative, so a response that contradicts the stated facts is \
+                       VISIBLE for the caller to read. Divergence is SURFACED, not silently \
+                       fixed.
  \
                        • Because tool responses are LLM-simulated, an investigation MAY \
                        contain unrealistic or WRONG results — responses that contradict the \
                        narrative, invent facts, or drift across calls. The harness does NOT \
-                       vet them. It is the CALLER'S responsibility to read the traces and \
-                       double-check the simulated tool responses thoroughly before trusting \
-                       any verdict. When simulation quality is insufficient, iterate with \
-                       three levers and re-run the same scenarios: (a) sharpen the scenario \
+                       vet them (there is no judge). It is the CALLER'S responsibility to \
+                       read the traces and double-check the simulated tool responses \
+                       thoroughly. When simulation quality is insufficient, iterate with two \
+                       levers and re-run the same scenarios: (a) sharpen the scenario \
                        NARRATIVE — tighter facts and negative facts; (b) use a stronger \
-                       SIM_MODEL — it must be powerful enough to simulate believably; (c) use \
-                       a stronger JUDGE_MODEL — so divergence is caught."
+                       SIM_MODEL — it must be powerful enough to simulate believably."
     ),
     paths(index, list_investigations, create_investigation, get_investigation, list_models)
 )]
@@ -422,9 +411,9 @@ async fn index() -> impl axum::response::IntoResponse {
 }
 
 /// Start an investigation: run every given scenario against the PUT and
-/// judge each trace against the question. Runs in the background; poll
-/// the returned id. The result includes every attempt (scenario + trace
-/// + verdict), any witness, incidental findings, and token usage.
+/// surface the resulting traces. There is no judge — the caller reads
+/// the traces and judges. Runs in the background; poll the returned id.
+/// The result includes every attempt (scenario + trace) and token usage.
 #[utoipa::path(
     post,
     path = "/api/investigations",
@@ -501,14 +490,12 @@ fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String 
     let id2 = id.clone();
     let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
     let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
-    let judge_model = req.judge_model.clone().unwrap_or_else(|| put_model.clone());
     tokio::spawn(async move {
         let inner = state2.client.as_ref().unwrap().clone();
         let tracker = Arc::new(UsageTracker::new(inner));
         let investigator = Investigator {
             runner_put: LlmRole { client: tracker.clone(), model: put_model.clone() },
             runner_sim: LlmRole { client: tracker.clone(), model: sim_model },
-            judge: LlmRole { client: tracker.clone(), model: judge_model },
         };
 
         let outcome = investigator
@@ -520,25 +507,11 @@ fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String 
             )
             .await;
 
-        let witness_user_message = outcome
-            .attempts
-            .iter()
-            .find(|a| a.trace.verdict.as_ref().is_some_and(|v| v.matched))
-            .and_then(|a| a.scenario.user_message.clone());
-
         let attempts = outcome
             .attempts
             .iter()
             .map(|a| AttemptView {
                 scenario: a.scenario.clone(),
-                matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),
-                verdict_rationale: a
-                    .trace
-                    .verdict
-                    .as_ref()
-                    .map(|v| v.rationale.clone())
-                    .unwrap_or_default(),
-                verdict_confidence: a.trace.verdict.as_ref().and_then(|v| v.confidence),
                 steps: a.trace.steps.clone(),
                 final_world_state: a.trace.final_world_state.clone(),
                 tool_calls: a
@@ -557,7 +530,6 @@ fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String 
             job.result = Some(InvestigateResponse {
                 result: outcome.result,
                 scenarios_run: outcome.scenarios.len(),
-                witness_user_message,
                 attempts,
                 usage: tracker.totals(),
             });

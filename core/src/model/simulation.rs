@@ -1,5 +1,6 @@
 //! Simulation: scenarios (the reproducible seed) and traces
-//! (the executed trajectory).
+//! (the executed trajectory). The harness runs scenarios and surfaces
+//! traces; the CALLER is the judge — there is no in-harness verdict.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,14 +12,12 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
-    /// The PUT tool loop and per-scenario judging are running (one or more
-    /// scenarios in flight — see `scenarios` for each one's state).
+    /// Scenarios are running: the PUT tool loop is simulating each
+    /// scenario (one or more in flight — see `scenarios` for each one's
+    /// state). There is no separate judging phase — the harness runs
+    /// scenarios and surfaces traces; the caller reads them and judges.
     #[default]
     Scenarios,
-    /// All scenarios finished; the advisory design-goal pass is running
-    /// (one judge call per completed trace). This is the "tail" phase — a
-    /// job may sit here after every scenario already looks done.
-    CheckingGoals,
 }
 
 /// Live progress of a run, exposed while it's in flight: one entry per
@@ -56,11 +55,9 @@ pub struct ScenarioProgress {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScenarioState {
     Running,
-    /// Completed a judged trace.
-    Done {
-        matched: bool,
-    },
-    /// Errored before producing a judged trace.
+    /// Completed: produced a full trace for the caller to judge.
+    Done,
+    /// Errored before producing a trace.
     Failed {
         stage: String,
         error: String,
@@ -100,7 +97,7 @@ impl RunProgress {
 /// A test case: a world specification, an input domain, and a
 /// protagonist. A pure VALUE — it carries no identity (`id`); runs report
 /// it back by value. The harness runs the prompt under test inside this
-/// world, and judges whether the questioned behavior occurred.
+/// world and surfaces the resulting trace for the caller to judge.
 ///
 /// Scenarios are authored OUTSIDE the harness (by the operator's agent);
 /// this API never generates them.
@@ -130,16 +127,16 @@ impl RunProgress {
 ///
 /// ## Authoring the `world`
 ///
-/// The world is ground truth for the simulator AND the judge, and it is
-/// the single biggest determinant of result quality. It must pin four
-/// things, all in natural language:
+/// The world is ground truth for the simulator AND the caller (who
+/// reads the traces and judges), and it is the single biggest
+/// determinant of result quality. It must pin four things, all in
+/// natural language:
 ///
 ///   1. INVENTORY — what exists and where, covering every query type the
 ///      PUT's tools allow.
 ///   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER
 ///      happens. Models default to inventing positive content; absences
-///      must be stated, and they are often what makes the witness
-///      decidable.
+///      must be stated, and they are often what makes a trace decidable.
 ///   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (closed
 ///      world) or "these are the relevant results" (open world).
 ///   4. RENDERING RULES — refuse queries outside the inventory; filler
@@ -156,11 +153,11 @@ impl RunProgress {
 /// fee" or "user_record: { id, name, tier }; user.id has been verified
 /// upstream — the agent may trust the person described". The world states
 /// the contract; whether the world actually HONORS it (or breaks it) is
-/// where witnesses live.
+/// where the behavior you are looking for lives.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
     /// The world specification — ground truth the simulator renders tool
-    /// responses from and the judge checks claims against. A SPECIFICATION
+    /// responses from and the caller checks claims against. A SPECIFICATION
     /// (prose), not instantiated data. See the API description's DESIGN
     /// INTENT. Cover inventory, facts (incl. negatives), completeness,
     /// and rendering rules.
@@ -209,25 +206,10 @@ pub struct Trace {
     /// Empty if no write tool ever ran.
     #[serde(default)]
     pub final_world_state: HashMap<String, Value>,
-    /// Set by the judge after the runner produces the trace.
-    pub verdict: Option<Verdict>,
     /// The concrete `{{variable}}` values the simulator generated from
     /// `input_domain` and rendered the PUT template with. Reported so a
-    /// witness is reproducible: the exact input that produced this trace.
+    /// trace is reproducible: the exact input that produced it.
     #[serde(default)]
     pub resolved_inputs: HashMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct Verdict {
-    /// Whether the judge finds the questioned behavior (the
-    /// investigation's `question`, used verbatim) ACTUALLY occurred in
-    /// this trace. Design goals are NOT anded in — they're an advisory
-    /// yardstick, not enforced here.
-    pub matched: bool,
-    /// The judge's confidence in its own verdict (self-reported).
-    pub confidence: Option<f32>,
-    pub rationale: String,
-    /// Where in the trace the match happened.
-    pub matched_step_indices: Vec<usize>,
-}

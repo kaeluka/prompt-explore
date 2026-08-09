@@ -34,8 +34,7 @@
   .badge.phase { background: rgba(154,163,178,0.10); color: var(--text-dim); border: 1px solid var(--border); font-weight: 500; }
   .badge.done { background: rgba(81,207,138,0.12); color: var(--green); border: 1px solid rgba(81,207,138,0.35); }
   .badge.failed { background: rgba(255,107,107,0.12); color: var(--red); border: 1px solid rgba(255,107,107,0.35); }
-  .badge.witness_found { background: rgba(255,107,107,0.14); color: var(--red); border: 1px solid rgba(255,107,107,0.4); }
-  .badge.no_witness_within_budget { background: rgba(81,207,138,0.12); color: var(--green); border: 1px solid rgba(81,207,138,0.35); }
+  .badge.completed { background: rgba(81,207,138,0.12); color: var(--green); border: 1px solid rgba(81,207,138,0.35); }
   .badge.partial { background: rgba(245,181,86,0.14); color: var(--amber); border: 1px solid rgba(245,181,86,0.35); }
   .badge.error { background: rgba(255,107,107,0.14); color: var(--red); border: 1px solid rgba(255,107,107,0.4); }
   .spinner { width: 13px; height: 13px; border-radius: 50%; display: inline-block;
@@ -86,12 +85,12 @@ const API = id => `/api/investigations${id ? '/'+id : ''}`;
 const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_tokens?` (${u.cache_read_tokens.toLocaleString()} cached)`:''} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm · ${u.tool_calls} tool calls` : '';
 const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
-const phaseLabel = p => ({scenarios:'simulating + judging scenarios', checking_goals:'checking design goals', proposing:'proposing fixes'})[p] || p;
+const phaseLabel = p => ({scenarios:'simulating scenarios'})[p] || p;
 
 function ScenBadge({ s }) {
   const st = s.state || {}, kind = st.kind || 'running';
   if (kind === 'running') return html`<span class="badge running"><span class="spinner"></span> running</span>`;
-  if (kind === 'done') return html`<span class="badge ${st.matched ? 'witness_found':'no_witness_within_budget'}">${st.matched ? 'witness':'no match'}</span>`;
+  if (kind === 'done') return html`<span class="badge done">done</span>`;
   if (kind === 'failed') return html`<span class="badge error">failed: ${st.stage}</span>`;
   return null;
 }
@@ -187,9 +186,9 @@ function ResultLine({ j }) {
   return html`
     <div style="margin-top:0.5rem">
       <span class="badge ${rr.status}">${rr.status}</span>
-      <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} judged${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
+      <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} trace(s)${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
       ${r.usage ? html`<div class="meta" style="margin-top:0.2rem">${fmtUsage(r.usage)}</div>` : null}
-      ${rr.failures && rr.failures.length ? html`<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f => html`<div class="step"><b>${f.scenario_id}</b> (${f.stage}): ${f.error}</div>`)}</div></details>` : null}
+      ${rr.failures && rr.failures.length ? html`<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f => html`<div class="step"><b>${(f.scenario&&f.scenario.user_message)||'(no user message)'}</b> (${f.stage}): ${f.error}</div>`)}</div></details>` : null}
     </div>`;
 }
 
@@ -204,7 +203,7 @@ function JobCard({ j }) {
         <span class="mono meta">${(j.id || '').slice(0,8)}</span>
         <span class="meta">${'· ' + relTime(j.started_at)}</span>
       </h2>
-      <div class="meta" style="margin:0.4rem 0"><b>question:</b> ${j.question || ''}</div>
+      <div class="meta" style="margin:0.4rem 0">${j.question ? html`<span><b>question:</b> ${j.question}</span>` : html`<span class="meta" style="opacity:0.7">(no question — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />
       <${ResultLine} j=${j} />
       <div class="scens" style="margin-top:0.5rem">

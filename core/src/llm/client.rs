@@ -1,6 +1,6 @@
-//! The LLM client abstraction. Runtime layers (`simulate`, `generate`,
-//! `judge`) depend on this trait, never on a concrete provider, so
-//! tests can inject `MockLlmClient`.
+//! The LLM client abstraction. Runtime layers (`simulate`, `generate`)
+//! depend on this trait, never on a concrete provider, so tests can
+//! inject `MockLlmClient`.
 
 use async_trait::async_trait;
 

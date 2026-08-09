@@ -1,6 +1,7 @@
-//! Trace → transcript formatting. Shared by the LLM judge (as prompt
-//! context) and by witness display (as the evidence artifact a user
-//! actually reads). Product-critical: this *is* the evidence.
+//! Trace → transcript formatting. A pure display utility: this is the
+//! evidence artifact a caller (human or LLM) actually reads when judging
+//! a trace. Shared by examples and any consumer that wants a readable
+//! rendering of a `Trace`. No judging happens here.
 
 use crate::model::simulation::Trace;
 

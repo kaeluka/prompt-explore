@@ -1,7 +1,6 @@
 //! End-to-end runner test with scripted PUT-model and simulator
 //! responses: no network, fully deterministic.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -101,7 +100,6 @@ async fn tool_call_loop_runs_and_mutates_state() {
     );
 
     assert!(trace.steps[1].tool_call.is_none());
-    assert!(trace.verdict.is_none());
 }
 
 #[tokio::test]

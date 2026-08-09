@@ -1,35 +1,32 @@
-//! Run output: witnesses, attribution, verdicts, and incidental findings.
+//! Run output: status, attempts, and failures. The harness runs
+//! scenarios and surfaces complete evidence (world, input domain,
+//! resolved inputs, full steps); the CALLER is the judge — there is
+//! no in-harness verdict, witness, or attribution.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::simulation::Trace;
+use super::simulation::Scenario;
 
+/// The outcome of running a set of scenarios against a PUT. The
+/// harness's job ends here: every scenario that completed has a trace
+/// in `attempts`; every scenario that errored is in `failures`. There
+/// is no verdict — the caller reads the traces and judges.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunResult {
     pub status: RunStatus,
     /// Scenarios attempted (= completed, in the response's `attempts`, +
     /// failed, in `failures`).
     pub scenarios_tried: u32,
-    /// Per-scenario provenance labels (e.g. "caller-provided scenario
-    /// 'id'"), surfaced so negative results show what was tried.
-    pub strategies_tried: Vec<String>,
-    pub witness: Option<Witness>,
-    /// Advisory design-goal violations found across completed traces —
-    /// best-effort: skipped when `design_goals` is empty or the goal
-    /// judge errors. These do NOT affect the witness verdict (the
-    /// question is the sole criterion); they are surfaced for the
-    /// operator to read.
-    pub incidental_findings: Vec<String>,
-    /// Scenarios that errored instead of producing a judged trace (PUT
-    /// execution, tool simulation, or judge failure). When non-empty,
+    /// Scenarios that errored instead of producing a trace (PUT
+    /// execution, input resolution, or tool simulation). When non-empty,
     /// `attempts` may be shorter than `scenarios_tried`; when ALL
     /// scenarios failed, `status` is `error`.
     #[serde(default)]
     pub failures: Vec<ScenarioFailure>,
-    /// The world state at the end: the witness trace's when one was
-    /// found, otherwise the last completed attempt's. Informational.
+    /// The world state at the end: the last completed attempt's final
+    /// state. Informational.
     #[serde(default)]
     pub final_state: Option<HashMap<String, Value>>,
 }
@@ -37,87 +34,25 @@ pub struct RunResult {
 /// A scenario that errored during a run.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ScenarioFailure {
-    pub scenario: super::simulation::Scenario,
+    pub scenario: Scenario,
     /// Where it failed: `"runner"` (PUT execution, input resolution, or
-    /// tool simulation) or `"judge"`.
+    /// tool simulation).
     pub stage: String,
     /// The error message.
     pub error: String,
 }
 
+/// Run-completion taxonomy. With the judge removed, "completion" is
+/// purely about whether scenarios produced traces — not whether any
+/// matched a question. The caller judges the traces.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
-    /// A trace where the questioned behavior occurred was found.
-    WitnessFound,
-    /// All scenarios completed a judged trace; none matched.
-    NoWitnessWithinBudget,
-    /// No witness, and the run was partial: some scenarios completed a
-    /// judged trace (see `attempts`) and some errored (see `failures`).
-    /// A no-witness read here is weaker than a complete one — part of
-    /// the experiment never produced a trace.
+    /// Every scenario produced a trace (see `attempts`).
+    Completed,
+    /// Some scenarios completed a trace (see `attempts`) and some
+    /// errored (see `failures`). Part of the evidence is missing.
     Partial,
-    /// Every scenario errored; nothing was judged.
+    /// Every scenario errored; no traces were produced.
     Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct Witness {
-    /// The matching trace. Currently always length 1 (existential mode
-    /// only); differential/divergence questioning is not implemented.
-    pub traces: Vec<Trace>,
-    pub attribution: Attribution,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct Attribution {
-    /// Verbatim quoted substrings of the PUT template implicated in the
-    /// behavior. Currently always empty: with caller-provided scenarios
-    /// there is no hypothesis to attribute instruction spans from.
-    pub instruction_spans: Vec<String>,
-    /// Free-text attribution note (e.g. the scenario id that produced
-    /// the witness).
-    pub evidence: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct Proposal {
-    /// Stable id within the run (e.g. "prop-0"). Used by
-    /// POST /api/investigations/{id}/apply to pick a proposal without
-    /// echoing the whole object back.
-    pub id: String,
-    pub kind: ProposalKind,
-    pub content: String,
-    /// Instruction spans this proposal addresses.
-    pub addresses: Vec<String>,
-    /// Must state explicitly that the proposal is unverified.
-    pub confidence_note: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ProposalKind {
-    Reword,
-    Split,
-    Merge,
-    DataTransform,
-    GoalRevision,
-}
-
-/// Result of checking a trace against a prompt's design goals.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct GoalFinding {
-    pub goal: String,
-    pub violated: bool,
-    pub rationale: String,
-    pub step_indices: Vec<usize>,
-}
-
-/// Result of comparing two traces for material divergence.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct DivergenceVerdict {
-    pub divergent: bool,
-    /// What specifically differs between the two traces.
-    pub differing_aspect: Option<String>,
-    pub rationale: String,
 }

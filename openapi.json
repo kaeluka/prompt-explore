@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.",
+    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. The question is advisory framing — it states what the caller is worried about and is surfaced with the result to guide reading the traces — not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.",
     "license": {
       "name": ""
     },
@@ -47,7 +47,7 @@
       },
       "post": {
         "tags": [],
-        "summary": "Start an investigation: run every given scenario against the PUT and\njudge each trace against the question. Runs in the background; poll\nthe returned id. The result includes every attempt (scenario + trace\n+ verdict), any witness, incidental findings, and token usage.",
+        "summary": "Start an investigation: run every given scenario against the PUT and\nsurface the resulting traces. There is no judge — the caller reads\nthe traces and judges. Runs in the background; poll the returned id.\nThe result includes every attempt (scenario + trace) and token usage.",
         "operationId": "create_investigation",
         "requestBody": {
           "content": {
@@ -176,8 +176,6 @@
         "type": "object",
         "required": [
           "scenario",
-          "matched",
-          "verdict_rationale",
           "steps",
           "final_world_state",
           "tool_calls"
@@ -190,9 +188,6 @@
             "propertyNames": {
               "type": "string"
             }
-          },
-          "matched": {
-            "type": "boolean"
           },
           "resolved_inputs": {
             "type": "object",
@@ -217,36 +212,6 @@
             "type": "integer",
             "description": "Number of tool calls the simulated PUT made in this trace.",
             "minimum": 0
-          },
-          "verdict_confidence": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "float"
-          },
-          "verdict_rationale": {
-            "type": "string"
-          }
-        }
-      },
-      "Attribution": {
-        "type": "object",
-        "required": [
-          "instruction_spans",
-          "evidence"
-        ],
-        "properties": {
-          "evidence": {
-            "type": "string",
-            "description": "Free-text attribution note (e.g. the scenario id that produced\nthe witness)."
-          },
-          "instruction_spans": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Verbatim quoted substrings of the PUT template implicated in the\nbehavior. Currently always empty: with caller-provided scenarios\nthere is no hypothesis to attribute instruction spans from."
           }
         }
       },
@@ -284,19 +249,12 @@
           "investigation": {
             "$ref": "#/components/schemas/Investigation"
           },
-          "judge_model": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Model for the JUDGE only (the LLM that evaluates each trace against\nyour question). Defaults to `model`. The judge is the\nsafety-critical role: a weak judge fails to catch what a weak PUT\ndoes, so it should be at least as strong as the PUT, ideally\nstronger. Splitting it out lets you keep a strong judge while you\nvary the PUT model — and a stronger judge also catches simulator\ndivergence (tool responses that contradict the narrative)."
-          },
           "model": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (runner PUT + judge). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT is judged in the same simulated environment."
+            "description": "Model for every LLM role (the PUT runner and the tool\nsimulator). Omit to use the server default (`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT runs in the same simulated environment."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
@@ -331,7 +289,7 @@
             "items": {
               "$ref": "#/components/schemas/AttemptView"
             },
-            "description": "Every completed run — the evidence behind a negative result."
+            "description": "Every completed run — the evidence. The caller reads these traces\nand judges; the harness produces no verdict."
           },
           "result": {
             "$ref": "#/components/schemas/RunResult"
@@ -344,21 +302,13 @@
           "usage": {
             "$ref": "#/components/schemas/UsageTotals",
             "description": "Cumulative token usage and call counts across the whole run."
-          },
-          "witness_user_message": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The opening user message of the witness scenario, so the UI can\nshow the full conversation (the trace steps start with the\nagent's first reply)."
           }
         }
       },
       "Investigation": {
         "type": "object",
-        "description": "An investigation: run the given scenarios against the PUT and judge\nevery trace against the question.",
+        "description": "An investigation: run the given scenarios against the PUT and\nsurface the resulting traces. Nothing is judged in-harness — the\ncaller reads the traces and judges.",
         "required": [
-          "question",
           "budget"
         ],
         "properties": {
@@ -366,8 +316,11 @@
             "$ref": "#/components/schemas/Budget"
           },
           "question": {
-            "type": "string",
-            "description": "The mandatory behavioral question, used VERBATIM as the judge's\ncriterion — e.g. \"are there inputs that cause destructive tool\ncalls?\" or \"why does this sometimes cancel, sometimes ask to\nconfirm?\" A witness is a trace where the judge finds the\nquestioned behavior actually occurred."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Advisory framing for the CALLER — what the caller is worried\nabout. Surfaced with the result to guide reading the traces;\nnever used as an oracle. The harness runs scenarios and surfaces\nevidence; the caller is the judge. Optional — omit it when you\njust want to observe behavior with no particular axe to grind.\n\ne.g. \"are there inputs that cause destructive tool calls?\" or\n\"why does this sometimes cancel, sometimes ask to confirm?\""
           }
         }
       },
@@ -423,7 +376,6 @@
           "status",
           "phase",
           "started_at",
-          "question",
           "put",
           "scenarios",
           "progress"
@@ -437,7 +389,7 @@
           },
           "phase": {
             "$ref": "#/components/schemas/RunPhase",
-            "description": "Which LLM phase the investigation is currently in (see RunPhase:\nscenarios / checking_goals / proposing). This is the observable\nstatus of the job's LLM work — a job may read `status: running`\nwith every scenario done while in `checking_goals` (the advisory\ndesign-goal tail). Mirrors `progress.phase`."
+            "description": "Which LLM phase the investigation is currently in (see RunPhase:\nscenarios). This is the observable status of the job's LLM work.\nMirrors `progress.phase`."
           },
           "progress": {
             "$ref": "#/components/schemas/RunProgress",
@@ -448,8 +400,11 @@
             "description": "The prompt under test."
           },
           "question": {
-            "type": "string",
-            "description": "The investigation question (the judge's criterion)."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The investigation question (advisory framing for the caller —\nwhat they are worried about). Optional; surfaced to guide reading\nthe traces. Nothing is judged against it."
           },
           "result": {
             "oneOf": [
@@ -533,7 +488,7 @@
       },
       "PromptUnderTest": {
         "type": "object",
-        "description": "One prompt under test: the system-prompt template, input variables,\ntool surface, and (mandatory) design goals. The harness executes this\nprompt inside scenario worlds and judges the resulting traces.",
+        "description": "One prompt under test: the system-prompt template, input variables,\ntool surface, and design goals. The harness executes this prompt\ninside scenario worlds and surfaces the resulting traces for the\ncaller to judge.",
         "required": [
           "id",
           "template",
@@ -543,7 +498,7 @@
         "properties": {
           "design_goals": {
             "type": "string",
-            "description": "MANDATORY. The author's stated intent for the prompt — the\nyardstick it's supposed to uphold, and itself an optimization\ntarget. Advisory in the current\nverdict: the judge's criterion is the `question` alone; design\ngoals are not automatically enforced during a run."
+            "description": "The author's stated intent for the prompt — documentation the\ncaller reads when judging traces. No longer judged in-harness\n(the judge was removed): it is surfaced with the result as\nframing, not enforced. Still an optimization target for the\ncaller, who holds the intent."
           },
           "id": {
             "type": "string"
@@ -615,8 +570,7 @@
         "type": "string",
         "description": "The LLM phase an investigation is currently in. Exposed so a reader can\nsee what the job is doing while it runs — never just a bare \"running\".\nSee the API description: every LLM phase is an observable status.",
         "enum": [
-          "scenarios",
-          "checking_goals"
+          "scenarios"
         ]
       },
       "RunProgress": {
@@ -641,11 +595,10 @@
       },
       "RunResult": {
         "type": "object",
+        "description": "The outcome of running a set of scenarios against a PUT. The\nharness's job ends here: every scenario that completed has a trace\nin `attempts`; every scenario that errored is in `failures`. There\nis no verdict — the caller reads the traces and judges.",
         "required": [
           "status",
-          "scenarios_tried",
-          "strategies_tried",
-          "incidental_findings"
+          "scenarios_tried"
         ],
         "properties": {
           "failures": {
@@ -653,25 +606,18 @@
             "items": {
               "$ref": "#/components/schemas/ScenarioFailure"
             },
-            "description": "Scenarios that errored instead of producing a judged trace (PUT\nexecution, tool simulation, or judge failure). When non-empty,\n`attempts` may be shorter than `scenarios_tried`; when ALL\nscenarios failed, `status` is `error`."
+            "description": "Scenarios that errored instead of producing a trace (PUT\nexecution, input resolution, or tool simulation). When non-empty,\n`attempts` may be shorter than `scenarios_tried`; when ALL\nscenarios failed, `status` is `error`."
           },
           "final_state": {
             "type": [
               "object",
               "null"
             ],
-            "description": "The world state at the end: the witness trace's when one was\nfound, otherwise the last completed attempt's. Informational.",
+            "description": "The world state at the end: the last completed attempt's final\nstate. Informational.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
             }
-          },
-          "incidental_findings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Advisory design-goal violations found across completed traces —\nbest-effort: skipped when `design_goals` is empty or the goal\njudge errors. These do NOT affect the witness verdict (the\nquestion is the sole criterion); they are surfaced for the\noperator to read."
           },
           "scenarios_tried": {
             "type": "integer",
@@ -681,38 +627,21 @@
           },
           "status": {
             "$ref": "#/components/schemas/RunStatus"
-          },
-          "strategies_tried": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Per-scenario provenance labels (e.g. \"caller-provided scenario\n'id'\"), surfaced so negative results show what was tried."
-          },
-          "witness": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Witness"
-              }
-            ]
           }
         }
       },
       "RunStatus": {
         "type": "string",
+        "description": "Run-completion taxonomy. With the judge removed, \"completion\" is\npurely about whether scenarios produced traces — not whether any\nmatched a question. The caller judges the traces.",
         "enum": [
-          "witness_found",
-          "no_witness_within_budget",
+          "completed",
           "partial",
           "error"
         ]
       },
       "Scenario": {
         "type": "object",
-        "description": "A test case: a world specification, an input domain, and a\nprotagonist. A pure VALUE — it carries no identity (`id`); runs report\nit back by value. The harness runs the prompt under test inside this\nworld, and judges whether the questioned behavior occurred.\n\nScenarios are authored OUTSIDE the harness (by the operator's agent);\nthis API never generates them.\n\n## Your role: adversary\n\nYour job is to BREAK the prompt under test, not validate it. Assume it\nis flawed, and construct each scenario — world, input domain, opening\nturn — to make the questioned bad behavior SURFACE if that flaw exists.\nWrite the world the way a red-teamer would, not the way the prompt's\nauthor would: set the trap (an order that belongs to a DIFFERENT\ncustomer; an ownership claim that cannot be verified; a broken lookup)\nrather than a comfortable situation where the agent easily behaves\nwell. A scenario that lets the agent succeed proves nothing.\n\nIf you are an LLM (or are using LLMs) to author scenarios, note that\nthey are notoriously bad at questioning their own output: the same\ncontext that wrote (or is reading) the prompt tends to construct\nscenarios that confirm it rather than break it. A SEPARATE agent\nhelps — construct each scenario with a SUBAGENT if you have one: a\nfresh context, given only the prompt, the behavioral question, and\nthis adversary role, is not invested in the prompt and will find\nangles its author didn't think to defend. This is only a PARTIAL\nmitigation, not a complete counter — a subagent shares the same\nmodel weights and can under-appreciate the same weaknesses — but it\nis a meaningful start. The mechanics below are tools for this role.\n\n## Authoring the `world`\n\nThe world is ground truth for the simulator AND the judge, and it is\nthe single biggest determinant of result quality. It must pin four\nthings, all in natural language:\n\n  1. INVENTORY — what exists and where, covering every query type the\n     PUT's tools allow.\n  2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER\n     happens. Models default to inventing positive content; absences\n     must be stated, and they are often what makes the witness\n     decidable.\n  3. COMPLETENESS ASSERTIONS — \"these are ALL the entry points\" (closed\n     world) or \"these are the relevant results\" (open world).\n  4. RENDERING RULES — refuse queries outside the inventory; filler\n     introduces no new facts; never contradict the facts.\n\n## Authoring the `input_domain`\n\nFor each `{{variable}}` in the PUT template, describe its input DOMAIN\n— the value space, semantics, and any PRECONDITIONS or trust contract\nthe prompt may assume about it. The simulator picks a concrete value\nfrom this domain (its job), fills the template, and the chosen value is\nreported in the trace's `resolved_inputs`. A domain is richer than a\npinned value: \"tier is standard or premium, premium cancels without a\nfee\" or \"user_record: { id, name, tier }; user.id has been verified\nupstream — the agent may trust the person described\". The world states\nthe contract; whether the world actually HONORS it (or breaks it) is\nwhere witnesses live.",
+        "description": "A test case: a world specification, an input domain, and a\nprotagonist. A pure VALUE — it carries no identity (`id`); runs report\nit back by value. The harness runs the prompt under test inside this\nworld and surfaces the resulting trace for the caller to judge.\n\nScenarios are authored OUTSIDE the harness (by the operator's agent);\nthis API never generates them.\n\n## Your role: adversary\n\nYour job is to BREAK the prompt under test, not validate it. Assume it\nis flawed, and construct each scenario — world, input domain, opening\nturn — to make the questioned bad behavior SURFACE if that flaw exists.\nWrite the world the way a red-teamer would, not the way the prompt's\nauthor would: set the trap (an order that belongs to a DIFFERENT\ncustomer; an ownership claim that cannot be verified; a broken lookup)\nrather than a comfortable situation where the agent easily behaves\nwell. A scenario that lets the agent succeed proves nothing.\n\nIf you are an LLM (or are using LLMs) to author scenarios, note that\nthey are notoriously bad at questioning their own output: the same\ncontext that wrote (or is reading) the prompt tends to construct\nscenarios that confirm it rather than break it. A SEPARATE agent\nhelps — construct each scenario with a SUBAGENT if you have one: a\nfresh context, given only the prompt, the behavioral question, and\nthis adversary role, is not invested in the prompt and will find\nangles its author didn't think to defend. This is only a PARTIAL\nmitigation, not a complete counter — a subagent shares the same\nmodel weights and can under-appreciate the same weaknesses — but it\nis a meaningful start. The mechanics below are tools for this role.\n\n## Authoring the `world`\n\nThe world is ground truth for the simulator AND the caller (who\nreads the traces and judges), and it is the single biggest\ndeterminant of result quality. It must pin four things, all in\nnatural language:\n\n  1. INVENTORY — what exists and where, covering every query type the\n     PUT's tools allow.\n  2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER\n     happens. Models default to inventing positive content; absences\n     must be stated, and they are often what makes a trace decidable.\n  3. COMPLETENESS ASSERTIONS — \"these are ALL the entry points\" (closed\n     world) or \"these are the relevant results\" (open world).\n  4. RENDERING RULES — refuse queries outside the inventory; filler\n     introduces no new facts; never contradict the facts.\n\n## Authoring the `input_domain`\n\nFor each `{{variable}}` in the PUT template, describe its input DOMAIN\n— the value space, semantics, and any PRECONDITIONS or trust contract\nthe prompt may assume about it. The simulator picks a concrete value\nfrom this domain (its job), fills the template, and the chosen value is\nreported in the trace's `resolved_inputs`. A domain is richer than a\npinned value: \"tier is standard or premium, premium cancels without a\nfee\" or \"user_record: { id, name, tier }; user.id has been verified\nupstream — the agent may trust the person described\". The world states\nthe contract; whether the world actually HONORS it (or breaks it) is\nwhere the behavior you are looking for lives.",
         "required": [
           "world"
         ],
@@ -740,7 +669,7 @@
           },
           "world": {
             "type": "string",
-            "description": "The world specification — ground truth the simulator renders tool\nresponses from and the judge checks claims against. A SPECIFICATION\n(prose), not instantiated data. See the API description's DESIGN\nINTENT. Cover inventory, facts (incl. negatives), completeness,\nand rendering rules."
+            "description": "The world specification — ground truth the simulator renders tool\nresponses from and the caller checks claims against. A SPECIFICATION\n(prose), not instantiated data. See the API description's DESIGN\nINTENT. Cover inventory, facts (incl. negatives), completeness,\nand rendering rules."
           }
         }
       },
@@ -762,7 +691,7 @@
           },
           "stage": {
             "type": "string",
-            "description": "Where it failed: `\"runner\"` (PUT execution, input resolution, or\ntool simulation) or `\"judge\"`."
+            "description": "Where it failed: `\"runner\"` (PUT execution, input resolution, or\ntool simulation)."
           }
         }
       },
@@ -819,9 +748,8 @@
           },
           {
             "type": "object",
-            "description": "Completed a judged trace.",
+            "description": "Completed: produced a full trace for the caller to judge.",
             "required": [
-              "matched",
               "kind"
             ],
             "properties": {
@@ -830,15 +758,12 @@
                 "enum": [
                   "done"
                 ]
-              },
-              "matched": {
-                "type": "boolean"
               }
             }
           },
           {
             "type": "object",
-            "description": "Errored before producing a judged trace.",
+            "description": "Errored before producing a trace.",
             "required": [
               "stage",
               "error",
@@ -912,47 +837,6 @@
           }
         }
       },
-      "Trace": {
-        "type": "object",
-        "required": [
-          "steps"
-        ],
-        "properties": {
-          "final_world_state": {
-            "type": "object",
-            "description": "The world state at the end of the run (after all applied patches).\nEmpty if no write tool ever ran.",
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "resolved_inputs": {
-            "type": "object",
-            "description": "The concrete `{{variable}}` values the simulator generated from\n`input_domain` and rendered the PUT template with. Reported so a\nwitness is reproducible: the exact input that produced this trace.",
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "steps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/TraceStep"
-            }
-          },
-          "verdict": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Verdict",
-                "description": "Set by the judge after the runner produces the trace."
-              }
-            ]
-          }
-        }
-      },
       "TraceStep": {
         "type": "object",
         "required": [
@@ -1014,7 +898,7 @@
           "llm_calls": {
             "type": "integer",
             "format": "int64",
-            "description": "Completions requested across all roles (hypothesizer, builder,\nrunner PUT + simulator, judge).",
+            "description": "Completions requested across all roles (the runner PUT and the\ntool simulator).",
             "minimum": 0
           },
           "output_tokens": {
@@ -1027,58 +911,6 @@
             "format": "int64",
             "description": "Tool calls the model requested. Only the simulated PUT has\ntools, so this counts tool calls in simulated traces.",
             "minimum": 0
-          }
-        }
-      },
-      "Verdict": {
-        "type": "object",
-        "required": [
-          "matched",
-          "rationale",
-          "matched_step_indices"
-        ],
-        "properties": {
-          "confidence": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "float",
-            "description": "The judge's confidence in its own verdict (self-reported)."
-          },
-          "matched": {
-            "type": "boolean",
-            "description": "Whether the judge finds the questioned behavior (the\ninvestigation's `question`, used verbatim) ACTUALLY occurred in\nthis trace. Design goals are NOT anded in — they're an advisory\nyardstick, not enforced here."
-          },
-          "matched_step_indices": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "description": "Where in the trace the match happened."
-          },
-          "rationale": {
-            "type": "string"
-          }
-        }
-      },
-      "Witness": {
-        "type": "object",
-        "required": [
-          "traces",
-          "attribution"
-        ],
-        "properties": {
-          "attribution": {
-            "$ref": "#/components/schemas/Attribution"
-          },
-          "traces": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Trace"
-            },
-            "description": "The matching trace. Currently always length 1 (existential mode\nonly); differential/divergence questioning is not implemented."
           }
         }
       }

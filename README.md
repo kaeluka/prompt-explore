@@ -3,11 +3,12 @@
 **Property-based testing for agent behavior.**
 
 prompt-explore investigates behavioral questions about LLM prompts (the
-"prompts under test", PsUT) by *executing* them in simulated
-environments: an internal LLM plays the tools,
-rendering each world and picking concrete inputs from an author-supplied
-scenario. The tool reports **reproducible witness traces** that answer the
-question. Ambiguity is found by execution, not by reading.
+"prompts under test", PUTs) by *executing* them in simulated
+environments: an internal LLM plays the tools, rendering each world and
+picking concrete inputs from an author-supplied scenario. The tool reports
+**every trace** — the complete evidence (world, input domain, resolved
+inputs, full steps). **The caller is the judge:** there is no in-harness
+verdict. Ambiguity is found by execution, not by reading.
 
 ## The UX loop
 
@@ -17,37 +18,38 @@ question. Ambiguity is found by execution, not by reading.
    plus an opening user message. The harness deliberately does not
    generate them (see AGENTS.md for authoring guidance).
 2. **Investigate.** The user provides the PUT (prompt template,
-   per-variable input specs, tool schemas, mandatory design goals), the
-   scenarios, and a mandatory investigation question, e.g.
+   per-variable input specs, tool schemas, design goals), the scenarios,
+   and an optional investigation question, e.g.
    - *existential*: "are there inputs that cause destructive tool calls?"
    - *differential*: "why does this sometimes cancel, sometimes ask?"
-3. **Witness.** The system runs the PUT against the simulated worlds,
-   judges every trace, and reports witness traces. "No witness found" is
-   a first-class, honestly-reported outcome: every scenario tried is
-   surfaced.
-4. **Witness is the deliverable.** The witness + trace + verdict +
-   incidental findings are the output. **prompt-explore does not propose
-   fixes** — knowing the witness and trace, the caller finds the fix
-   themselves; the hard part is finding the witness. (Fix suggestions
-   were removed: they only ever covered a single prompt, and real
-   optimization often spans interacting prompts. If they return, they
-   will target the multi-prompt case.)
+   The question is advisory framing — it states what the caller is
+   worried about — not an oracle the harness enforces.
+3. **Traces.** The system runs the PUT against the simulated worlds and
+   reports every trace. "Every scenario completed" is a first-class,
+   honestly-reported outcome: every scenario tried is surfaced.
+4. **Traces are the deliverable.** The traces (world, input domain,
+   resolved inputs, full steps) are the output. **prompt-explore does not
+   judge or propose fixes** — the caller reads the traces and judges, then
+   finds the fix themselves; the hard part is producing the traces.
 5. **The user owns everything after.** Verification = edit the prompt,
    re-run the same scenarios. The tool is the loop body of an
    interactive optimization loop; the user is the loop.
 
 ## Key design decisions
 
-- **Question-driven**, never audit-driven: every finding is wanted by
-  definition, because the user asked the question.
+- **Question-driven, never audit-driven**: every finding is wanted by
+  definition, because the user asked the question. (The question is now
+  *advisory* — it frames what the caller is worried about; the harness
+  no longer judges against it.)
 - **Simulation over static analysis**: a prompt template's ambiguity
   becomes obvious only when loaded with realistic data.
 - **Design goals are mandatory** per prompt and are themselves
-  optimization targets. Intent lives in design goals; structure lives
-  in the tools array; behavior is observed in traces.
-- **The judge never sees the PUT template** — verdicts must not be
-  biased toward "it said it would, so it did". The judge requires the
-  behavior to *actually occur* in the trace.
+  optimization targets for the caller. Intent lives in design goals;
+  structure lives in the tools array; behavior is observed in traces.
+- **The caller is the judge** — the harness runs scenarios and surfaces
+  traces; it produces no verdict. (An earlier in-harness LLM judge was
+  removed: the question-as-oracle is the hardest, most fragile input,
+  and the caller holds far richer intent.)
 - **World state**: the simulator LLM proposes, code holds the truth.
 
 ## Repo layout
@@ -56,12 +58,11 @@ Cargo workspace:
 
 ```
 core/            the library — all logic lives here, usable standalone
-├── src/model/       pure data layer (no I/O): input → predicate → simulation → output
+├── src/model/       pure data layer (no I/O): input → simulation → output
 ├── src/llm/         LlmClient trait + OpenAI-compatible adapter (z.ai, OpenRouter) + mock
-├── src/simulate/    runner (PUT tool loop) + tool-simulator LLM + world state
-├── src/judge/       predicate evaluation over traces (sees scenario + design goals, not the PUT)
-├── src/generate/    run + judge orchestration (the investigation driver)
-└── examples/        smoke, live_run, investigate_live, judge_live
+├── src/simulate/    runner (PUT tool loop) + tool-simulator LLM + world state + transcript rendering
+├── src/generate/    run orchestration (the investigation driver). No judge — the caller is the judge.
+└── examples/        smoke, live_run, investigate_live
 server/          thin axum wrapper — HTTP API + web UI. No business logic.
 ├── src/main.rs      job-based API: POST /api/investigations → poll GET /api/investigations/:id
 └── static/          web UI (job dashboard, live traces, transcripts)
@@ -80,25 +81,22 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
   `MockLlmClient`
 - ✅ Runner: PUT tool loop, simulator-LLM tool responses, world-state
   bookkeeping, budget stop conditions
-- ✅ Judge: NL-only LLM judge (behavior must actually occur; judge is
-  blind to the PUT template). Structural checks were tried and dropped.
-- ✅ Scenario execution (author-supplied world + input domain) + judge
-- ✅ Witness reporting: every attempt surfaced, including negative results
-- ✅ Per-role models: PUT, simulator, and judge independently selectable
-  (`model` / `sim_model` / `judge_model`), across providers
-- ✅ Advisory design-goal findings (`incidental_findings`) — surfaced, never
-  mixed into the witness verdict
+- ✅ Scenario execution (author-supplied world + input domain) → traces
+- ✅ Trace reporting: every attempt surfaced, including negative results
+- ✅ Per-role models: PUT and simulator independently selectable
+  (`model` / `sim_model`), across providers. (The judge role was removed —
+  the caller is the judge.)
 - ✅ HTTP server + web UI (job dashboard, live traces, observable LLM phases,
   budget controls)
 - ✅ CLI-style live runs via examples
 
 ### ⬜ Not done yet
 
-- ⬜ Differential questions (witness pairs)
+- ⬜ Differential questions (comparing traces across scenario variants)
 - ⬜ Attribution via instruction ablation
 - ⬜ Parallel trace execution
-- ⬜ Witness fixtures: replay, regression corpus, re-run semantics
-  (the "ask the same question again" loop)
+- ⬜ Trace fixtures: replay, regression corpus, re-run semantics
+  (the "run the same scenarios again" loop)
 - ⬜ Dedicated simulated-user model (persona, consistency across
   turns — basic user replies already work via a tool whose description
   says it responds with the user's answer)
@@ -150,5 +148,5 @@ chain) are first-class.
 ## Contributing
 
 See [AGENTS.md](AGENTS.md) — notably the **dogfooding rule**: when you
-change any of the tool's own prompts (judge, simulator), run the tool
+change any of the tool's own prompts (notably the simulator), run the tool
 against itself and record the before/after result in the commit message.

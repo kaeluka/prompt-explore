@@ -56,4 +56,21 @@ fn investigation_deserializes() {
     });
     let inv: Investigation = serde_json::from_value(json).unwrap();
     assert_eq!(inv.budget.max_steps_per_trace, 10);
+    assert_eq!(inv.question.as_deref(), Some("are there inputs that cause destructive tool calls?"));
+}
+
+#[test]
+fn investigation_question_is_optional() {
+    // The question is advisory framing for the caller, not an oracle —
+    // it may be omitted entirely (just observe behavior).
+    let json = json!({
+        "budget": { "max_steps_per_trace": 6, "max_tokens": null }
+    });
+    let inv: Investigation = serde_json::from_value(json).unwrap();
+    assert!(inv.question.is_none());
+    assert_eq!(inv.budget.max_steps_per_trace, 6);
+
+    // And it round-trips without the key (skip_serializing_if = None).
+    let back = serde_json::to_value(&inv).unwrap();
+    assert!(back.get("question").is_none());
 }
