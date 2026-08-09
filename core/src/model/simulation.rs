@@ -140,16 +140,6 @@ impl RunProgress {
 pub struct Scenario {
     /// Free-form label, echoed back in reports.
     pub id: String,
-    /// Provenance label: what this scenario was authored to test.
-    /// Informational only; optional (legacy field from the old
-    /// hypothesizer — safe to omit).
-    #[serde(default)]
-    pub hypothesis_id: String,
-    /// Provenance: which prompt this scenario was authored for. NOT
-    /// enforced — a scenario may be run against any PUT. Optional
-    /// (legacy); safe to omit.
-    #[serde(default)]
-    pub put_id: String,
     /// Concrete values for the PUT template's {{variables}}. Empty for
     /// templates with no placeholders.
     #[serde(default)]

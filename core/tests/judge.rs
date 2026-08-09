@@ -45,8 +45,6 @@ fn trace_with_cancel() -> Trace {
 fn empty_scenario() -> Scenario {
     Scenario {
         id: "s".into(),
-        hypothesis_id: "h".into(),
-        put_id: "p".into(),
         resolved_inputs: Default::default(),
         user_message: Some("cancel it".into()),
         world_state: Default::default(),

@@ -76,8 +76,6 @@ async fn main() {
     // A hand-authored scenario (the harness no longer generates them).
     let scenario = Scenario {
         id: "manual#0".into(),
-        hypothesis_id: "manual".into(),
-        put_id: put.id.clone(),
         resolved_inputs: HashMap::new(),
         user_message: Some(
             "My order B-7788 is three weeks late. I want it cancelled. Just get it done.".into(),

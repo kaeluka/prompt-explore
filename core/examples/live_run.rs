@@ -80,8 +80,6 @@ async fn main() {
 
     let scenario = Scenario {
         id: "live-1".into(),
-        hypothesis_id: "manual".into(),
-        put_id: "support_agent".into(),
         resolved_inputs: HashMap::from([("customer_tier".into(), json!("gold"))]),
         user_message: Some(
             "I don't need the stuff from order B-7788 anymore, do something about it".into(),

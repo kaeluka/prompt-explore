@@ -33,8 +33,6 @@ fn support_put() -> PromptUnderTest {
 fn scenario() -> Scenario {
     Scenario {
         id: "sc-1".into(),
-        hypothesis_id: "h-1".into(),
-        put_id: "support".into(),
         resolved_inputs: HashMap::from([("customer_tier".into(), json!("gold"))]),
         user_message: Some("cancel my order A-1234!".into()),
         world_state: HashMap::from([("orders".into(), json!({"A-1234": {"status": "shipped"}}))]),

@@ -143,7 +143,6 @@ struct AttemptView {
     /// to its world.
     scenario_id: String,
     user_message: Option<String>,
-    hypothesis_id: String,
     matched: bool,
     verdict_rationale: String,
     verdict_confidence: Option<f32>,
@@ -532,7 +531,6 @@ fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String 
             .map(|a| AttemptView {
                 scenario_id: a.scenario.id.clone(),
                 user_message: a.scenario.user_message.clone(),
-                hypothesis_id: a.scenario.hypothesis_id.clone(),
                 matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),
                 verdict_rationale: a
                     .trace

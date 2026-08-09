@@ -68,7 +68,6 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `final_world_state` | map&lt;string, any&gt; | yes | World state at the end of the trace (after all applied patches). |
-| `hypothesis_id` | string | yes |  |
 | `matched` | boolean | yes |  |
 | `narrative` | string | yes | The scenario's narrative (world spec), so the consumer can judge simulation quality alongside the trace. |
 | `scenario_id` | string | yes | The scenario this attempt ran, by id — ties the evidence back to its world. |
@@ -239,10 +238,8 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `hypothesis_id` | string | no | Provenance label: what this scenario was authored to test. Informational only; optional (legacy field from the old hypothesizer — safe to omit). |
 | `id` | string | yes | Free-form label, echoed back in reports. |
 | `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. A narrative is a SPECIFICATION (prose), not instantiated data: open worlds (web, email, payments) can never be materialized, so the simulator lazily renders concrete responses from it. See the API description's DESIGN INTENT for why this is prose and not a fixture. Required; every scenario must pin one — cover (1) inventory, (2) facts including NEGATIVE facts, (3) completeness assertions, (4) rendering rules. |
-| `put_id` | string | no | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. Optional (legacy); safe to omit. |
 | `resolved_inputs` | map&lt;string, any&gt; | no | Concrete values for the PUT template's {{variables}}. Empty for templates with no placeholders. |
 | `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |
 | `stated_state` | string? | no | Operator-required environment facts for THIS scenario (e.g. "cancel_order is broken and returns E_CONN"). Appended to the simulator's context so it respects them. Independent per scenario; there is no investigation-level environment-state field. |

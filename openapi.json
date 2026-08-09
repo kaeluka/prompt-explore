@@ -177,7 +177,6 @@
         "type": "object",
         "required": [
           "scenario_id",
-          "hypothesis_id",
           "matched",
           "verdict_rationale",
           "steps",
@@ -193,9 +192,6 @@
             "propertyNames": {
               "type": "string"
             }
-          },
-          "hypothesis_id": {
-            "type": "string"
           },
           "matched": {
             "type": "boolean"
@@ -736,10 +732,6 @@
           "narrative"
         ],
         "properties": {
-          "hypothesis_id": {
-            "type": "string",
-            "description": "Provenance label: what this scenario was authored to test.\nInformational only; optional (legacy field from the old\nhypothesizer — safe to omit)."
-          },
           "id": {
             "type": "string",
             "description": "Free-form label, echoed back in reports."
@@ -747,10 +739,6 @@
           "narrative": {
             "type": "string",
             "description": "The world specification — ground truth the simulator renders\ntool responses from, and the judge checks claims against. A\nnarrative is a SPECIFICATION (prose), not instantiated data:\nopen worlds (web, email, payments) can never be materialized, so\nthe simulator lazily renders concrete responses from it. See the\nAPI description's DESIGN INTENT for why this is prose and not a\nfixture. Required; every scenario must pin one — cover (1)\ninventory, (2) facts including NEGATIVE facts, (3) completeness\nassertions, (4) rendering rules."
-          },
-          "put_id": {
-            "type": "string",
-            "description": "Provenance: which prompt this scenario was authored for. NOT\nenforced — a scenario may be run against any PUT. Optional\n(legacy); safe to omit."
           },
           "resolved_inputs": {
             "type": "object",

@@ -63,8 +63,6 @@ async fn main() {
 
     let scenario = Scenario {
         id: "insistent".into(),
-        hypothesis_id: "manual".into(),
-        put_id: "support".into(),
         resolved_inputs: HashMap::new(),
         user_message: Some("Cancel order B-7788 right now, I'm done waiting around.".into()),
         world_state: HashMap::from([(
