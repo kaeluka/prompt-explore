@@ -49,12 +49,23 @@ impl Runner {
         put: &PromptUnderTest,
         scenario: &Scenario,
         budget: &Budget,
+        index: usize,
         progress: Option<Arc<Mutex<RunProgress>>>,
     ) -> Result<Trace, RunnerError> {
-        let mut messages = initial_messages(put, scenario);
+        // Resolve the template's {{variables}} from the scenario's
+        // input_domain — finding concrete inputs is the simulator's
+        // job. Empty map when the template has no placeholders.
+        let resolved_inputs = self
+            .simulator
+            .resolve_inputs(&put.template, &scenario.input_domain)
+            .await
+            .map_err(RunnerError::Simulator)?;
+        let mut messages = initial_messages(put, scenario, &resolved_inputs);
         let tools: Vec<ToolDef> = put.tools.iter().map(convert_tool).collect();
-        let mut world_state: Map<String, Value> =
-            scenario.world_state.clone().into_iter().collect();
+        // World state starts empty — initial state is described in the
+        // `world` prose, not a structured input. Write-tools mutate this
+        // during the trace.
+        let mut world_state: Map<String, Value> = Map::new();
         let mut sim = self.simulator.session(&build_simulator_notes(scenario));
         let mut steps = Vec::new();
         let mut tokens_used: u64 = 0;
@@ -97,7 +108,7 @@ impl Runner {
                 });
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
-                        g.push_step(&scenario.id, steps.last().unwrap().clone());
+                        g.push_step(index, steps.last().unwrap().clone());
                     }
                 }
                 break;
@@ -128,7 +139,7 @@ impl Runner {
                 });
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
-                        g.push_step(&scenario.id, steps.last().unwrap().clone());
+                        g.push_step(index, steps.last().unwrap().clone());
                     }
                 }
 
@@ -139,10 +150,10 @@ impl Runner {
         }
 
         Ok(Trace {
-            scenario_id: scenario.id.clone(),
             steps,
             final_world_state: world_state.into_iter().collect(),
             verdict: None,
+            resolved_inputs,
         })
     }
 
@@ -199,38 +210,34 @@ impl Runner {
     }
 }
 
-/// Assemble the simulator's context: persona/stance notes, the world
-/// specification (narrative — ground truth the simulator renders from,
-/// refusing queries outside its inventory), and the user-stated
-/// environment state. All verbatim; nothing compiled or enforced.
+/// Assemble the simulator's context: persona/stance notes and the world
+/// specification (ground truth the simulator renders from, refusing
+/// queries outside its inventory). All verbatim; nothing compiled or
+/// enforced.
 fn build_simulator_notes(scenario: &Scenario) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !scenario.simulator_notes.trim().is_empty() {
         parts.push(scenario.simulator_notes.clone());
     }
-    if !scenario.narrative.trim().is_empty() {
+    if !scenario.world.trim().is_empty() {
         parts.push(format!(
             "WORLD SPECIFICATION (ground truth for this environment — \
              render responses from it; refuse queries its inventory does \
              not cover; never contradict its facts or introduce new ones \
              in filler): {}",
-            scenario.narrative
+            scenario.world
         ));
-    }
-    if let Some(s) = &scenario.stated_state {
-        if !s.trim().is_empty() {
-            parts.push(format!(
-                "USER-SPECIFIED ENVIRONMENT STATE (the operator requires \
-                 this of the environment — respect it exactly): {s}"
-            ));
-        }
     }
     parts.join("\n\n")
 }
 
-fn initial_messages(put: &PromptUnderTest, scenario: &Scenario) -> Vec<Message> {
+fn initial_messages(
+    put: &PromptUnderTest,
+    scenario: &Scenario,
+    resolved_inputs: &std::collections::HashMap<String, Value>,
+) -> Vec<Message> {
     let mut msgs = vec![Message::System {
-        content: render_template(&put.template, &scenario.resolved_inputs),
+        content: render_template(&put.template, resolved_inputs),
     }];
     if let Some(user) = &scenario.user_message {
         msgs.push(Message::User {

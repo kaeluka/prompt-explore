@@ -13,8 +13,7 @@ use prompt_explore::simulate::Runner;
 fn support_put() -> PromptUnderTest {
     PromptUnderTest {
         id: "support".into(),
-        template: "You are a support agent. Tier: {{customer_tier}}.".into(),
-        input_vars: HashMap::new(),
+        template: "You are a support agent.".into(),
         tools: vec![ToolSchema {
             name: "cancel_order".into(),
             description: "Cancel an order.".into(),
@@ -32,13 +31,10 @@ fn support_put() -> PromptUnderTest {
 
 fn scenario() -> Scenario {
     Scenario {
-        id: "sc-1".into(),
-        resolved_inputs: HashMap::from([("customer_tier".into(), json!("gold"))]),
+        world: "One order A-1234 (status: shipped). cancel_order cancels by id.".into(),
+        input_domain: Default::default(),
         user_message: Some("cancel my order A-1234!".into()),
-        world_state: HashMap::from([("orders".into(), json!({"A-1234": {"status": "shipped"}}))]),
         simulator_notes: "customer is angry".into(),
-        narrative: "".into(),
-        stated_state: None,
     }
 }
 
@@ -86,7 +82,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
         "sim-model",
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget(), None)
+        .run(&support_put(), &scenario(), &budget(), 0, None)
         .await
         .unwrap();
 
@@ -136,7 +132,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         "sim-model",
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget(), None)
+        .run(&support_put(), &scenario(), &budget(), 0, None)
         .await
         .unwrap();
 
@@ -163,7 +159,7 @@ async fn empty_tool_array_means_single_shot() {
         "sim-model",
     );
     let trace = runner
-        .run(&put, &scenario(), &budget(), None)
+        .run(&put, &scenario(), &budget(), 0, None)
         .await
         .unwrap();
 

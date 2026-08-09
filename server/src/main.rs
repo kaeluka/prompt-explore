@@ -139,10 +139,10 @@ struct InvestigateResponse {
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct AttemptView {
-    /// The scenario this attempt ran, by id — ties the evidence back
-    /// to its world.
-    scenario_id: String,
-    user_message: Option<String>,
+    /// The scenario this attempt ran, BY VALUE (no id) — the attempt is
+    /// self-describing: here is the world, the input domain, the opening
+    /// turn, and the trace they produced.
+    scenario: Scenario,
     matched: bool,
     verdict_rationale: String,
     verdict_confidence: Option<f32>,
@@ -152,9 +152,11 @@ struct AttemptView {
     final_world_state: HashMap<String, Value>,
     /// Number of tool calls the simulated PUT made in this trace.
     tool_calls: usize,
-    /// The scenario's narrative (world spec), so the consumer can
-    /// judge simulation quality alongside the trace.
-    narrative: String,
+    /// The concrete {{variable}} values the simulator generated from
+    /// the scenario's input_domain and rendered the template with — the
+    /// exact input that produced this trace, for reproduction.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    resolved_inputs: HashMap<String, Value>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -204,13 +206,14 @@ struct JobSummary {
         title = "prompt-explore API",
         version = env!("CARGO_PKG_VERSION"),
         description = "Property-based testing for agent behavior. You AUTHOR scenarios \
-                       (test cases: a world specification plus a protagonist — see the \
+                       (test cases: a world, an input domain, and a protagonist — see the \
                        Scenario schema) and submit them with a prompt under test (PUT) and \
-                       a behavioral question. Every scenario is run: an LLM simulates the \
-                       world from the scenario's narrative, the PUT acts in it, and a judge \
-                       evaluates each resulting trace against your question. A witness is a \
-                       trace where the questioned behavior actually occurred. The deliverable \
-                       is the witness (or a clean no-witness sweep) plus the traces — the \
+                       a behavioral question. Every scenario is run: the simulator picks \
+                       concrete inputs from the input domain, renders the world's tools, the \
+                       PUT acts in it, and a judge evaluates each resulting trace against \
+                       your question. A witness is a trace where the questioned behavior \
+                       actually occurred. The deliverable is the witness (or a clean \
+                       no-witness sweep) plus the traces — the \
                        caller finds and owns the fix; this API does not propose fixes. The \
                        API is job-based: POST returns a job id immediately; poll GET \
                        /api/investigations/{id} for the result.
@@ -451,9 +454,8 @@ async fn index() -> impl axum::response::IntoResponse {
                     },
                     "scenarios": [
                         {
-                            "id": "preemptive-yes",
                             "user_message": "yes",
-                            "narrative": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
+                            "world": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
                         }
                     ]
                 })
@@ -474,14 +476,7 @@ async fn create_investigation(
 
 /// Create a job for `req`, spawn its run, and return the job id. Shared
 /// Create a job for `req`, spawn its run, and return the job id.
-fn spawn_investigation(state: Arc<AppState>, mut req: InvestigateRequest) -> String {
-    // Scenario ids are optional; assign by position so callers can omit
-    // them and still correlate attempts / failures / progress.
-    for (i, s) in req.scenarios.iter_mut().enumerate() {
-        if s.id.is_empty() {
-            s.id = format!("scenario-{i}");
-        }
-    }
+fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String {
     let id = Uuid::new_v4().to_string();
     let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
     let started_at = std::time::SystemTime::now()
@@ -535,8 +530,7 @@ fn spawn_investigation(state: Arc<AppState>, mut req: InvestigateRequest) -> Str
             .attempts
             .iter()
             .map(|a| AttemptView {
-                scenario_id: a.scenario.id.clone(),
-                user_message: a.scenario.user_message.clone(),
+                scenario: a.scenario.clone(),
                 matched: a.trace.verdict.as_ref().map_or(false, |v| v.matched),
                 verdict_rationale: a
                     .trace
@@ -553,7 +547,7 @@ fn spawn_investigation(state: Arc<AppState>, mut req: InvestigateRequest) -> Str
                     .iter()
                     .filter(|s| s.tool_call.is_some())
                     .count(),
-                narrative: a.scenario.narrative.clone(),
+                resolved_inputs: a.trace.resolved_inputs.clone(),
             })
             .collect();
 

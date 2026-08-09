@@ -53,8 +53,8 @@ pub struct Attempt {
 
 /// Outcome of running one scenario: a judged trace, or a captured failure.
 enum RunOne {
-    Done(Scenario, crate::model::simulation::Trace, bool),
-    Failed(Scenario, &'static str, String),
+    Done(usize, Scenario, crate::model::simulation::Trace, bool),
+    Failed(usize, Scenario, &'static str, String),
 }
 
 impl Investigator {
@@ -79,7 +79,6 @@ impl Investigator {
                 g.scenarios = scenarios
                     .iter()
                     .map(|s| crate::model::simulation::ScenarioProgress {
-                        scenario_id: s.id.clone(),
                         state: crate::model::simulation::ScenarioState::Running,
                         steps: Vec::new(),
                         user_message: s.user_message.clone(),
@@ -89,13 +88,14 @@ impl Investigator {
         }
 
         let mut tasks: JoinSet<RunOne> = JoinSet::new();
-        for scenario in scenarios {
+        for (index, scenario) in scenarios.iter().enumerate() {
             self.spawn_run(
                 &mut tasks,
                 &predicate,
                 &investigation.budget,
                 put,
                 scenario.clone(),
+                index,
                 progress.clone(),
             );
         }
@@ -104,11 +104,11 @@ impl Investigator {
         let mut failures = Vec::new();
         while let Some(res) = tasks.join_next().await {
             match res {
-                Ok(RunOne::Done(scenario, trace, matched)) => {
+                Ok(RunOne::Done(index, scenario, trace, matched)) => {
                     if let Some(p) = &progress {
                         if let Ok(mut g) = p.lock() {
                             g.set_state(
-                                &scenario.id,
+                                index,
                                 crate::model::simulation::ScenarioState::Done { matched },
                             );
                         }
@@ -119,11 +119,11 @@ impl Investigator {
                         matched,
                     });
                 }
-                Ok(RunOne::Failed(scenario, stage, error)) => {
+                Ok(RunOne::Failed(index, scenario, stage, error)) => {
                     if let Some(p) = &progress {
                         if let Ok(mut g) = p.lock() {
                             g.set_state(
-                                &scenario.id,
+                                index,
                                 crate::model::simulation::ScenarioState::Failed {
                                     stage: stage.into(),
                                     error: error.clone(),
@@ -132,22 +132,26 @@ impl Investigator {
                         }
                     }
                     failures.push(ScenarioFailure {
-                        scenario_id: scenario.id.clone(),
+                        scenario,
                         stage: stage.into(),
                         error,
                     })
                 }
                 Err(join_err) => failures.push(ScenarioFailure {
-                    scenario_id: "?".into(),
+                    scenario: Scenario {
+                        world: "<runner task panicked before returning its scenario>".into(),
+                        input_domain: Default::default(),
+                        user_message: None,
+                        simulator_notes: String::new(),
+                    },
                     stage: "runner".into(),
                     error: format!("task panicked: {join_err}"),
                 }),
             }
         }
 
-        let strategies_tried = scenarios
-            .iter()
-            .map(|s| format!("caller-provided scenario '{}'", s.id))
+        let strategies_tried = (0..scenarios.len())
+            .map(|i| format!("scenario #{i}"))
             .collect::<Vec<_>>();
 
         // All scenario tasks have finished; move into the design-goal
@@ -168,15 +172,15 @@ impl Investigator {
         let design_goals = put.design_goals.trim();
         if !design_goals.is_empty() {
             let goal_judge = Judge::new(self.judge.client.clone(), &self.judge.model);
-            for att in &attempts {
+            for (i, att) in attempts.iter().enumerate() {
                 if let Ok(findings) = goal_judge
                     .check_goals(&att.trace, design_goals, Some(&att.scenario))
                     .await
                 {
                     for f in findings.into_iter().filter(|f| f.violated) {
                         incidental_findings.push(format!(
-                            "[scenario {}] goal violated: {} — {}",
-                            att.scenario.id, f.goal, f.rationale
+                            "[attempt {i}] goal violated: {} — {}",
+                            f.goal, f.rationale
                         ));
                     }
                 }
@@ -207,7 +211,7 @@ impl Investigator {
             let witness = Witness {
                 attribution: Attribution {
                     instruction_spans: vec![],
-                    evidence: format!("caller-provided scenario '{}'", att.scenario.id),
+                    evidence: "caller-provided witness scenario (see trace)".into(),
                 },
                 traces: vec![trace.clone()],
             };
@@ -257,6 +261,7 @@ impl Investigator {
         budget: &crate::model::Budget,
         put: &PromptUnderTest,
         scenario: Scenario,
+        index: usize,
         progress: Option<Arc<std::sync::Mutex<crate::model::simulation::RunProgress>>>,
     ) {
         let put_role = self.runner_put.clone();
@@ -279,25 +284,24 @@ impl Investigator {
             let put_view = crate::model::input::PromptUnderTest {
                 id: String::new(),
                 template: put_template,
-                input_vars: Default::default(),
                 tools: put_tools,
                 design_goals: String::new(),
             };
             let trace = match runner
-                .run(&put_view, &scenario, &budget, progress.clone())
+                .run(&put_view, &scenario, &budget, index, progress.clone())
                 .await
             {
                 Ok(t) => t,
-                Err(e) => return RunOne::Failed(scenario, "runner", e.to_string()),
+                Err(e) => return RunOne::Failed(index, scenario, "runner", e.to_string()),
             };
             let v = match judge.evaluate(&trace, &predicate, Some(&scenario)).await {
                 Ok(v) => v,
-                Err(e) => return RunOne::Failed(scenario, "judge", e.to_string()),
+                Err(e) => return RunOne::Failed(index, scenario, "judge", e.to_string()),
             };
             let matched = v.matched;
             let mut t = trace;
             t.verdict = Some(v);
-            RunOne::Done(scenario, t, matched)
+            RunOne::Done(index, scenario, t, matched)
         });
     }
 }

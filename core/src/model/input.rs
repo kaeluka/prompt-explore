@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 /// One prompt under test: the system-prompt template, input variables,
 /// tool surface, and (mandatory) design goals. The harness executes this
@@ -15,14 +14,6 @@ pub struct PromptUnderTest {
     /// separate — it comes from the scenario's `user_message`, not the
     /// template.
     pub template: String,
-    /// Documents the template's expected `{{variables}}` and how to
-    /// generate values. With scenarios authored externally, this is
-    /// metadata for authors; concrete values come from each scenario's
-    /// `resolved_inputs`, which the runner substitutes into the template.
-    /// Optional (defaults empty) — it documents intent but does not drive
-    /// the run.
-    #[serde(default)]
-    pub input_vars: HashMap<String, VarSpec>,
     /// This prompt's tool surface, exactly as the model sees it.
     /// Empty = no tool loop (but intent lives in `design_goals`, not here).
     pub tools: Vec<ToolSchema>,
@@ -32,19 +23,6 @@ pub struct PromptUnderTest {
     /// verdict: the judge's criterion is the `question` alone; design
     /// goals are not automatically enforced during a run.
     pub design_goals: String,
-}
-
-/// Extensible per-variable data-generation spec.
-///
-/// New variants must be additive; the serialized form stays
-/// self-describing via the `kind` tag.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum VarSpec {
-    Constant { value: Value },
-    NlDescription { description: String },
-    Examples { examples: Vec<Value> },
-    // future: Schema, Distribution, TraceSample, ...
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

@@ -22,28 +22,25 @@ pub enum RunPhase {
 }
 
 /// Live progress of a run, exposed while it's in flight: one entry per
-/// scenario, with its steps accumulated as they're simulated. The runner
-/// pushes; the server/UI poll and render (e.g. a tool-call log, collapsed
-/// by default).
+/// scenario (positional — index = position in the submitted list), with
+/// its steps accumulated as they are simulated. The runner pushes; the
+/// server/UI poll and render.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunProgress {
-    /// Which LLM phase the investigation is currently in. While the job is
-    /// running this is the current phase; when it ends it stays at the last
-    /// phase (the terminal signal is the job status).
+    /// Which LLM phase the investigation is currently in.
     pub phase: RunPhase,
     pub scenarios: Vec<ScenarioProgress>,
 }
 
-/// One scenario's progress within a run.
+/// One scenario's progress within a run. Positional: index in the parent
+/// `scenarios` vec = the scenario's position in the submitted list.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ScenarioProgress {
-    pub scenario_id: String,
     pub state: ScenarioState,
     /// Steps simulated so far (tool calls + responses + model output).
     pub steps: Vec<TraceStep>,
-    /// The opening user message (the protagonist's first turn, played by
-    /// the simulator side). Lets a chat view render the whole
-    /// conversation, not just from the PUT's first reply.
+    /// The opening user message (the protagonist's first turn). Lets a
+    /// chat view render the whole conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_message: Option<String>,
 }
@@ -71,111 +68,78 @@ impl RunProgress {
         self.phase = phase;
     }
 
-    /// Set a scenario's state (called by the investigation as tasks finish).
-    pub fn set_state(&mut self, scenario_id: &str, state: ScenarioState) {
-        if let Some(s) = self
-            .scenarios
-            .iter_mut()
-            .find(|s| s.scenario_id == scenario_id)
-        {
+    /// Set a scenario's state by position.
+    pub fn set_state(&mut self, index: usize, state: ScenarioState) {
+        if let Some(s) = self.scenarios.get_mut(index) {
             s.state = state;
         }
     }
 
-    /// Append a simulated step to a scenario (called by the runner).
-    pub fn push_step(&mut self, scenario_id: &str, step: TraceStep) {
-        if let Some(s) = self
-            .scenarios
-            .iter_mut()
-            .find(|s| s.scenario_id == scenario_id)
-        {
+    /// Append a simulated step to a scenario by position.
+    pub fn push_step(&mut self, index: usize, step: TraceStep) {
+        if let Some(s) = self.scenarios.get_mut(index) {
             s.steps.push(step);
         }
     }
 }
 
-/// A test case: a world specification plus a protagonist. The harness
-/// runs the prompt under test inside this world — the simulator LLM
-/// renders tool responses from the `narrative` — and judges whether the
-/// questioned behavior occurred in the resulting trace.
+/// A test case: a world specification, an input domain, and a
+/// protagonist. A pure VALUE — it carries no identity (`id`); runs report
+/// it back by value. The harness runs the prompt under test inside this
+/// world, and judges whether the questioned behavior occurred.
 ///
 /// Scenarios are authored OUTSIDE the harness (by the operator's agent);
 /// this API never generates them.
 ///
-/// ## Authoring the `narrative`
+/// ## Authoring the `world`
 ///
-/// The narrative is ground truth for the simulator AND the judge, and it
-/// is the single biggest determinant of result quality. It must pin four
+/// The world is ground truth for the simulator AND the judge, and it is
+/// the single biggest determinant of result quality. It must pin four
 /// things, all in natural language:
 ///
 ///   1. INVENTORY — what exists and where, covering every query type the
-///      PUT's tools allow (files/paths for a repo agent; orders and their
-///      states for a support agent; per-topic results for a search tool).
+///      PUT's tools allow.
 ///   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER
 ///      happens. Models default to inventing positive content; absences
 ///      must be stated, and they are often what makes the witness
 ///      decidable.
-///   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (a
-///      closed world) or "these are the relevant results on this topic"
-///      (an open world). Without one, the simulator may invent extra
-///      content that looks like a real finding.
+///   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (closed
+///      world) or "these are the relevant results" (open world).
 ///   4. RENDERING RULES — refuse queries outside the inventory; filler
 ///      introduces no new facts; never contradict the facts.
 ///
-/// Size the world to the step budget: a small world fully explored beats
-/// a large world half-explored. And vary the worlds across a scenario
-/// set — same-shape scenarios prove the same thing twice.
+/// ## Authoring the `input_domain`
 ///
-/// Good vs bad: a narrative that only says "a customer service bot with
-/// an order database" lets the simulator invent whatever order exists
-/// (so a witness is meaningless). A good narrative names the order id,
-/// states it belongs to a DIFFERENT customer (negative fact), asserts
-/// that is the ONLY order (completeness), and says to refuse unknown ids
-/// (rendering rule) — then a cancellation that ignores ownership is a
-/// genuine witness. See the POST /api/investigations request example.
-///
-/// Everything needed to (stochastically) reproduce a trajectory lives
-/// here; everything else in a trace is derived.
+/// For each `{{variable}}` in the PUT template, describe its input DOMAIN
+/// — the value space, semantics, and any PRECONDITIONS or trust contract
+/// the prompt may assume about it. The simulator picks a concrete value
+/// from this domain (its job), fills the template, and the chosen value is
+/// reported in the trace's `resolved_inputs`. A domain is richer than a
+/// pinned value: "tier is standard or premium, premium cancels without a
+/// fee" or "user_record: { id, name, tier }; user.id has been verified
+/// upstream — the agent may trust the person described". The world states
+/// the contract; whether the world actually HONORS it (or breaks it) is
+/// where witnesses live.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
-    /// Free-form label, echoed back in reports and used to correlate this
-    /// scenario with its attempts, failures, and progress. Optional — if
-    /// omitted (empty), the harness assigns `scenario-{index}` from its
-    /// position in the submitted list.
+    /// The world specification — ground truth the simulator renders tool
+    /// responses from and the judge checks claims against. A SPECIFICATION
+    /// (prose), not instantiated data. See the API description's DESIGN
+    /// INTENT. Cover inventory, facts (incl. negatives), completeness,
+    /// and rendering rules.
+    pub world: String,
+    /// Per-`{{variable}}` input-domain descriptions: the value space,
+    /// semantics, and preconditions/trust contracts. The simulator
+    /// generates a concrete value for each (reported in the trace's
+    /// `resolved_inputs`). Empty for templates with no placeholders.
     #[serde(default)]
-    pub id: String,
-    /// Concrete values for the PUT template's {{variables}}. Empty for
-    /// templates with no placeholders.
-    #[serde(default)]
-    pub resolved_inputs: HashMap<String, Value>,
-    /// The opening message from the user/protagonist. For a tool-less
-    /// PUT this is the entire work input.
+    pub input_domain: HashMap<String, String>,
+    /// The opening message from the user/protagonist.
     pub user_message: Option<String>,
-    /// Mutable world facts, updated by write-tool patches during the
-    /// trace. Static truth belongs in the narrative, not here. Defaults
-    /// empty.
-    #[serde(default)]
-    pub world_state: HashMap<String, Value>,
     /// Persona/stance guidance for a simulated user, if the scenario
     /// involves one. Defaults empty.
     #[serde(default)]
     pub simulator_notes: String,
-    /// The world specification — ground truth the simulator renders
-    /// tool responses from, and the judge checks claims against. A
-    /// narrative is a SPECIFICATION (prose), not instantiated data:
-    /// open worlds (web, email, payments) can never be materialized, so
-    /// the simulator lazily renders concrete responses from it. See the
-    /// API description's DESIGN INTENT for why this is prose and not a
-    /// fixture. Required; every scenario must pin one — cover (1)
-    /// inventory, (2) facts including NEGATIVE facts, (3) completeness
-    /// assertions, (4) rendering rules.
-    pub narrative: String,
-    /// Operator-required environment facts for THIS scenario (e.g.
-    /// "cancel_order is broken and returns E_CONN"). Appended to the
-    /// simulator's context so it respects them. Independent per scenario;
-    /// there is no investigation-level environment-state field.
-    #[serde(default)]
-    pub stated_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -200,14 +164,18 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Trace {
-    pub scenario_id: String,
     pub steps: Vec<TraceStep>,
-    /// The world state at the end of the run (after all applied
-    /// patches). Empty if no write tool ever ran.
+    /// The world state at the end of the run (after all applied patches).
+    /// Empty if no write tool ever ran.
     #[serde(default)]
     pub final_world_state: HashMap<String, Value>,
     /// Set by the judge after the runner produces the trace.
     pub verdict: Option<Verdict>,
+    /// The concrete `{{variable}}` values the simulator generated from
+    /// `input_domain` and rendered the PUT template with. Reported so a
+    /// witness is reproducible: the exact input that produced this trace.
+    #[serde(default)]
+    pub resolved_inputs: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -215,7 +183,7 @@ pub struct Verdict {
     /// Whether the judge finds the questioned behavior (the
     /// investigation's `question`, used verbatim) ACTUALLY occurred in
     /// this trace. Design goals are NOT anded in — they're an advisory
-    /// yardstick and a separate optimization target, not enforced here.
+    /// yardstick, not enforced here.
     pub matched: bool,
     /// The judge's confidence in its own verdict (self-reported).
     pub confidence: Option<f32>,

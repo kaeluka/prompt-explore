@@ -4,10 +4,10 @@
 
 prompt-explore investigates behavioral questions about LLM prompts (the
 "prompts under test", PsUT) by *executing* them in simulated
-environments: an internal LLM plays the tools and maintains world state,
-rendering each world from an author-supplied scenario narrative. The
-tool reports **reproducible witness traces** that answer the question.
-Ambiguity is found by execution, not by reading.
+environments: an internal LLM plays the tools,
+rendering each world and picking concrete inputs from an author-supplied
+scenario. The tool reports **reproducible witness traces** that answer the
+question. Ambiguity is found by execution, not by reading.
 
 ## The UX loop
 
@@ -82,7 +82,7 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
   bookkeeping, budget stop conditions
 - ✅ Judge: NL-only LLM judge (behavior must actually occur; judge is
   blind to the PUT template). Structural checks were tried and dropped.
-- ✅ Scenario execution (author-supplied narratives) + judge
+- ✅ Scenario execution (author-supplied world + input domain) + judge
 - ✅ Witness reporting: every attempt surfaced, including negative results
 - ✅ Per-role models: PUT, simulator, and judge independently selectable
   (`model` / `sim_model` / `judge_model`), across providers

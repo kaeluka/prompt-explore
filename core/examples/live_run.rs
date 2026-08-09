@@ -32,12 +32,6 @@ async fn main() {
                    Example: to ask a customer for their order id, you would call:\n\
                    send_user_message({\"text\": \"Could you share your order id?\"})"
             .into(),
-        input_vars: HashMap::from([(
-            "customer_tier".into(),
-            VarSpec::Constant {
-                value: json!("gold"),
-            },
-        )]),
         tools: vec![
             ToolSchema {
                 name: "send_user_message".into(),
@@ -79,18 +73,13 @@ async fn main() {
     };
 
     let scenario = Scenario {
-        id: "live-1".into(),
-        resolved_inputs: HashMap::from([("customer_tier".into(), json!("gold"))]),
+        world: "One order B-7788 (status: processing, total $129.99). \
+                cancel_order cancels by id; send_user_message reaches the customer.".into(),
+        input_domain: HashMap::from([("customer_tier".into(), "gold".into())]),
         user_message: Some(
             "I don't need the stuff from order B-7788 anymore, do something about it".into(),
         ),
-        world_state: HashMap::from([(
-            "orders".into(),
-            json!({"B-7788": {"status": "processing", "total": 129.99}}),
-        )]),
         simulator_notes: "the customer is vague about what they want".into(),
-        narrative: "".into(),
-        stated_state: None,
     };
 
     let budget = Budget {
@@ -100,11 +89,11 @@ async fn main() {
 
     let runner = Runner::new(client.clone(), MODEL, client, MODEL);
     let trace = runner
-        .run(&put, &scenario, &budget, None)
+        .run(&put, &scenario, &budget, 0, None)
         .await
         .expect("run failed");
 
-    println!("=== trace {} ===", trace.scenario_id);
+    println!("=== trace ===");
     for (i, step) in trace.steps.iter().enumerate() {
         println!("--- step {i} ---");
         if !step.model_output.is_empty() {

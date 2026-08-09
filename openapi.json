@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.",
+    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.",
     "license": {
       "name": ""
     },
@@ -91,9 +91,8 @@
                     },
                     "scenarios": [
                       {
-                        "id": "preemptive-yes",
                         "user_message": "yes",
-                        "narrative": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
+                        "world": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
                       }
                     ]
                   }
@@ -176,13 +175,12 @@
       "AttemptView": {
         "type": "object",
         "required": [
-          "scenario_id",
+          "scenario",
           "matched",
           "verdict_rationale",
           "steps",
           "final_world_state",
-          "tool_calls",
-          "narrative"
+          "tool_calls"
         ],
         "properties": {
           "final_world_state": {
@@ -196,13 +194,17 @@
           "matched": {
             "type": "boolean"
           },
-          "narrative": {
-            "type": "string",
-            "description": "The scenario's narrative (world spec), so the consumer can\njudge simulation quality alongside the trace."
+          "resolved_inputs": {
+            "type": "object",
+            "description": "The concrete {{variable}} values the simulator generated from\nthe scenario's input_domain and rendered the template with — the\nexact input that produced this trace, for reproduction.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
           },
-          "scenario_id": {
-            "type": "string",
-            "description": "The scenario this attempt ran, by id — ties the evidence back\nto its world."
+          "scenario": {
+            "$ref": "#/components/schemas/Scenario",
+            "description": "The scenario this attempt ran, BY VALUE (no id) — the attempt is\nself-describing: here is the world, the input domain, the opening\nturn, and the trace they produced."
           },
           "steps": {
             "type": "array",
@@ -215,12 +217,6 @@
             "type": "integer",
             "description": "Number of tool calls the simulated PUT made in this trace.",
             "minimum": 0
-          },
-          "user_message": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "verdict_confidence": {
             "type": [
@@ -552,16 +548,6 @@
           "id": {
             "type": "string"
           },
-          "input_vars": {
-            "type": "object",
-            "description": "Documents the template's expected `{{variables}}` and how to\ngenerate values. With scenarios authored externally, this is\nmetadata for authors; concrete values come from each scenario's\n`resolved_inputs`, which the runner substitutes into the template.\nOptional (defaults empty) — it documents intent but does not drive\nthe run.",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/VarSpec"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
           "template": {
             "type": "string",
             "description": "The system-prompt template. `{{var}}` placeholders are substituted\nfrom the scenario's `resolved_inputs`. The opening user turn is\nseparate — it comes from the scenario's `user_message`, not the\ntemplate."
@@ -635,7 +621,7 @@
       },
       "RunProgress": {
         "type": "object",
-        "description": "Live progress of a run, exposed while it's in flight: one entry per\nscenario, with its steps accumulated as they're simulated. The runner\npushes; the server/UI poll and render (e.g. a tool-call log, collapsed\nby default).",
+        "description": "Live progress of a run, exposed while it's in flight: one entry per\nscenario (positional — index = position in the submitted list), with\nits steps accumulated as they are simulated. The runner pushes; the\nserver/UI poll and render.",
         "required": [
           "phase",
           "scenarios"
@@ -643,7 +629,7 @@
         "properties": {
           "phase": {
             "$ref": "#/components/schemas/RunPhase",
-            "description": "Which LLM phase the investigation is currently in. While the job is\nrunning this is the current phase; when it ends it stays at the last\nphase (the terminal signal is the job status)."
+            "description": "Which LLM phase the investigation is currently in."
           },
           "scenarios": {
             "type": "array",
@@ -726,23 +712,17 @@
       },
       "Scenario": {
         "type": "object",
-        "description": "A test case: a world specification plus a protagonist. The harness\nruns the prompt under test inside this world — the simulator LLM\nrenders tool responses from the `narrative` — and judges whether the\nquestioned behavior occurred in the resulting trace.\n\nScenarios are authored OUTSIDE the harness (by the operator's agent);\nthis API never generates them.\n\n## Authoring the `narrative`\n\nThe narrative is ground truth for the simulator AND the judge, and it\nis the single biggest determinant of result quality. It must pin four\nthings, all in natural language:\n\n  1. INVENTORY — what exists and where, covering every query type the\n     PUT's tools allow (files/paths for a repo agent; orders and their\n     states for a support agent; per-topic results for a search tool).\n  2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER\n     happens. Models default to inventing positive content; absences\n     must be stated, and they are often what makes the witness\n     decidable.\n  3. COMPLETENESS ASSERTIONS — \"these are ALL the entry points\" (a\n     closed world) or \"these are the relevant results on this topic\"\n     (an open world). Without one, the simulator may invent extra\n     content that looks like a real finding.\n  4. RENDERING RULES — refuse queries outside the inventory; filler\n     introduces no new facts; never contradict the facts.\n\nSize the world to the step budget: a small world fully explored beats\na large world half-explored. And vary the worlds across a scenario\nset — same-shape scenarios prove the same thing twice.\n\nGood vs bad: a narrative that only says \"a customer service bot with\nan order database\" lets the simulator invent whatever order exists\n(so a witness is meaningless). A good narrative names the order id,\nstates it belongs to a DIFFERENT customer (negative fact), asserts\nthat is the ONLY order (completeness), and says to refuse unknown ids\n(rendering rule) — then a cancellation that ignores ownership is a\ngenuine witness. See the POST /api/investigations request example.\n\nEverything needed to (stochastically) reproduce a trajectory lives\nhere; everything else in a trace is derived.",
+        "description": "A test case: a world specification, an input domain, and a\nprotagonist. A pure VALUE — it carries no identity (`id`); runs report\nit back by value. The harness runs the prompt under test inside this\nworld, and judges whether the questioned behavior occurred.\n\nScenarios are authored OUTSIDE the harness (by the operator's agent);\nthis API never generates them.\n\n## Authoring the `world`\n\nThe world is ground truth for the simulator AND the judge, and it is\nthe single biggest determinant of result quality. It must pin four\nthings, all in natural language:\n\n  1. INVENTORY — what exists and where, covering every query type the\n     PUT's tools allow.\n  2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER\n     happens. Models default to inventing positive content; absences\n     must be stated, and they are often what makes the witness\n     decidable.\n  3. COMPLETENESS ASSERTIONS — \"these are ALL the entry points\" (closed\n     world) or \"these are the relevant results\" (open world).\n  4. RENDERING RULES — refuse queries outside the inventory; filler\n     introduces no new facts; never contradict the facts.\n\n## Authoring the `input_domain`\n\nFor each `{{variable}}` in the PUT template, describe its input DOMAIN\n— the value space, semantics, and any PRECONDITIONS or trust contract\nthe prompt may assume about it. The simulator picks a concrete value\nfrom this domain (its job), fills the template, and the chosen value is\nreported in the trace's `resolved_inputs`. A domain is richer than a\npinned value: \"tier is standard or premium, premium cancels without a\nfee\" or \"user_record: { id, name, tier }; user.id has been verified\nupstream — the agent may trust the person described\". The world states\nthe contract; whether the world actually HONORS it (or breaks it) is\nwhere witnesses live.",
         "required": [
-          "narrative"
+          "world"
         ],
         "properties": {
-          "id": {
-            "type": "string",
-            "description": "Free-form label, echoed back in reports and used to correlate this\nscenario with its attempts, failures, and progress. Optional — if\nomitted (empty), the harness assigns `scenario-{index}` from its\nposition in the submitted list."
-          },
-          "narrative": {
-            "type": "string",
-            "description": "The world specification — ground truth the simulator renders\ntool responses from, and the judge checks claims against. A\nnarrative is a SPECIFICATION (prose), not instantiated data:\nopen worlds (web, email, payments) can never be materialized, so\nthe simulator lazily renders concrete responses from it. See the\nAPI description's DESIGN INTENT for why this is prose and not a\nfixture. Required; every scenario must pin one — cover (1)\ninventory, (2) facts including NEGATIVE facts, (3) completeness\nassertions, (4) rendering rules."
-          },
-          "resolved_inputs": {
+          "input_domain": {
             "type": "object",
-            "description": "Concrete values for the PUT template's {{variables}}. Empty for\ntemplates with no placeholders.",
-            "additionalProperties": {},
+            "description": "Per-`{{variable}}` input-domain descriptions: the value space,\nsemantics, and preconditions/trust contracts. The simulator\ngenerates a concrete value for each (reported in the trace's\n`resolved_inputs`). Empty for templates with no placeholders.",
+            "additionalProperties": {
+              "type": "string"
+            },
             "propertyNames": {
               "type": "string"
             }
@@ -751,27 +731,16 @@
             "type": "string",
             "description": "Persona/stance guidance for a simulated user, if the scenario\ninvolves one. Defaults empty."
           },
-          "stated_state": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Operator-required environment facts for THIS scenario (e.g.\n\"cancel_order is broken and returns E_CONN\"). Appended to the\nsimulator's context so it respects them. Independent per scenario;\nthere is no investigation-level environment-state field."
-          },
           "user_message": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The opening message from the user/protagonist. For a tool-less\nPUT this is the entire work input."
+            "description": "The opening message from the user/protagonist."
           },
-          "world_state": {
-            "type": "object",
-            "description": "Mutable world facts, updated by write-tool patches during the\ntrace. Static truth belongs in the narrative, not here. Defaults\nempty.",
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
+          "world": {
+            "type": "string",
+            "description": "The world specification — ground truth the simulator renders tool\nresponses from and the judge checks claims against. A SPECIFICATION\n(prose), not instantiated data. See the API description's DESIGN\nINTENT. Cover inventory, facts (incl. negatives), completeness,\nand rendering rules."
           }
         }
       },
@@ -779,7 +748,7 @@
         "type": "object",
         "description": "A scenario that errored during a run.",
         "required": [
-          "scenario_id",
+          "scenario",
           "stage",
           "error"
         ],
@@ -788,27 +757,23 @@
             "type": "string",
             "description": "The error message."
           },
-          "scenario_id": {
-            "type": "string"
+          "scenario": {
+            "$ref": "#/components/schemas/Scenario"
           },
           "stage": {
             "type": "string",
-            "description": "Where it failed: `\"runner\"` (PUT execution or tool simulation)\nor `\"judge\"`."
+            "description": "Where it failed: `\"runner\"` (PUT execution, input resolution, or\ntool simulation) or `\"judge\"`."
           }
         }
       },
       "ScenarioProgress": {
         "type": "object",
-        "description": "One scenario's progress within a run.",
+        "description": "One scenario's progress within a run. Positional: index in the parent\n`scenarios` vec = the scenario's position in the submitted list.",
         "required": [
-          "scenario_id",
           "state",
           "steps"
         ],
         "properties": {
-          "scenario_id": {
-            "type": "string"
-          },
           "state": {
             "$ref": "#/components/schemas/ScenarioState"
           },
@@ -824,7 +789,7 @@
               "string",
               "null"
             ],
-            "description": "The opening user message (the protagonist's first turn, played by\nthe simulator side). Lets a chat view render the whole\nconversation, not just from the PUT's first reply."
+            "description": "The opening user message (the protagonist's first turn). Lets a\nchat view render the whole conversation."
           }
         }
       },
@@ -942,20 +907,24 @@
       "Trace": {
         "type": "object",
         "required": [
-          "scenario_id",
           "steps"
         ],
         "properties": {
           "final_world_state": {
             "type": "object",
-            "description": "The world state at the end of the run (after all applied\npatches). Empty if no write tool ever ran.",
+            "description": "The world state at the end of the run (after all applied patches).\nEmpty if no write tool ever ran.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
             }
           },
-          "scenario_id": {
-            "type": "string"
+          "resolved_inputs": {
+            "type": "object",
+            "description": "The concrete `{{variable}}` values the simulator generated from\n`input_domain` and rendered the PUT template with. Reported so a\nwitness is reproducible: the exact input that produced this trace.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "steps": {
             "type": "array",
@@ -1053,64 +1022,6 @@
           }
         }
       },
-      "VarSpec": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "value",
-              "kind"
-            ],
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "constant"
-                ]
-              },
-              "value": {}
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "description",
-              "kind"
-            ],
-            "properties": {
-              "description": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "nl_description"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "examples",
-              "kind"
-            ],
-            "properties": {
-              "examples": {
-                "type": "array",
-                "items": {}
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "examples"
-                ]
-              }
-            }
-          }
-        ],
-        "description": "Extensible per-variable data-generation spec.\n\nNew variants must be additive; the serialized form stays\nself-describing via the `kind` tag."
-      },
       "Verdict": {
         "type": "object",
         "required": [
@@ -1129,7 +1040,7 @@
           },
           "matched": {
             "type": "boolean",
-            "description": "Whether the judge finds the questioned behavior (the\ninvestigation's `question`, used verbatim) ACTUALLY occurred in\nthis trace. Design goals are NOT anded in — they're an advisory\nyardstick and a separate optimization target, not enforced here."
+            "description": "Whether the judge finds the questioned behavior (the\ninvestigation's `question`, used verbatim) ACTUALLY occurred in\nthis trace. Design goals are NOT anded in — they're an advisory\nyardstick, not enforced here."
           },
           "matched_step_indices": {
             "type": "array",

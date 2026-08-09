@@ -45,6 +45,93 @@ impl ToolSimulator {
         }
     }
 
+    /// Resolve a PUT template's `{{variables}}` from the scenario's
+    /// `input_domain`. The caller describes each variable's domain
+    /// (value space, semantics, preconditions); the simulator picks a
+    /// concrete value for each. Returns an empty map when the template
+    /// has no placeholders (no LLM call). Errors if a template variable
+    /// has no domain entry.
+    pub async fn resolve_inputs(
+        &self,
+        template: &str,
+        input_domain: &std::collections::HashMap<String, String>,
+    ) -> Result<std::collections::HashMap<String, Value>, LlmError> {
+        let vars = extract_template_vars(template);
+        if vars.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        // Every template variable needs a domain description.
+        if let Some(missing) = vars.iter().find(|v| !input_domain.contains_key(*v)) {
+            return Err(LlmError::MalformedResponse(format!(
+                "no input_domain entry for template variable '{{{missing}}}'"
+            )));
+        }
+
+        let domain_block = vars
+            .iter()
+            .map(|v| format!("{v}: {}", input_domain[v]))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let system = "You pick concrete input values for a prompt template's \
+                      {{variables}} from described input domains. For each variable, \
+                      choose a value that is consistent with the domain — its type, \
+                      value space, semantics, and any stated preconditions. Quote large \
+                      blocks verbatim; do not paraphrase. Reply with a single JSON \
+                      object mapping each variable name to its value, and nothing else. \
+                      Values are strings unless the domain clearly implies structured \
+                      data."
+            .to_string();
+        let user = format!("INPUT DOMAINS:\n{domain_block}");
+
+        let mut messages = vec![
+            Message::System { content: system },
+            Message::User { content: user },
+        ];
+        // Repair is conversational: on an unusable reply, name the
+        // failure and re-ask, once.
+        let mut last_failure = String::new();
+        for attempt in 0..2 {
+            if attempt > 0 {
+                messages.push(Message::System {
+                    content: format!(
+                        "Your previous reply could not be used: {last_failure}. Reply again \
+                         with a single JSON object mapping each variable name to its value, \
+                         and nothing else."
+                    ),
+                });
+            }
+            let reply = self
+                .client
+                .complete(ChatRequest {
+                    model: self.model.clone(),
+                    messages: messages.clone(),
+                    tools: vec![],
+                    temperature: Some(0.0),
+                    max_tokens: Some(8192),
+                })
+                .await?;
+            match reply.content.filter(|c| !c.trim().is_empty()) {
+                None => last_failure = "reply was empty".into(),
+                Some(content) => {
+                    match parse_json::<std::collections::HashMap<String, Value>>(&content) {
+                        Some(map) => return Ok(map),
+                        None => {
+                            messages.push(Message::Assistant {
+                                content: Some(content),
+                                tool_calls: vec![],
+                            });
+                            last_failure = "reply was not a JSON object of variable values".into();
+                        }
+                    }
+                }
+            }
+        }
+        Err(LlmError::MalformedResponse(format!(
+            "could not resolve input domain ({last_failure})"
+        )))
+    }
+
     /// Start a simulator conversation for one scenario trace. The world
     /// specification (narrative + notes) is given once, up front; from
     /// then on the conversation itself is the record of what exists.
@@ -195,4 +282,29 @@ pub fn apply_patch(state: &mut Map<String, Value>, patch: Map<String, Value>) {
             state.insert(k, v);
         }
     }
+}
+
+/// Extract `{{variable}}` placeholder names from a template. Names are
+/// alphanumeric/underscore only, so literal JSON braces in a template
+/// (e.g. `{"a": ...}`) are not mistaken for placeholders.
+fn extract_template_vars(template: &str) -> Vec<String> {
+    let mut vars: Vec<String> = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        match after.find("}}") {
+            Some(end) => {
+                let name = after[..end].trim();
+                if !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !vars.iter().any(|v| v == name)
+                {
+                    vars.push(name.to_string());
+                }
+                rest = &after[end + 2..];
+            }
+            None => break,
+        }
+    }
+    vars
 }

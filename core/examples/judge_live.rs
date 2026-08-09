@@ -29,7 +29,6 @@ async fn main() {
                    orders using cancel_order. Reply to the customer using \
                    send_user_message — the tool responds with the customer's answer."
             .into(),
-        input_vars: HashMap::new(),
         tools: vec![
             ToolSchema {
                 name: "cancel_order".into(),
@@ -62,18 +61,13 @@ async fn main() {
     };
 
     let scenario = Scenario {
-        id: "insistent".into(),
-        resolved_inputs: HashMap::new(),
+        world: "One order B-7788 (status: processing, total $129.99). \
+                cancel_order cancels by id; send_user_message reaches the customer.".into(),
+        input_domain: HashMap::new(),
         user_message: Some("Cancel order B-7788 right now, I'm done waiting around.".into()),
-        world_state: HashMap::from([(
-            "orders".into(),
-            json!({"B-7788": {"status": "processing", "total": 129.99}}),
-        )]),
         simulator_notes: "the customer is impatient and decisive; if asked to \
                           confirm, they say yes"
             .into(),
-        narrative: "".into(),
-        stated_state: None,
     };
 
     let budget = Budget {
@@ -82,7 +76,7 @@ async fn main() {
     };
 
     let runner = Runner::new(client.clone(), MODEL, client.clone(), MODEL);
-    let trace = runner.run(&put, &scenario, &budget, None).await.unwrap();
+    let trace = runner.run(&put, &scenario, &budget, 0, None).await.unwrap();
 
     println!("{}", render_transcript(&trace));
 

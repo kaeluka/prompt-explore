@@ -37,9 +37,9 @@ pub struct RunResult {
 /// A scenario that errored during a run.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ScenarioFailure {
-    pub scenario_id: String,
-    /// Where it failed: `"runner"` (PUT execution or tool simulation)
-    /// or `"judge"`.
+    pub scenario: super::simulation::Scenario,
+    /// Where it failed: `"runner"` (PUT execution, input resolution, or
+    /// tool simulation) or `"judge"`.
     pub stage: String,
     /// The error message.
     pub error: String,

@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.
+Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.
 
 Version: `0.1.0` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -69,11 +69,10 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 |---|---|---|---|
 | `final_world_state` | map&lt;string, any&gt; | yes | World state at the end of the trace (after all applied patches). |
 | `matched` | boolean | yes |  |
-| `narrative` | string | yes | The scenario's narrative (world spec), so the consumer can judge simulation quality alongside the trace. |
-| `scenario_id` | string | yes | The scenario this attempt ran, by id — ties the evidence back to its world. |
+| `resolved_inputs` | map&lt;string, any&gt; | no | The concrete {{variable}} values the simulator generated from the scenario's input_domain and rendered the template with — the exact input that produced this trace, for reproduction. |
+| `scenario` | [`Scenario`](#scenario) | yes | The scenario this attempt ran, BY VALUE (no id) — the attempt is self-describing: here is the world, the input domain, the opening turn, and the trace they produced. |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
 | `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
-| `user_message` | string? | no |  |
 | `verdict_confidence` | number? | no |  |
 | `verdict_rationale` | string | yes |  |
 
@@ -181,7 +180,6 @@ One prompt under test: the system-prompt template, input variables, tool surface
 |---|---|---|---|
 | `design_goals` | string | yes | MANDATORY. The author's stated intent for the prompt — the yardstick it's supposed to uphold, and itself an optimization target. Advisory in the current verdict: the judge's criterion is the `question` alone; design goals are not automatically enforced during a run. |
 | `id` | string | yes |  |
-| `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | no | Documents the template's expected `{{variables}}` and how to generate values. With scenarios authored externally, this is metadata for authors; concrete values come from each scenario's `resolved_inputs`, which the runner substitutes into the template. Optional (defaults empty) — it documents intent but does not drive the run. |
 | `template` | string | yes | The system-prompt template. `{{var}}` placeholders are substituted from the scenario's `resolved_inputs`. The opening user turn is separate — it comes from the scenario's `user_message`, not the template. |
 | `tools` | [`ToolSchema`](#toolschema)[] | yes | This prompt's tool surface, exactly as the model sees it. Empty = no tool loop (but intent lives in `design_goals`, not here). |
 
@@ -209,11 +207,11 @@ Values: `scenarios`, `checking_goals`
 
 ### `RunProgress`
 
-Live progress of a run, exposed while it's in flight: one entry per scenario, with its steps accumulated as they're simulated. The runner pushes; the server/UI poll and render (e.g. a tool-call log, collapsed by default).
+Live progress of a run, exposed while it's in flight: one entry per scenario (positional — index = position in the submitted list), with its steps accumulated as they are simulated. The runner pushes; the server/UI poll and render.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in. While the job is running this is the current phase; when it ends it stays at the last phase (the terminal signal is the job status). |
+| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in. |
 | `scenarios` | [`ScenarioProgress`](#scenarioprogress)[] | yes |  |
 
 ### `RunResult`
@@ -234,17 +232,14 @@ Values: `witness_found`, `no_witness_within_budget`, `partial`, `error`
 
 ### `Scenario`
 
-A test case: a world specification plus a protagonist. The harness runs the prompt under test inside this world — the simulator LLM renders tool responses from the `narrative` — and judges whether the questioned behavior occurred in the resulting trace.  Scenarios are authored OUTSIDE the harness (by the operator's agent); this API never generates them.  ## Authoring the `narrative`  The narrative is ground truth for the simulator AND the judge, and it is the single biggest determinant of result quality. It must pin four things, all in natural language:    1. INVENTORY — what exists and where, covering every query type the      PUT's tools allow (files/paths for a repo agent; orders and their      states for a support agent; per-topic results for a search tool).   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER      happens. Models default to inventing positive content; absences      must be stated, and they are often what makes the witness      decidable.   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (a      closed world) or "these are the relevant results on this topic"      (an open world). Without one, the simulator may invent extra      content that looks like a real finding.   4. RENDERING RULES — refuse queries outside the inventory; filler      introduces no new facts; never contradict the facts.  Size the world to the step budget: a small world fully explored beats a large world half-explored. And vary the worlds across a scenario set — same-shape scenarios prove the same thing twice.  Good vs bad: a narrative that only says "a customer service bot with an order database" lets the simulator invent whatever order exists (so a witness is meaningless). A good narrative names the order id, states it belongs to a DIFFERENT customer (negative fact), asserts that is the ONLY order (completeness), and says to refuse unknown ids (rendering rule) — then a cancellation that ignores ownership is a genuine witness. See the POST /api/investigations request example.  Everything needed to (stochastically) reproduce a trajectory lives here; everything else in a trace is derived.
+A test case: a world specification, an input domain, and a protagonist. A pure VALUE — it carries no identity (`id`); runs report it back by value. The harness runs the prompt under test inside this world, and judges whether the questioned behavior occurred.  Scenarios are authored OUTSIDE the harness (by the operator's agent); this API never generates them.  ## Authoring the `world`  The world is ground truth for the simulator AND the judge, and it is the single biggest determinant of result quality. It must pin four things, all in natural language:    1. INVENTORY — what exists and where, covering every query type the      PUT's tools allow.   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER      happens. Models default to inventing positive content; absences      must be stated, and they are often what makes the witness      decidable.   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (closed      world) or "these are the relevant results" (open world).   4. RENDERING RULES — refuse queries outside the inventory; filler      introduces no new facts; never contradict the facts.  ## Authoring the `input_domain`  For each `{{variable}}` in the PUT template, describe its input DOMAIN — the value space, semantics, and any PRECONDITIONS or trust contract the prompt may assume about it. The simulator picks a concrete value from this domain (its job), fills the template, and the chosen value is reported in the trace's `resolved_inputs`. A domain is richer than a pinned value: "tier is standard or premium, premium cancels without a fee" or "user_record: { id, name, tier }; user.id has been verified upstream — the agent may trust the person described". The world states the contract; whether the world actually HONORS it (or breaks it) is where witnesses live.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | no | Free-form label, echoed back in reports and used to correlate this scenario with its attempts, failures, and progress. Optional — if omitted (empty), the harness assigns `scenario-{index}` from its position in the submitted list. |
-| `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. A narrative is a SPECIFICATION (prose), not instantiated data: open worlds (web, email, payments) can never be materialized, so the simulator lazily renders concrete responses from it. See the API description's DESIGN INTENT for why this is prose and not a fixture. Required; every scenario must pin one — cover (1) inventory, (2) facts including NEGATIVE facts, (3) completeness assertions, (4) rendering rules. |
-| `resolved_inputs` | map&lt;string, any&gt; | no | Concrete values for the PUT template's {{variables}}. Empty for templates with no placeholders. |
+| `input_domain` | map&lt;string, string&gt; | no | Per-`{{variable}}` input-domain descriptions: the value space, semantics, and preconditions/trust contracts. The simulator generates a concrete value for each (reported in the trace's `resolved_inputs`). Empty for templates with no placeholders. |
 | `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |
-| `stated_state` | string? | no | Operator-required environment facts for THIS scenario (e.g. "cancel_order is broken and returns E_CONN"). Appended to the simulator's context so it respects them. Independent per scenario; there is no investigation-level environment-state field. |
-| `user_message` | string? | no | The opening message from the user/protagonist. For a tool-less PUT this is the entire work input. |
-| `world_state` | map&lt;string, any&gt; | no | Mutable world facts, updated by write-tool patches during the trace. Static truth belongs in the narrative, not here. Defaults empty. |
+| `user_message` | string? | no | The opening message from the user/protagonist. |
+| `world` | string | yes | The world specification — ground truth the simulator renders tool responses from and the judge checks claims against. A SPECIFICATION (prose), not instantiated data. See the API description's DESIGN INTENT. Cover inventory, facts (incl. negatives), completeness, and rendering rules. |
 
 ### `ScenarioFailure`
 
@@ -253,19 +248,18 @@ A scenario that errored during a run.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string | yes | The error message. |
-| `scenario_id` | string | yes |  |
-| `stage` | string | yes | Where it failed: `"runner"` (PUT execution or tool simulation) or `"judge"`. |
+| `scenario` | [`Scenario`](#scenario) | yes |  |
+| `stage` | string | yes | Where it failed: `"runner"` (PUT execution, input resolution, or tool simulation) or `"judge"`. |
 
 ### `ScenarioProgress`
 
-One scenario's progress within a run.
+One scenario's progress within a run. Positional: index in the parent `scenarios` vec = the scenario's position in the submitted list.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `scenario_id` | string | yes |  |
 | `state` | [`ScenarioState`](#scenariostate) | yes |  |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Steps simulated so far (tool calls + responses + model output). |
-| `user_message` | string? | no | The opening user message (the protagonist's first turn, played by the simulator side). Lets a chat view render the whole conversation, not just from the PUT's first reply. |
+| `user_message` | string? | no | The opening user message (the protagonist's first turn). Lets a chat view render the whole conversation. |
 
 ### `ScenarioState`
 
@@ -318,7 +312,7 @@ Values: `read`, `write`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `final_world_state` | map&lt;string, any&gt; | no | The world state at the end of the run (after all applied patches). Empty if no write tool ever ran. |
-| `scenario_id` | string | yes |  |
+| `resolved_inputs` | map&lt;string, any&gt; | no | The concrete `{{variable}}` values the simulator generated from `input_domain` and rendered the PUT template with. Reported so a witness is reproducible: the exact input that produced this trace. |
 | `steps` | [`TraceStep`](#tracestep)[] | yes |  |
 | `verdict` | [`Verdict`](#verdict)? | no |  |
 
@@ -343,37 +337,12 @@ Cumulative usage across every call routed through a `UsageTracker`.
 | `output_tokens` | integer | yes |  |
 | `tool_calls` | integer | yes | Tool calls the model requested. Only the simulated PUT has tools, so this counts tool calls in simulated traces. |
 
-### `VarSpec`
-
-Extensible per-variable data-generation spec.  New variants must be additive; the serialized form stays self-describing via the `kind` tag.
-
-**Variant `constant`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `kind` | `constant` | yes |  |
-| `value` | any | yes |  |
-
-**Variant `nl_description`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `description` | string | yes |  |
-| `kind` | `nl_description` | yes |  |
-
-**Variant `examples`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `examples` | any[] | yes |  |
-| `kind` | `examples` | yes |  |
-
 ### `Verdict`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `confidence` | number? | no | The judge's confidence in its own verdict (self-reported). |
-| `matched` | boolean | yes | Whether the judge finds the questioned behavior (the investigation's `question`, used verbatim) ACTUALLY occurred in this trace. Design goals are NOT anded in — they're an advisory yardstick and a separate optimization target, not enforced here. |
+| `matched` | boolean | yes | Whether the judge finds the questioned behavior (the investigation's `question`, used verbatim) ACTUALLY occurred in this trace. Design goals are NOT anded in — they're an advisory yardstick, not enforced here. |
 | `matched_step_indices` | integer[] | yes | Where in the trace the match happened. |
 | `rationale` | string | yes |  |
 

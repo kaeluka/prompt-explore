@@ -253,26 +253,28 @@ impl Judge {
 fn push_scenario_context(user: &mut String, scenario: Option<&crate::model::simulation::Scenario>) {
     let Some(s) = scenario else { return };
     user.push_str(&format!(
-        "\nSCENARIO CONTEXT: opening user message {:?}; notes: {:?}; initial world state: {}",
-        s.user_message,
-        s.simulator_notes,
-        serde_json::to_string(&s.world_state).unwrap_or_default()
+        "\nSCENARIO CONTEXT: opening user message {:?}; notes: {:?}",
+        s.user_message, s.simulator_notes
     ));
-    if !s.narrative.trim().is_empty() {
+    if !s.world.trim().is_empty() {
         user.push_str(&format!(
-            "\nWORLD SPECIFICATION (the ground-truth narrative the simulator rendered \
-             from; the agent's claims should be checkable against it, and any coverage \
-             gap between what the narrative declares and what the agent found is itself \
-             notable): {}",
-            s.narrative
+            "\nWORLD SPECIFICATION (the ground-truth world the simulator rendered \
+             from; the agent's claims should be checkable against it, and any \
+             coverage gap between what the world declares and what the agent found \
+             is itself notable): {}",
+            s.world
         ));
     }
-    if let Some(st) = &s.stated_state {
-        if !st.trim().is_empty() {
-            user.push_str(&format!(
-                "\nUSER-SPECIFIED ENVIRONMENT STATE (what the operator requires of the \
-                 environment; deviations from this are themselves notable): {st}"
-            ));
-        }
+    if !s.input_domain.is_empty() {
+        let block = s
+            .input_domain
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        user.push_str(&format!(
+            "\nINPUT DOMAIN (the contract for the template's {{variables}} — what \
+             the prompt was handed and what it may assume about it):\n{block}"
+        ));
     }
 }

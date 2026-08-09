@@ -66,9 +66,17 @@ closed world (enumerable, bounded, copyable); open worlds — web search,
 email, a payment network — can never be materialized, so narratives are the
 only mechanism that generalizes. Completeness assertions are total for
 closed worlds ("these are ALL the entry points") and scoped for open ones
-("these are the relevant results on this topic"). The world-state mechanism
-(mutations during a trace) composes with this: the narrative says what
-exists, world state tracks what the trace changed.
+("these are the relevant results on this topic"). **Inputs are described, not supplied.** A scenario carries an `input_domain`
+— a per-`{{variable}}` description (value space, semantics, preconditions/
+trust contracts). Finding the concrete input value is the simulator's job:
+it picks one from the domain, fills the template, and the chosen value is
+reported in the trace's `resolved_inputs` so a witness is reproducible.
+This is the property-based-testing move — describe the domain, sample it.
+
+**A scenario is a value, not a record.** It carries no identity (`id`):
+it is `(world, input_domain, user_message)` and the run output embeds the
+scenario *by value* per attempt, never by id or index. Correlation is
+content-equality.
 
 **The consumer owns simulation quality.** Whoever consumes an
 investigation's output judges whether the tool simulation was good enough.
@@ -87,7 +95,7 @@ scenario-generation endpoint and no generation-on-submit: an optional
 `scenarios` field with an "absent means generate" default is *easy, not
 simple* — one endpoint, one contract. The operator's agent (e.g. Claude)
 writes scenarios; the harness evaluates them. When authoring a scenario,
-the narrative is the ground truth and must pin four things (all NL, all
+the world is the ground truth and must pin four things (all NL, all
 visible to the simulator and judge):
 
 1. **Inventory** — what exists and where, covering every query type the
