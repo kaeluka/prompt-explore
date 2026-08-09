@@ -5,12 +5,35 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// The LLM phase an investigation is currently in. Exposed so a reader can
+/// see what the job is doing while it runs — never just a bare "running".
+/// See the API description: every LLM phase is an observable status.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhase {
+    /// The PUT tool loop and per-scenario judging are running (one or more
+    /// scenarios in flight — see `scenarios` for each one's state).
+    #[default]
+    Scenarios,
+    /// All scenarios finished; the advisory design-goal pass is running
+    /// (one judge call per completed trace). This is the "tail" phase — a
+    /// job may sit here after every scenario already looks done.
+    CheckingGoals,
+    /// A witness was found; the proposer is generating (unverified) fix
+    /// proposals.
+    Proposing,
+}
+
 /// Live progress of a run, exposed while it's in flight: one entry per
 /// scenario, with its steps accumulated as they're simulated. The runner
 /// pushes; the server/UI poll and render (e.g. a tool-call log, collapsed
 /// by default).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunProgress {
+    /// Which LLM phase the investigation is currently in. While the job is
+    /// running this is the current phase; when it ends it stays at the last
+    /// phase (the terminal signal is the job status).
+    pub phase: RunPhase,
     pub scenarios: Vec<ScenarioProgress>,
 }
 
@@ -45,6 +68,12 @@ pub enum ScenarioState {
 }
 
 impl RunProgress {
+    /// Set the current LLM phase (called by the investigation at phase
+    /// transitions).
+    pub fn set_phase(&mut self, phase: RunPhase) {
+        self.phase = phase;
+    }
+
     /// Set a scenario's state (called by the investigation as tasks finish).
     pub fn set_state(&mut self, scenario_id: &str, state: ScenarioState) {
         if let Some(s) = self

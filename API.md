@@ -231,6 +231,7 @@ Values: `running`, `done`, `failed`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string? | no |  |
+| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in (see RunPhase: scenarios / checking_goals / proposing). This is the observable status of the job's LLM work — a job may read `status: running` with every scenario done while in `checking_goals` (the advisory design-goal tail). Mirrors `progress.phase`. |
 | `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + steps simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes | The prompt under test. |
 | `question` | string | yes | The investigation question (the judge's criterion). |
@@ -300,12 +301,19 @@ A provider's listing result.
 |---|---|---|---|
 | `error` | object | yes | The provider could not be queried — e.g. no API key in the environment, no AWS credentials, network error, region-gated. |
 
+### `RunPhase`
+
+The LLM phase an investigation is currently in. Exposed so a reader can see what the job is doing while it runs — never just a bare "running". See the API description: every LLM phase is an observable status.
+
+Values: `scenarios`, `checking_goals`, `proposing`
+
 ### `RunProgress`
 
 Live progress of a run, exposed while it's in flight: one entry per scenario, with its steps accumulated as they're simulated. The runner pushes; the server/UI poll and render (e.g. a tool-call log, collapsed by default).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in. While the job is running this is the current phase; when it ends it stays at the last phase (the terminal signal is the job status). |
 | `scenarios` | [`ScenarioProgress`](#scenarioprogress)[] | yes |  |
 
 ### `RunResult`

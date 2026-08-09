@@ -42,6 +42,14 @@ that deviation is visible in the trace and the judge (which sees the same
 context) can catch it. The user is the loop; they see what happened, not what
 was supposed to happen.
 
+**Every LLM phase is an observable status.** An investigation moves through
+distinct LLM phases — simulating the PUT tool loop, judging traces, the
+advisory design-goal pass, proposing fixes. `GET /api/investigations/{id}`
+must report which phase the job is in (and the UI must show it), never a
+bare "running". A silent phase is a UX bug: a reader who sees every scenario
+done but the job still "running" (e.g. during the goal-check tail) concludes
+the job is stuck when it is merely in an invisible phase.
+
 **Environments are narratives, not data.** A scenario is a world
 *specification* — facts, completeness assertions, rendering instructions —
 never an instantiated environment. The simulator lazily renders concrete

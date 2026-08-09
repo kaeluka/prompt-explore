@@ -643,6 +643,7 @@
         "type": "object",
         "required": [
           "status",
+          "phase",
           "started_at",
           "question",
           "put",
@@ -655,6 +656,10 @@
               "string",
               "null"
             ]
+          },
+          "phase": {
+            "$ref": "#/components/schemas/RunPhase",
+            "description": "Which LLM phase the investigation is currently in (see RunPhase:\nscenarios / checking_goals / proposing). This is the observable\nstatus of the job's LLM work — a job may read `status: running`\nwith every scenario done while in `checking_goals` (the advisory\ndesign-goal tail). Mirrors `progress.phase`."
           },
           "progress": {
             "$ref": "#/components/schemas/RunProgress",
@@ -881,13 +886,27 @@
         ],
         "description": "A provider's listing result."
       },
+      "RunPhase": {
+        "type": "string",
+        "description": "The LLM phase an investigation is currently in. Exposed so a reader can\nsee what the job is doing while it runs — never just a bare \"running\".\nSee the API description: every LLM phase is an observable status.",
+        "enum": [
+          "scenarios",
+          "checking_goals",
+          "proposing"
+        ]
+      },
       "RunProgress": {
         "type": "object",
         "description": "Live progress of a run, exposed while it's in flight: one entry per\nscenario, with its steps accumulated as they're simulated. The runner\npushes; the server/UI poll and render (e.g. a tool-call log, collapsed\nby default).",
         "required": [
+          "phase",
           "scenarios"
         ],
         "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/RunPhase",
+            "description": "Which LLM phase the investigation is currently in. While the job is\nrunning this is the current phase; when it ends it stays at the last\nphase (the terminal signal is the job status)."
+          },
           "scenarios": {
             "type": "array",
             "items": {

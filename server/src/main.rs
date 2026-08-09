@@ -199,6 +199,12 @@ struct JobCreated {
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct JobView {
     status: JobStatus,
+    /// Which LLM phase the investigation is currently in (see RunPhase:
+    /// scenarios / checking_goals / proposing). This is the observable
+    /// status of the job's LLM work — a job may read `status: running`
+    /// with every scenario done while in `checking_goals` (the advisory
+    /// design-goal tail). Mirrors `progress.phase`.
+    phase: prompt_explore::model::simulation::RunPhase,
     started_at: u64,
     /// The investigation question (the judge's criterion).
     question: String,
@@ -644,13 +650,20 @@ async fn get_investigation(
 ) -> Result<Json<JobView>, StatusCode> {
     let jobs = state.jobs.lock().unwrap();
     let job = jobs.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    // Take the progress lock ONCE: std Mutex is not reentrant, so two
+    // `progress.lock()` calls in the same expression-building block
+    // (phase, then clone) can deadlock the whole runtime if the first
+    // temporary guard outlives the second lock(). Snapshot once.
+    let progress_snapshot = job.progress.lock().unwrap().clone();
+    let phase = progress_snapshot.phase;
     Ok(Json(JobView {
         status: job.status,
+        phase,
         started_at: job.started_at,
         question: job.question.clone(),
         put: job.put.clone(),
         scenarios: job.scenarios.clone(),
-        progress: job.progress.lock().unwrap().clone(),
+        progress: progress_snapshot,
         result: job.result.clone(),
         error: job.error.clone(),
     }))

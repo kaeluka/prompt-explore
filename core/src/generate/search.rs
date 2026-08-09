@@ -152,6 +152,15 @@ impl Investigator {
             .map(|s| format!("caller-provided scenario '{}'", s.id))
             .collect::<Vec<_>>();
 
+        // All scenario tasks have finished; move into the design-goal
+        // pass so a reader sees the job's current LLM phase, not a bare
+        // "running" (this is the tail phase that can look like a stuck job).
+        if let Some(p) = &progress {
+            if let Ok(mut g) = p.lock() {
+                g.set_phase(crate::model::simulation::RunPhase::CheckingGoals);
+            }
+        }
+
         // Advisory: surface design-goal violations across completed
         // traces as incidental findings. Best-effort (judge errors are
         // skipped, not fatal) and only when design_goals is non-empty.
@@ -197,6 +206,11 @@ impl Investigator {
 
         // Existential mode: the first matched attempt is the witness.
         if let Some(att) = attempts.iter().find(|a| a.matched) {
+            if let Some(p) = &progress {
+                if let Ok(mut g) = p.lock() {
+                    g.set_phase(crate::model::simulation::RunPhase::Proposing);
+                }
+            }
             let trace = &att.trace;
             let witness = Witness {
                 attribution: Attribution {
