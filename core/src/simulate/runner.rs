@@ -14,7 +14,7 @@ use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ToolDef};
 use crate::model::simulation::{RunProgress, Scenario, ToolCall, Trace, TraceStep};
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
-use super::simulator::{ToolSimulator, apply_patch};
+use super::simulator::{SimSession, ToolSimulator, apply_patch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
@@ -55,6 +55,7 @@ impl Runner {
         let tools: Vec<ToolDef> = put.tools.iter().map(convert_tool).collect();
         let mut world_state: Map<String, Value> =
             scenario.world_state.clone().into_iter().collect();
+        let mut sim = self.simulator.session(&build_simulator_notes(scenario));
         let mut steps = Vec::new();
         let mut tokens_used: u64 = 0;
 
@@ -106,8 +107,10 @@ impl Runner {
             // own step so the trace reads as a linear story.
             for (i, tc) in response.tool_calls.iter().enumerate() {
                 let (tool_response, state_after) = self
-                    .handle_tool_call(put, scenario, tc, &mut world_state, &mut messages)
-                    .await?;
+                    .handle_tool_call(
+                        put, tc, &mut world_state, &mut messages, &mut sim,
+                    )
+                    .await?;;
 
                 steps.push(TraceStep {
                     model_output: if i == 0 {
@@ -149,10 +152,10 @@ impl Runner {
     async fn handle_tool_call(
         &self,
         put: &PromptUnderTest,
-        scenario: &Scenario,
         tc: &crate::llm::ToolCallRequest,
         world_state: &mut Map<String, Value>,
         messages: &mut Vec<Message>,
+        sim: &mut SimSession,
     ) -> Result<(Value, Option<std::collections::HashMap<String, Value>>), RunnerError> {
         let tool = put.tools.iter().find(|t| t.name == tc.name);
 
@@ -161,9 +164,7 @@ impl Runner {
             Some(tool) => match validate_args(tool, &tc.arguments) {
                 Err(err) => format!("error: invalid arguments: {err}").into(),
                 Ok(args) => {
-                    let notes = build_simulator_notes(scenario);
-                    let sim = self
-                        .simulator
+                    let sim_outcome = sim
                         .respond(
                             tool,
                             &ToolCall {
@@ -171,15 +172,14 @@ impl Runner {
                                 args,
                             },
                             world_state,
-                            &notes,
                         )
                         .await
                         .map_err(RunnerError::Simulator)?;
 
-                    if let Some(patch) = sim.state_patch {
+                    if let Some(patch) = sim_outcome.state_patch {
                         apply_patch(world_state, patch);
                     }
-                    sim.response
+                    sim_outcome.response
                 }
             },
         };
