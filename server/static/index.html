@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Service description: the OpenAPI spec. RFC 8631 rel="service-desc",
+     also surfaced via a Link header on every response. -->
+<link rel="service-desc" href="/openapi.json" title="OpenAPI spec">
+<link rel="service-doc" href="/" title="Web UI">
 <title>prompt-explore · jobs</title>
 <style>
   :root {
@@ -219,7 +223,10 @@ function App() {
       ${jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
        : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} />`)}
-    </div>`;
+    </div>
+    <footer class="meta" style="margin-top:2rem;text-align:center">
+      API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>
+    </footer>`;
 }
 
 render(html`<${App} />`, document.getElementById('root'));
