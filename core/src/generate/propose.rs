@@ -93,7 +93,9 @@ impl ProposalGenerator {
         Ok(parsed
             .proposals
             .into_iter()
-            .map(|p| Proposal {
+            .enumerate()
+            .map(|(i, p)| Proposal {
+                id: format!("prop-{i}"),
                 kind: parse_kind(&p.kind),
                 content: p.content,
                 addresses: p.addresses,

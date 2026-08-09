@@ -87,6 +87,10 @@ pub struct Attribution {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Proposal {
+    /// Stable id within the run (e.g. "prop-0"). Used by
+    /// POST /api/investigations/{id}/apply to pick a proposal without
+    /// echoing the whole object back.
+    pub id: String,
     pub kind: ProposalKind,
     pub content: String,
     /// Instruction spans this proposal addresses.
