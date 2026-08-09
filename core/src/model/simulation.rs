@@ -74,12 +74,39 @@ impl RunProgress {
 /// questioned behavior occurred in the resulting trace.
 ///
 /// Scenarios are authored OUTSIDE the harness (by the operator's agent);
-/// this API never generates them. Authoring guidance: the narrative
-/// should pin (1) an inventory of what exists, covering every query type
-/// the PUT's tools allow, (2) facts, including negative facts (what does
-/// NOT exist or happen), (3) completeness assertions ("these are ALL the
-/// entry points"), and (4) rendering rules (refuse queries outside the
-/// inventory; filler introduces no new facts).
+/// this API never generates them.
+///
+/// ## Authoring the `narrative`
+///
+/// The narrative is ground truth for the simulator AND the judge, and it
+/// is the single biggest determinant of result quality. It must pin four
+/// things, all in natural language:
+///
+///   1. INVENTORY — what exists and where, covering every query type the
+///      PUT's tools allow (files/paths for a repo agent; orders and their
+///      states for a support agent; per-topic results for a search tool).
+///   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER
+///      happens. Models default to inventing positive content; absences
+///      must be stated, and they are often what makes the witness
+///      decidable.
+///   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (a
+///      closed world) or "these are the relevant results on this topic"
+///      (an open world). Without one, the simulator may invent extra
+///      content that looks like a real finding.
+///   4. RENDERING RULES — refuse queries outside the inventory; filler
+///      introduces no new facts; never contradict the facts.
+///
+/// Size the world to the step budget: a small world fully explored beats
+/// a large world half-explored. And vary the worlds across a scenario
+/// set — same-shape scenarios prove the same thing twice.
+///
+/// Good vs bad: a narrative that only says "a customer service bot with
+/// an order database" lets the simulator invent whatever order exists
+/// (so a witness is meaningless). A good narrative names the order id,
+/// states it belongs to a DIFFERENT customer (negative fact), asserts
+/// that is the ONLY order (completeness), and says to refuse unknown ids
+/// (rendering rule) — then a cancellation that ignores ownership is a
+/// genuine witness. See the POST /api/investigations request example.
 ///
 /// Everything needed to (stochastically) reproduce a trajectory lives
 /// here; everything else in a trace is derived.
