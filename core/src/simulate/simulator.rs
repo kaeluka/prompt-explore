@@ -123,11 +123,9 @@ impl ToolSimulator {
 
         let content = reply_content
             .ok_or_else(|| last_err.unwrap_or_else(|| LlmError::MalformedResponse("empty simulator reply".into())))?;
-        let parsed: SimReply = parse_json(&content)
-            .or_else(|| fallback_sim_reply(&content))
-            .ok_or_else(|| {
-                LlmError::MalformedResponse(format!("simulator reply not JSON: {content}"))
-            })?;
+        let parsed: SimReply = parse_json(&content).ok_or_else(|| {
+            LlmError::MalformedResponse(format!("simulator reply not JSON: {content}"))
+        })?;
 
         Ok(SimOutcome {
             response: parsed.response,
@@ -136,17 +134,6 @@ impl ToolSimulator {
     }
 }
 
-/// Weaker models sometimes skip the `{"response": ...}` envelope and return
-/// the bare tool result. That result is semantically complete, so accept it
-/// as the response with no state patch.
-fn fallback_sim_reply(content: &str) -> Option<SimReply> {
-    serde_json::from_str::<Value>(crate::llm::parse::extract_json(content))
-        .ok()
-        .map(|response| SimReply {
-            response,
-            state_patch: None,
-        })
-}
 
 /// Shallow-merge a patch into world state; null values delete keys.
 pub fn apply_patch(state: &mut Map<String, Value>, patch: Map<String, Value>) {
