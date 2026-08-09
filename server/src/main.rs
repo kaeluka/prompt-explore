@@ -8,8 +8,9 @@
 //! Job state is held in memory (lost on restart) — durable storage
 //! is a deliberate v2 concern.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{
     Router,
@@ -24,7 +25,7 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole, ProposalApplier};
-use prompt_explore::llm::{ProviderClient, UsageTotals, UsageTracker};
+use prompt_explore::llm::{list_all_map, ProviderClient, ProviderModels, UsageTotals, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::{Proposal, RunResult};
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
@@ -35,6 +36,10 @@ const MODEL: &str = "glm-5.2";
 struct AppState {
     client: Option<Arc<ProviderClient>>,
     jobs: Mutex<HashMap<String, Job>>,
+    /// LLM model listing (GET /models) — genai client + a short-TTL cache
+    /// so repeated listing doesn't hammer the providers.
+    models_client: prompt_explore::llm::GenaiClient,
+    models_cache: Mutex<Option<(Instant, BTreeMap<String, ProviderModels>)>>,
 }
 
 struct Job {
@@ -181,7 +186,7 @@ struct JobSummary {
                        re-run the same scenarios to check. The API is job-based: POST returns \
                        a job id immediately; poll GET /api/investigations/{id} for the result."
     ),
-    paths(index, list_investigations, create_investigation, get_investigation, apply_proposal)
+    paths(index, list_investigations, create_investigation, get_investigation, apply_proposal, list_models)
 )]
 struct ApiDoc;
 
@@ -234,6 +239,8 @@ async fn main() {
     let state = Arc::new(AppState {
         client: Some(Arc::new(client)),
         jobs: Mutex::new(HashMap::new()),
+        models_client: prompt_explore::llm::GenaiClient::builder().build(),
+        models_cache: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -248,6 +255,7 @@ async fn main() {
         )
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/apply", post(apply_proposal))
+        .route("/api/models", get(list_models))
         .route("/api/openapi.json", get(openapi_json))
         .layer(middleware::from_fn(spec_discovery))
         .with_state(state);
@@ -260,6 +268,36 @@ async fn main() {
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
+}
+
+/// Models available to put in a request's `model` field, by provider.
+///
+/// Returns a map keyed by provider namespace (`zai_coding`,
+/// `open_router`, `bedrock_sigv4`). Each value is either `{models: [{name}]}`
+/// — where `name` is the full pastable, namespaced string (e.g.
+/// `open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: "…"}`
+/// explaining why that provider couldn't be listed (no API key in the
+/// environment, no AWS credentials, region-gated, …). Listing is
+/// best-effort and per-provider: one provider failing never breaks the
+/// others. Cached for a short time so repeated listing is cheap.
+#[utoipa::path(
+    get,
+    path = "/api/models",
+    tag = "models",
+    responses((status = 200, description = "Available models per provider", body = BTreeMap<String, ProviderModels>))
+)]
+async fn list_models(
+    State(state): State<Arc<AppState>>,
+) -> Json<BTreeMap<String, ProviderModels>> {
+    const TTL: Duration = Duration::from_secs(60);
+    if let Some((fetched_at, cached)) = state.models_cache.lock().unwrap().clone() {
+        if fetched_at.elapsed() < TTL {
+            return Json(cached);
+        }
+    }
+    let fresh = list_all_map(&state.models_client).await;
+    *state.models_cache.lock().unwrap() = Some((Instant::now(), fresh.clone()));
+    Json(fresh)
 }
 
 /// Discovery: every response advertises the OpenAPI spec

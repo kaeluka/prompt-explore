@@ -70,6 +70,14 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `200` | Job status + live progress (+ result when done): [`JobView`](#jobview) |
 | `404` | Unknown job id |
 
+### `GET /api/models`
+
+Returns a map keyed by provider namespace (`zai_coding`, `open_router`, `bedrock_sigv4`). Each value is either `{models: [{name}]}` — where `name` is the full pastable, namespaced string (e.g. `open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: "…"}` explaining why that provider couldn't be listed (no API key in the environment, no AWS credentials, region-gated, …). Listing is best-effort and per-provider: one provider failing never breaks the others. Cached for a short time so repeated listing is cheap.
+
+| Status | Response |
+|---|---|
+| `200` | Available models per provider: map&lt;string, [`ProviderModels`](#providermodels)&gt; |
+
 ## Schemas
 
 ### `ApplyRequest`
@@ -199,6 +207,14 @@ Values: `running`, `done`, `failed`
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
 
+### `ModelEntry`
+
+One model the caller can put in a request's `model` field. `name` is the full namespaced, pastable string (e.g. `open_router::deepseek/deepseek-v4-flash-0731`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+
 ### `PromptUnderTest`
 
 One prompt under test: the system-prompt template, input variables, tool surface, and (mandatory) design goals. The harness executes this prompt inside scenario worlds and judges the resulting traces.
@@ -223,6 +239,22 @@ One prompt under test: the system-prompt template, input variables, tool surface
 ### `ProposalKind`
 
 Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
+
+### `ProviderModels`
+
+A provider's listing result.
+
+**Variant**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `available` | object | yes | The provider was queried successfully. |
+
+**Variant**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | object | yes | The provider could not be queried — e.g. no API key in the environment, no AWS credentials, network error, region-gated. |
 
 ### `RunProgress`
 

@@ -25,6 +25,10 @@ use genai::resolver::{AuthData, ModelMapper, ServiceTargetResolver};
 use genai::{Client, ModelIden, ModelName, ServiceTarget};
 use serde_json::Value;
 
+// Re-export so the server (which depends only on core) can build a
+// listing Client without adding genai as a direct dependency.
+pub use genai::Client as GenaiClient;
+
 use super::client::{LlmClient, LlmError};
 use super::types::{
     ChatRequest, ChatResponse, Message, ToolCallRequest, ToolDef, Usage,
