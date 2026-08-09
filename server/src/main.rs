@@ -265,6 +265,8 @@ fn print_help() {
     println!("    ZAI_API_KEY            API key for zai / zai_standard (coding-plan default).");
     println!("    OPENROUTER_API_KEY     API key for openrouter.");
     println!("    bedrock uses the default AWS credential chain (aws sso login, profiles, IMDS).");
+    println!("    BASETEN_API_KEY      API key for baseten (OpenAI-compatible).");
+    println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://api.baseten.co/v1/).");
     println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).");
 }
 
@@ -291,7 +293,8 @@ async fn main() {
         "zai_standard" => ProviderClient::zai_standard(),
         "openrouter" => ProviderClient::openrouter(),
         "bedrock" => ProviderClient::bedrock(),
-        other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock)"),
+        "baseten" => ProviderClient::baseten(),
+        other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock | baseten)"),
     };
     let state = Arc::new(AppState {
         client: Some(Arc::new(client)),

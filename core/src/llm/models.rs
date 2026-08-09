@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use genai::adapter::AdapterKind;
-use genai::resolver::{Endpoint, ProviderConfig};
+use genai::resolver::{AuthData, Endpoint, ProviderConfig};
 use genai::Client;
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,24 @@ pub async fn list_all(client: &Client) -> Vec<(String, ProviderModels)> {
             "bedrock_sigv4",
             AdapterKind::BedrockSigv4,
             ProviderConfig::default(),
+        )
+        .await,
+        // Baseten (OpenAI-compatible). Auth from BASETEN_API_KEY;
+        // endpoint from BASETEN_ENDPOINT (default https://api.baseten.co/v1/).
+        list_via_genai(
+            client,
+            "baseten",
+            AdapterKind::OpenAI,
+            ProviderConfig {
+                endpoint: Some(Endpoint::from_owned(
+                    std::env::var("BASETEN_ENDPOINT")
+                        .unwrap_or_else(|_| "https://api.baseten.co/v1/".into()),
+                )),
+                auth: std::env::var("BASETEN_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+                    .map(AuthData::from_single),
+            },
         )
         .await,
     ]

@@ -41,6 +41,7 @@ pub enum DefaultProvider {
     Zai,
     OpenRouter,
     Bedrock,
+    Baseten,
 }
 
 impl DefaultProvider {
@@ -54,6 +55,7 @@ impl DefaultProvider {
             Self::Zai => format!("zai::{model}"),
             Self::OpenRouter => format!("open_router::{model}"),
             Self::Bedrock => format!("bedrock_sigv4::{model}"),
+            Self::Baseten => format!("baseten::{model}"),
         }
     }
 
@@ -63,6 +65,7 @@ impl DefaultProvider {
             Self::ZaiCoding | Self::Zai => AdapterKind::Zai,
             Self::OpenRouter => AdapterKind::OpenRouter,
             Self::Bedrock => AdapterKind::BedrockSigv4,
+            Self::Baseten => AdapterKind::OpenAI,
         }
     }
 }
@@ -72,7 +75,12 @@ pub struct ProviderClient {
 }
 
 impl ProviderClient {
-    fn with_model_mapper(default: DefaultProvider) -> Self {
+    fn build(default: DefaultProvider) -> Self {
+        // Baseten env config (OpenAI-compatible; endpoint overridable).
+        let baseten_endpoint = std::env::var("BASETEN_ENDPOINT")
+            .unwrap_or_else(|_| "https://api.baseten.co/v1/".into());
+        let baseten_key = std::env::var("BASETEN_API_KEY").unwrap_or_default();
+
         let client = Client::builder()
             .with_model_mapper(ModelMapper::from_mapper_fn(move |model_ident: ModelIden| {
                 // Namespaced model strings already resolved to the right
@@ -86,6 +94,21 @@ impl ProviderClient {
                     ModelName::new(default.qualify(model_ident.model_name.as_str())),
                 ))
             }))
+            // Route baseten:: models to the Baseten endpoint with its API
+            // key, regardless of the default provider — composable with
+            // z.ai / OpenRouter / Bedrock in a single client.
+            .with_service_target_resolver(ServiceTargetResolver::from_resolver_fn(
+                move |mut st: ServiceTarget| {
+                    if st.model.model_name.namespace_is("baseten") {
+                        st.endpoint =
+                            genai::resolver::Endpoint::from_owned(baseten_endpoint.clone());
+                        if !baseten_key.is_empty() {
+                            st.auth = AuthData::from_single(baseten_key.clone());
+                        }
+                    }
+                    Ok(st)
+                },
+            ))
             .build();
         Self { client }
     }
@@ -93,23 +116,30 @@ impl ProviderClient {
     /// z.ai **coding-plan** endpoint; bare model names default to it.
     /// The adapter reads `ZAI_API_KEY` from the environment.
     pub fn zai() -> Self {
-        Self::with_model_mapper(DefaultProvider::ZaiCoding)
+        Self::build(DefaultProvider::ZaiCoding)
     }
 
     /// z.ai standard pay-per-use endpoint.
     pub fn zai_standard() -> Self {
-        Self::with_model_mapper(DefaultProvider::Zai)
+        Self::build(DefaultProvider::Zai)
     }
 
     /// OpenRouter gateway; adapter reads `OPENROUTER_API_KEY`.
     pub fn openrouter() -> Self {
-        Self::with_model_mapper(DefaultProvider::OpenRouter)
+        Self::build(DefaultProvider::OpenRouter)
     }
 
     /// AWS Bedrock via native Converse + SigV4. Credentials come from the
     /// default AWS chain (`aws sso login`, profiles, env, IMDS) — no API key.
     pub fn bedrock() -> Self {
-        Self::with_model_mapper(DefaultProvider::Bedrock)
+        Self::build(DefaultProvider::Bedrock)
+    }
+
+    /// Baseten (OpenAI-compatible). Reads `BASETEN_API_KEY`; endpoint
+    /// defaults to `https://api.baseten.co/v1/`, overridable via
+    /// `BASETEN_ENDPOINT`. Bare model names default to this provider.
+    pub fn baseten() -> Self {
+        Self::build(DefaultProvider::Baseten)
     }
 
     /// Any OpenAI-compatible endpoint, keyed explicitly. Requests must use a
