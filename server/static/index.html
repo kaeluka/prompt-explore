@@ -131,8 +131,8 @@ function ScenarioPanel({ prog, input }) {
       ${kind === 'failed' ? html`<div class="note" style="margin:0.3rem 0">${st.error}</div>` : null}
       ${input ? html`
         <details>
-          <summary>scenario spec (narrative)</summary>
-          <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${input.narrative || '(no narrative)'}</div>
+          <summary>scenario spec (world)</summary>
+          <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${input.world || '(no world)'}</div>
           ${input.simulator_notes ? html`<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${input.simulator_notes}</div>` : null}
           ${input.world_state && Object.keys(input.world_state).length ? html`<details><summary class="meta">world state</summary><pre class="step">${pretty(input.world_state)}</pre></details>` : null}
         </details>` : null}
