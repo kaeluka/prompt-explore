@@ -76,7 +76,7 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
 - ✅ Extensible per-variable input specs (constant / NL description /
   examples — mixable within one prompt)
 - ✅ `LlmClient` trait + multi-provider client built on the `genai`
-  library (z.ai coding-plan/standard, OpenRouter, AWS Bedrock
+  library (z.ai coding-plan/standard, OpenRouter, Baseten, AWS Bedrock
   Converse+SigV4, plus any OpenAI-format endpoint) + scripted
   `MockLlmClient`
 - ✅ Runner: PUT tool loop, simulator-LLM tool responses, world-state
@@ -118,12 +118,14 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
 
 All commands run from the workspace root. `cargo test` is fully
 deterministic and needs no key. Live runs authenticate per provider:
-`ZAI_API_KEY` (z.ai), `OPEN_ROUTER_API_KEY` (OpenRouter), or the default
+`ZAI_API_KEY` (z.ai), `OPEN_ROUTER_API_KEY` (OpenRouter),
+`BASETEN_API_KEY` (Baseten), or the default
 AWS credential chain for Bedrock (`aws sso login`, profiles, IMDS).
 The provider is chosen per call by the model namespace —
 `zai_coding::glm-5.2`, `zai::glm-4.6`, `open_router::deepseek/...`,
-`bedrock_sigv4::<model-id>`; a bare name (e.g. `glm-5.2`) uses the
-server's default provider (`PROMPT_EXPLORE_PROVIDER`, default `zai`).
+`bedrock_sigv4::<model-id>`, `baseten::<model-id>`; a bare name (e.g.
+`glm-5.2`) uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`,
+default `zai`).
 
 ```bash
 cargo test                                           # deterministic, no API key needed
@@ -142,7 +144,7 @@ script.
 
 LLM access goes through the `genai` multi-provider library behind our
 `LlmClient` trait, so any provider genai supports (26+) works — z.ai,
-OpenRouter, and AWS Bedrock (native Converse + SigV4, full AWS credential
+OpenRouter, Baseten, and AWS Bedrock (native Converse + SigV4, full AWS credential
 chain) are first-class.
 
 ## Contributing
