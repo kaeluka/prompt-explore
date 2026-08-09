@@ -473,9 +473,15 @@ async fn create_investigation(
 }
 
 /// Create a job for `req`, spawn its run, and return the job id. Shared
-/// by POST /api/investigations (fresh runs) and POST
 /// Create a job for `req`, spawn its run, and return the job id.
-fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String {
+fn spawn_investigation(state: Arc<AppState>, mut req: InvestigateRequest) -> String {
+    // Scenario ids are optional; assign by position so callers can omit
+    // them and still correlate attempts / failures / progress.
+    for (i, s) in req.scenarios.iter_mut().enumerate() {
+        if s.id.is_empty() {
+            s.id = format!("scenario-{i}");
+        }
+    }
     let id = Uuid::new_v4().to_string();
     let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
     let started_at = std::time::SystemTime::now()

@@ -238,7 +238,7 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Free-form label, echoed back in reports. |
+| `id` | string | no | Free-form label, echoed back in reports and used to correlate this scenario with its attempts, failures, and progress. Optional — if omitted (empty), the harness assigns `scenario-{index}` from its position in the submitted list. |
 | `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. A narrative is a SPECIFICATION (prose), not instantiated data: open worlds (web, email, payments) can never be materialized, so the simulator lazily renders concrete responses from it. See the API description's DESIGN INTENT for why this is prose and not a fixture. Required; every scenario must pin one — cover (1) inventory, (2) facts including NEGATIVE facts, (3) completeness assertions, (4) rendering rules. |
 | `resolved_inputs` | map&lt;string, any&gt; | no | Concrete values for the PUT template's {{variables}}. Empty for templates with no placeholders. |
 | `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |

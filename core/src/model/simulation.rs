@@ -138,7 +138,11 @@ impl RunProgress {
 /// here; everything else in a trace is derived.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
-    /// Free-form label, echoed back in reports.
+    /// Free-form label, echoed back in reports and used to correlate this
+    /// scenario with its attempts, failures, and progress. Optional — if
+    /// omitted (empty), the harness assigns `scenario-{index}` from its
+    /// position in the submitted list.
+    #[serde(default)]
     pub id: String,
     /// Concrete values for the PUT template's {{variables}}. Empty for
     /// templates with no placeholders.
