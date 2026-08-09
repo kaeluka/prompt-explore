@@ -129,9 +129,12 @@ pub struct Scenario {
     /// and rendering rules.
     pub world: String,
     /// Per-`{{variable}}` input-domain descriptions: the value space,
-    /// semantics, and preconditions/trust contracts. The simulator
-    /// generates a concrete value for each (reported in the trace's
-    /// `resolved_inputs`). Empty for templates with no placeholders.
+    /// semantics, and preconditions/trust contracts. Each KEY must match
+    /// a `{{variable}}` placeholder in the PUT template (see
+    /// `PromptUnderTest.template` for the placeholder syntax); the
+    /// simulator generates a concrete value for each and substitutes it
+    /// (reported in the trace's `resolved_inputs`). Empty for templates
+    /// with no placeholders.
     #[serde(default)]
     pub input_domain: HashMap<String, String>,
     /// The opening message from the user/protagonist.

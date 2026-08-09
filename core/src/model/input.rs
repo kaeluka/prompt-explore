@@ -9,10 +9,18 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptUnderTest {
     pub id: String,
-    /// The system-prompt template. `{{var}}` placeholders are substituted
-    /// from the scenario's `resolved_inputs`. The opening user turn is
-    /// separate — it comes from the scenario's `user_message`, not the
-    /// template.
+    /// The system-prompt template. Placeholders use double braces:
+    /// `{{variable_name}}`. Rules:
+    /// - Name charset: `[A-Za-z0-9_]` (alphanumeric + underscore).
+    /// - No spaces inside the braces — write `{{tier}}`, not `{{ tier }}`.
+    /// - Each placeholder MUST have a matching key in the scenario's
+    ///   `input_domain`; the simulator generates a concrete value for it
+    ///   and substitutes it (strings inserted raw; other JSON values in
+    ///   serialized form).
+    /// - A template with no placeholders needs no `input_domain`.
+    ///
+    /// The opening user turn is separate — it comes from the scenario's
+    /// `user_message`, not the template.
     pub template: String,
     /// This prompt's tool surface, exactly as the model sees it.
     /// Empty = no tool loop (but intent lives in `design_goals`, not here).

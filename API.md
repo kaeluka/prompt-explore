@@ -180,7 +180,7 @@ One prompt under test: the system-prompt template, input variables, tool surface
 |---|---|---|---|
 | `design_goals` | string | yes | MANDATORY. The author's stated intent for the prompt — the yardstick it's supposed to uphold, and itself an optimization target. Advisory in the current verdict: the judge's criterion is the `question` alone; design goals are not automatically enforced during a run. |
 | `id` | string | yes |  |
-| `template` | string | yes | The system-prompt template. `{{var}}` placeholders are substituted from the scenario's `resolved_inputs`. The opening user turn is separate — it comes from the scenario's `user_message`, not the template. |
+| `template` | string | yes | The system-prompt template. Placeholders use double braces: `{{variable_name}}`. Rules: - Name charset: `[A-Za-z0-9_]` (alphanumeric + underscore). - No spaces inside the braces — write `{{tier}}`, not `{{ tier }}`. - Each placeholder MUST have a matching key in the scenario's   `input_domain`; the simulator generates a concrete value for it   and substitutes it (strings inserted raw; other JSON values in   serialized form). - A template with no placeholders needs no `input_domain`.  The opening user turn is separate — it comes from the scenario's `user_message`, not the template. |
 | `tools` | [`ToolSchema`](#toolschema)[] | yes | This prompt's tool surface, exactly as the model sees it. Empty = no tool loop (but intent lives in `design_goals`, not here). |
 
 ### `ProviderModels`
@@ -236,7 +236,7 @@ A test case: a world specification, an input domain, and a protagonist. A pure V
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `input_domain` | map&lt;string, string&gt; | no | Per-`{{variable}}` input-domain descriptions: the value space, semantics, and preconditions/trust contracts. The simulator generates a concrete value for each (reported in the trace's `resolved_inputs`). Empty for templates with no placeholders. |
+| `input_domain` | map&lt;string, string&gt; | no | Per-`{{variable}}` input-domain descriptions: the value space, semantics, and preconditions/trust contracts. Each KEY must match a `{{variable}}` placeholder in the PUT template (see `PromptUnderTest.template` for the placeholder syntax); the simulator generates a concrete value for each and substitutes it (reported in the trace's `resolved_inputs`). Empty for templates with no placeholders. |
 | `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |
 | `user_message` | string? | no | The opening message from the user/protagonist. |
 | `world` | string | yes | The world specification — ground truth the simulator renders tool responses from and the judge checks claims against. A SPECIFICATION (prose), not instantiated data. See the API description's DESIGN INTENT. Cover inventory, facts (incl. negatives), completeness, and rendering rules. |

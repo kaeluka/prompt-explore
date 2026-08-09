@@ -550,7 +550,7 @@
           },
           "template": {
             "type": "string",
-            "description": "The system-prompt template. `{{var}}` placeholders are substituted\nfrom the scenario's `resolved_inputs`. The opening user turn is\nseparate — it comes from the scenario's `user_message`, not the\ntemplate."
+            "description": "The system-prompt template. Placeholders use double braces:\n`{{variable_name}}`. Rules:\n- Name charset: `[A-Za-z0-9_]` (alphanumeric + underscore).\n- No spaces inside the braces — write `{{tier}}`, not `{{ tier }}`.\n- Each placeholder MUST have a matching key in the scenario's\n  `input_domain`; the simulator generates a concrete value for it\n  and substitutes it (strings inserted raw; other JSON values in\n  serialized form).\n- A template with no placeholders needs no `input_domain`.\n\nThe opening user turn is separate — it comes from the scenario's\n`user_message`, not the template."
           },
           "tools": {
             "type": "array",
@@ -719,7 +719,7 @@
         "properties": {
           "input_domain": {
             "type": "object",
-            "description": "Per-`{{variable}}` input-domain descriptions: the value space,\nsemantics, and preconditions/trust contracts. The simulator\ngenerates a concrete value for each (reported in the trace's\n`resolved_inputs`). Empty for templates with no placeholders.",
+            "description": "Per-`{{variable}}` input-domain descriptions: the value space,\nsemantics, and preconditions/trust contracts. Each KEY must match\na `{{variable}}` placeholder in the PUT template (see\n`PromptUnderTest.template` for the placeholder syntax); the\nsimulator generates a concrete value for each and substitutes it\n(reported in the trace's `resolved_inputs`). Empty for templates\nwith no placeholders.",
             "additionalProperties": {
               "type": "string"
             },
