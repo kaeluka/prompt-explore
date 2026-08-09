@@ -160,12 +160,23 @@ function ScenarioPanel({ prog, input }) {
 
 function PutPanel({ put }) {
   if (!put) return null;
-  const tools = (put.tools || []).map(t => t.name);
+  const tools = put.tools || [];
   return html`
     <details style="margin-top:0.4rem">
       <summary class="meta">prompt under test</summary>
       <div class="meta" style="margin:0.3rem 0"><b>design goals:</b> ${put.design_goals || ''}</div>
-      ${tools.length ? html`<div class="meta" style="margin:0.3rem 0"><b>tools:</b> ${tools.join(', ')}</div>` : null}
+      ${tools.length ? html`
+        <div class="meta" style="margin:0.3rem 0"><b>tools:</b> (click to expand)</div>
+        ${tools.map(t => html`
+          <details style="margin:0.2rem 0 0.2rem 0.6rem">
+            <summary class="mono meta" style="cursor:pointer">${t.name} <span style="opacity:0.6">(${t.side_effect})</span></summary>
+            <div style="margin:0.3rem 0 0.3rem 0.7rem">
+              <div class="meta" style="margin:0.2rem 0"><b>description:</b> ${t.description || ''}</div>
+              <details><summary class="meta">parameters (JSON schema)</summary><pre class="step">${JSON.stringify(t.parameters, null, 2)}</pre></details>
+              ${t.example_responses && t.example_responses.length ? html`<details><summary class="meta">example_responses (${t.example_responses.length})</summary><div>${t.example_responses.map(r => html`<pre class="step">${r}</pre>`)}</div></details>` : null}
+            </div>
+          </details>`)}
+      ` : null}
       <details style="margin-top:0.3rem"><summary class="meta">template</summary><div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0;font-size:0.78rem">${put.template || ''}</div></details>
     </details>`;
 }
