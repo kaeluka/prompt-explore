@@ -398,7 +398,7 @@
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (runner PUT + judge + proposer). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings."
+            "description": "Model for every LLM role (runner PUT + judge + proposer). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT is judged in the same simulated environment."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
@@ -415,7 +415,7 @@
               "string",
               "null"
             ],
-            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Defaults to `model`. Use a cheaper/different model\nhere independently of the PUT model — the cost-optimization knob."
+            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Defaults to `model`.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `model`, not this). You\n   are comparing candidate PUTs; the environment must stay fixed\n   so differences in the traces come from the PUT, not from a\n   shifting simulation.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
           }
         }
       },

@@ -78,11 +78,29 @@ struct InvestigateRequest {
     /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare
     /// name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
     /// See `GET /api/models` for available namespaced model strings.
+    ///
+    /// This is the model you are TESTING: when experimenting to find
+    /// which model works well for your prompt, this is the one you vary
+    /// across runs. Keep `sim_model` fixed while you do (see below), so
+    /// each candidate PUT is judged in the same simulated environment.
     #[serde(default)]
     model: Option<String>,
     /// Model for the tool SIMULATOR only (the LLM that roleplays the
-    /// environment). Defaults to `model`. Use a cheaper/different model
-    /// here independently of the PUT model — the cost-optimization knob.
+    /// environment). Defaults to `model`.
+    ///
+    /// The simulator is the test ENVIRONMENT, not the thing under test.
+    /// Two consequences:
+    /// 1. When tuning which model works well for your prompt, keep
+    ///    `sim_model` STABLE across runs (vary `model`, not this). You
+    ///    are comparing candidate PUTs; the environment must stay fixed
+    ///    so differences in the traces come from the PUT, not from a
+    ///    shifting simulation.
+    /// 2. The simulator must be POWERFUL ENOUGH to render a believable
+    ///    environment — a weak simulator produces inconsistent or
+    ///    unbelievable tool responses, which corrupts every trace
+    ///    regardless of how good the PUT is. There is a quality floor
+    ///    below which results stop being meaningful, even if it's
+    ///    cheaper. Pick a strong model here and leave it set.
     #[serde(default)]
     sim_model: Option<String>,
     /// The test cases to run. Required; ALL of them are run (an explicit
