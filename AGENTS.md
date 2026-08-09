@@ -7,9 +7,17 @@ Guidance for AI agents (and humans) working in this repository.
 **prompt-explore** — property-based testing for agent behavior. A user states a
 behavioral question about a prompt under test (PUT) and supplies scenarios
 (author-supplied world narratives); the tool runs them, judges every trace for a
-witness, and proposes *unverified*
-fixes. The user owns everything after the run — the tool is the loop body of an
-interactive optimization loop, the user is the loop.
+witness, and returns the witness + trace (the caller finds and owns the fix —
+see below). The user owns everything after the run — the tool is the loop body
+of an interactive optimization loop, the user is the loop.
+
+**The witness is the deliverable; the fix is the caller's job.** Earlier the
+tool proposed unverified fix suggestions and could apply them. That machinery
+was removed: knowing the witness and trace, the caller finds the fix
+themselves — the hard part is finding the witness, not suggesting the edit.
+(It also only ever covered a single prompt; real prompt optimization often
+spans interacting prompts. If fix suggestions return, they will be built for
+the multi-prompt case, not single-PUT.)
 
 ## Design philosophy
 
@@ -44,7 +52,7 @@ was supposed to happen.
 
 **Every LLM phase is an observable status.** An investigation moves through
 distinct LLM phases — simulating the PUT tool loop, judging traces, the
-advisory design-goal pass, proposing fixes. `GET /api/investigations/{id}`
+advisory design-goal pass. `GET /api/investigations/{id}`
 must report which phase the job is in (and the UI must show it), never a
 bare "running". A silent phase is a UX bug: a reader who sees every scenario
 done but the job still "running" (e.g. during the goal-check tail) concludes
@@ -110,7 +118,8 @@ Cargo workspace:
 
 - `core/` — the library. All logic lives here and must stay usable standalone
   (lib / CLI / examples). Pure model layer (`model/`), LLM abstraction (`llm/`),
-  simulation (`simulate/`), judging (`judge/`), generation + search (`generate/`).
+  simulation (`simulate/`), judging (`judge/`), and the investigation
+  orchestrator (`generate/`).
 - `server/` — thin axum wrapper (HTTP + web UI). **No business logic here.**
   Job-based API (`POST /api/investigations` → poll `GET /api/investigations/:id`).
 
@@ -121,8 +130,6 @@ Cargo workspace:
   scripted responses — keep tests deterministic, no network.
 - The judge sees the scenario and design goals but **not** the PUT template
   (verdicts must not be biased toward "it said it would, so it did").
-- Proposals are always explicitly unverified; the confidence note must say so
-  and instruct the user to re-ask the question to check.
 - Negative results are first-class: surface what was tried (scenarios, traces,
   verdicts), never just "nothing found".
 - The OpenAPI spec is generated, not hand-written: handlers and
@@ -153,7 +160,7 @@ uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`, default
 **Whenever you optimize a prompt, use the opportunity for dogfooding.**
 
 This tool *is* a prompt-optimization tool, and its own prompts (judge, tool
-simulator, proposal generator) are its most
+simulator) are its most
 important internal artifacts. So when you change any of them:
 
 1. **Run the tool against itself.** Use prompt-explore (the server or a live

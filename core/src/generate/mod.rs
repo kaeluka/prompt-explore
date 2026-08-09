@@ -1,11 +1,8 @@
-//! Generation layer: proposal generation and application. (Scenario
-//! generation was removed — scenarios are authored outside the harness;
-//! see AGENTS.md's scenario-authoring guidance.)
+//! Generation layer: the investigation orchestrator (`search`). (Scenario
+//! generation was removed — scenarios are authored outside the harness.
+//! Proposal generation and application were also removed: the witness and
+//! trace are the deliverable; the fix is the caller's job. See AGENTS.md.)
 
-pub mod apply;
-pub mod propose;
 pub mod search;
 
-pub use apply::{AppliedPut, DiffPart, ProposalApplier};
-pub use propose::ProposalGenerator;
 pub use search::{Attempt, InvestigateOutcome, Investigator, LlmRole};

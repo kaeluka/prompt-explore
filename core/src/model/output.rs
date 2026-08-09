@@ -1,4 +1,4 @@
-//! Run output: witnesses, attribution, and (unverified) proposals.
+//! Run output: witnesses, attribution, verdicts, and incidental findings.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,11 +22,6 @@ pub struct RunResult {
     /// question is the sole criterion); they are surfaced for the
     /// operator to read.
     pub incidental_findings: Vec<String>,
-    /// Generated ONLY when a witness is found (fixes for the witnessed
-    /// behavior). Empty on negative results — the proposer does not run
-    /// without a witness. Always unverified; the user owns everything
-    /// after the run.
-    pub proposals: Vec<Proposal>,
     /// Scenarios that errored instead of producing a judged trace (PUT
     /// execution, tool simulation, or judge failure). When non-empty,
     /// `attempts` may be shorter than `scenarios_tried`; when ALL

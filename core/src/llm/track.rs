@@ -18,7 +18,7 @@ pub struct UsageTotals {
     pub cache_read_tokens: u64,
     pub output_tokens: u64,
     /// Completions requested across all roles (hypothesizer, builder,
-    /// runner PUT + simulator, judge, proposer).
+    /// runner PUT + simulator, judge).
     pub llm_calls: u64,
     /// Tool calls the model requested. Only the simulated PUT has
     /// tools, so this counts tool calls in simulated traces.

@@ -187,12 +187,6 @@ impl Judge {
         })
     }
 
-    async fn call(&self, system: &str, user: &str) -> Result<String, LlmError> {
-        self.ask_json::<serde_json::Value>(system, user, "any JSON")
-            .await
-            .map(|v| v.to_string())
-    }
-
     /// One judge conversation per question: ask, and if the reply is
     /// empty or not the required JSON, repair in conversation (append a
     /// system note naming the failure and re-ask) rather than with a

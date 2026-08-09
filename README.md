@@ -25,10 +25,14 @@ Ambiguity is found by execution, not by reading.
    judges every trace, and reports witness traces. "No witness found" is
    a first-class, honestly-reported outcome: every scenario tried is
    surfaced.
-4. **Propose.** Ranked, **explicitly unverified** fix proposals
-   (reword / split / merge / transform input data / revise design
-   goals), with one-click apply in the UI.
-5. **The user owns everything after.** Verification = apply a change,
+4. **Witness is the deliverable.** The witness + trace + verdict +
+   incidental findings are the output. **prompt-explore does not propose
+   fixes** — knowing the witness and trace, the caller finds the fix
+   themselves; the hard part is finding the witness. (Fix suggestions
+   were removed: they only ever covered a single prompt, and real
+   optimization often spans interacting prompts. If they return, they
+   will target the multi-prompt case.)
+5. **The user owns everything after.** Verification = edit the prompt,
    re-run the same scenarios. The tool is the loop body of an
    interactive optimization loop; the user is the loop.
 
@@ -56,12 +60,11 @@ core/            the library — all logic lives here, usable standalone
 ├── src/llm/         LlmClient trait + OpenAI-compatible adapter (z.ai, OpenRouter) + mock
 ├── src/simulate/    runner (PUT tool loop) + tool-simulator LLM + world state
 ├── src/judge/       predicate evaluation over traces (sees scenario + design goals, not the PUT)
-├── src/generate/    run + judge orchestration, propose, apply
+├── src/generate/    run + judge orchestration (the investigation driver)
 └── examples/        smoke, live_run, investigate_live, judge_live
 server/          thin axum wrapper — HTTP API + web UI. No business logic.
-├── src/main.rs      job-based API: POST /api/investigations → poll GET /api/investigations/:id;
-│                    POST /api/apply (LLM rewrite + deterministic diff)
-└── static/          web UI (structured PUT form, budget controls, transcripts, apply buttons)
+├── src/main.rs      job-based API: POST /api/investigations → poll GET /api/investigations/:id
+└── static/          web UI (job dashboard, live traces, transcripts)
 ```
 
 ## Status
@@ -81,11 +84,12 @@ server/          thin axum wrapper — HTTP API + web UI. No business logic.
   blind to the PUT template). Structural checks were tried and dropped.
 - ✅ Scenario execution (author-supplied narratives) + judge
 - ✅ Witness reporting: every attempt surfaced, including negative results
-- ✅ Proposal generation + apply (the LLM rewrites the target field,
-  a deterministic word-level diff is computed for review; goal_revision
-  edits goals, everything else edits the template — never both)
-- ✅ HTTP server + web UI (job-based API, transcripts, budget controls,
-  apply buttons)
+- ✅ Per-role models: PUT, simulator, and judge independently selectable
+  (`model` / `sim_model` / `judge_model`), across providers
+- ✅ Advisory design-goal findings (`incidental_findings`) — surfaced, never
+  mixed into the witness verdict
+- ✅ HTTP server + web UI (job dashboard, live traces, observable LLM phases,
+  budget controls)
 - ✅ CLI-style live runs via examples
 
 ### ⬜ Not done yet
@@ -146,6 +150,5 @@ chain) are first-class.
 ## Contributing
 
 See [AGENTS.md](AGENTS.md) — notably the **dogfooding rule**: when you
-change any of the tool's own prompts (judge, simulator, proposal
-generator), run the tool against itself and record the before/after
-result in the commit message.
+change any of the tool's own prompts (judge, simulator), run the tool
+against itself and record the before/after result in the commit message.

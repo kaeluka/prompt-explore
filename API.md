@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. Proposed prompt fixes are always unverified — apply them (POST /api/apply), then re-run the same scenarios to check. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.
+Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.
 
 Version: `0.1.0` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -14,23 +14,6 @@ Serve the web UI.
 |---|---|
 | `200` | Web UI (HTML) |
 
-### `POST /api/apply`
-
-Apply a proposal: the LLM rewrites the target field (template, or design goals for goal_revision), and a deterministic word-level diff is returned for review alongside the updated prompt.
-
-Body: [`ApplyRequest`](#applyrequest)
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `proposal` | [`Proposal`](#proposal) | yes |  |
-| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-
-
-| Status | Response |
-|---|---|
-| `200` | Updated prompt plus template/goals diffs: [`ApplyResponse`](#applyresponse) |
-| `500` | LLM apply failed |
-
 ### `GET /api/investigations`
 
 List all jobs (for the dashboard). Running jobs first, then by recency. Returns summaries only — poll a job's id for full progress.
@@ -41,7 +24,7 @@ List all jobs (for the dashboard). Running jobs first, then by recency. Returns 
 
 ### `POST /api/investigations`
 
-Start an investigation: run every given scenario against the PUT and judge each trace against the question. Runs in the background; poll the returned id. The result includes every attempt (scenario + trace + verdict), any witness, unverified fix proposals, and token usage.
+Start an investigation: run every given scenario against the PUT and judge each trace against the question. Runs in the background; poll the returned id. The result includes every attempt (scenario + trace + verdict), any witness, incidental findings, and token usage.
 
 Body: [`InvestigateRequest`](#investigaterequest)
 
@@ -49,8 +32,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `judge_model` | string? | no | Model for the JUDGE only (the LLM that evaluates each trace against your question). Defaults to `model`. The judge is the safety-critical role: a weak judge fails to catch what a weak PUT does, so it should be at least as strong as the PUT, ideally stronger. Splitting it out lets you keep a strong judge while you vary the PUT model — and a stronger judge also catches simulator divergence (tool responses that contradict the narrative). |
-| `model` | string? | no | Model for every LLM role (runner PUT + judge + proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT is judged in the same simulated environment. |
-| `proposer_model` | string? | no | Model for the PROPOSER only (the LLM that suggests prompt fixes from a witness). Defaults to `model`. Lower priority than the judge; proposals are always unverified anyway. |
+| `model` | string? | no | Model for every LLM role (runner PUT + judge). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT is judged in the same simulated environment. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Defaults to `model`.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
@@ -73,26 +55,6 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `200` | Job status + live progress (+ result when done): [`JobView`](#jobview) |
 | `404` | Unknown job id |
 
-### `POST /api/investigations/{id}/apply`
-
-| Parameter | In | Type | Description |
-|---|---|---|---|
-| `id` | path | string | Job id whose proposals to apply |
-
-Body: [`ApplyToJobRequest`](#applytojobrequest)
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `proposal_id` | string | yes | The id of a proposal in this job's `result.proposals`. |
-
-
-| Status | Response |
-|---|---|
-| `202` | A new job re-running the same scenarios against the rewritten PUT: [`JobCreated`](#jobcreated) |
-| `404` | Job not found |
-| `409` | Job has no result yet, or no proposals (no witness) |
-| `500` | LLM apply failed |
-
 ### `GET /api/models`
 
 | Status | Response |
@@ -100,29 +62,6 @@ Body: [`ApplyToJobRequest`](#applytojobrequest)
 | `200` | Available models per provider: [`ModelsResponse`](#modelsresponse) |
 
 ## Schemas
-
-### `ApplyRequest`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `proposal` | [`Proposal`](#proposal) | yes |  |
-| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-
-### `ApplyResponse`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `goals_diff` | [`DiffPart`](#diffpart)[] | yes |  |
-| `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
-| `template_diff` | [`DiffPart`](#diffpart)[] | yes |  |
-
-### `ApplyToJobRequest`
-
-Apply a proposal generated by a finished job to that job's PUT and re-run the SAME scenarios against the rewritten PUT — closing the edit/test loop the spec tells users to walk ("apply, then re-run to check") without echoing the whole request back.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `proposal_id` | string | yes | The id of a proposal in this job's `result.proposals`. |
 
 ### `AttemptView`
 
@@ -153,37 +92,13 @@ Apply a proposal generated by a finished job to that job's PUT and re-run the SA
 | `max_steps_per_trace` | integer | yes | Max steps per trace. A STEP is one tool call OR one final completion (the turn with no tool call that ends the trace). A completion that requests several tool calls counts as several steps. The main cost dial for tool-loop PUTs. |
 | `max_tokens` | integer? | no | Optional per-trace token cap (input+output, summed across turns). |
 
-### `DiffPart`
-
-**Variant `equal`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `tag` | `equal` | yes |  |
-| `value` | string | yes |  |
-
-**Variant `insert`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `tag` | `insert` | yes |  |
-| `value` | string | yes |  |
-
-**Variant `delete`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `tag` | `delete` | yes |  |
-| `value` | string | yes |  |
-
 ### `InvestigateRequest`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `judge_model` | string? | no | Model for the JUDGE only (the LLM that evaluates each trace against your question). Defaults to `model`. The judge is the safety-critical role: a weak judge fails to catch what a weak PUT does, so it should be at least as strong as the PUT, ideally stronger. Splitting it out lets you keep a strong judge while you vary the PUT model — and a stronger judge also catches simulator divergence (tool responses that contradict the narrative). |
-| `model` | string? | no | Model for every LLM role (runner PUT + judge + proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT is judged in the same simulated environment. |
-| `proposer_model` | string? | no | Model for the PROPOSER only (the LLM that suggests prompt fixes from a witness). Defaults to `model`. Lower priority than the judge; proposals are always unverified anyway. |
+| `model` | string? | no | Model for every LLM role (runner PUT + judge). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT is judged in the same simulated environment. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Defaults to `model`.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
@@ -265,25 +180,11 @@ One prompt under test: the system-prompt template, input variables, tool surface
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `design_goals` | string | yes | MANDATORY. The author's stated intent for the prompt — the yardstick it's supposed to uphold, and itself an optimization target (`GoalRevision` proposals). Advisory in the current verdict: the judge's criterion is the `question` alone; design goals are not automatically enforced during a run. |
+| `design_goals` | string | yes | MANDATORY. The author's stated intent for the prompt — the yardstick it's supposed to uphold, and itself an optimization target. Advisory in the current verdict: the judge's criterion is the `question` alone; design goals are not automatically enforced during a run. |
 | `id` | string | yes |  |
 | `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | no | Documents the template's expected `{{variables}}` and how to generate values. With scenarios authored externally, this is metadata for authors; concrete values come from each scenario's `resolved_inputs`, which the runner substitutes into the template. Optional (defaults empty) — it documents intent but does not drive the run. |
 | `template` | string | yes | The system-prompt template. `{{var}}` placeholders are substituted from the scenario's `resolved_inputs`. The opening user turn is separate — it comes from the scenario's `user_message`, not the template. |
 | `tools` | [`ToolSchema`](#toolschema)[] | yes | This prompt's tool surface, exactly as the model sees it. Empty = no tool loop (but intent lives in `design_goals`, not here). |
-
-### `Proposal`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `addresses` | string[] | yes | Instruction spans this proposal addresses. |
-| `confidence_note` | string | yes | Must state explicitly that the proposal is unverified. |
-| `content` | string | yes |  |
-| `id` | string | yes | Stable id within the run (e.g. "prop-0"). Used by POST /api/investigations/{id}/apply to pick a proposal without echoing the whole object back. |
-| `kind` | [`ProposalKind`](#proposalkind) | yes |  |
-
-### `ProposalKind`
-
-Values: `reword`, `split`, `merge`, `data_transform`, `goal_revision`
 
 ### `ProviderModels`
 
@@ -305,7 +206,7 @@ A provider's listing result.
 
 The LLM phase an investigation is currently in. Exposed so a reader can see what the job is doing while it runs — never just a bare "running". See the API description: every LLM phase is an observable status.
 
-Values: `scenarios`, `checking_goals`, `proposing`
+Values: `scenarios`, `checking_goals`
 
 ### `RunProgress`
 
@@ -323,7 +224,6 @@ Live progress of a run, exposed while it's in flight: one entry per scenario, wi
 | `failures` | [`ScenarioFailure`](#scenariofailure)[] | no | Scenarios that errored instead of producing a judged trace (PUT execution, tool simulation, or judge failure). When non-empty, `attempts` may be shorter than `scenarios_tried`; when ALL scenarios failed, `status` is `error`. |
 | `final_state` | object? | no | The world state at the end: the witness trace's when one was found, otherwise the last completed attempt's. Informational. |
 | `incidental_findings` | string[] | yes | Advisory design-goal violations found across completed traces — best-effort: skipped when `design_goals` is empty or the goal judge errors. These do NOT affect the witness verdict (the question is the sole criterion); they are surfaced for the operator to read. |
-| `proposals` | [`Proposal`](#proposal)[] | yes | Generated ONLY when a witness is found (fixes for the witnessed behavior). Empty on negative results — the proposer does not run without a witness. Always unverified; the user owns everything after the run. |
 | `scenarios_tried` | integer | yes | Scenarios attempted (= completed, in the response's `attempts`, + failed, in `failures`). |
 | `status` | [`RunStatus`](#runstatus) | yes |  |
 | `strategies_tried` | string[] | yes | Per-scenario provenance labels (e.g. "caller-provided scenario 'id'"), surfaced so negative results show what was tried. |
@@ -442,7 +342,7 @@ Cumulative usage across every call routed through a `UsageTracker`.
 |---|---|---|---|
 | `cache_read_tokens` | integer | yes |  |
 | `input_tokens` | integer | yes |  |
-| `llm_calls` | integer | yes | Completions requested across all roles (hypothesizer, builder, runner PUT + simulator, judge, proposer). |
+| `llm_calls` | integer | yes | Completions requested across all roles (hypothesizer, builder, runner PUT + simulator, judge). |
 | `output_tokens` | integer | yes |  |
 | `tool_calls` | integer | yes | Tool calls the model requested. Only the simulated PUT has tools, so this counts tool calls in simulated traces. |
 

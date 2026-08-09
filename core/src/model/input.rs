@@ -28,7 +28,7 @@ pub struct PromptUnderTest {
     pub tools: Vec<ToolSchema>,
     /// MANDATORY. The author's stated intent for the prompt — the
     /// yardstick it's supposed to uphold, and itself an optimization
-    /// target (`GoalRevision` proposals). Advisory in the current
+    /// target. Advisory in the current
     /// verdict: the judge's criterion is the `question` alone; design
     /// goals are not automatically enforced during a run.
     pub design_goals: String,

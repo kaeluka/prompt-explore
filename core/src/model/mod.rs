@@ -3,7 +3,7 @@
 //! Data types for one investigation iteration:
 //! `input` (PsUT + investigation) → `predicate` (operationalized question
 //! + hypotheses) → `simulation` (scenarios + traces) → `output`
-//! (witness + proposals).
+//! (witness, verdicts, incidental findings).
 //!
 //! This layer has no runtime dependencies: no LLM clients, no I/O,
 //! no async. Everything here is plain serializable data.

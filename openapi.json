@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. Proposed prompt fixes are always unverified — apply them (POST /api/apply), then re-run the same scenarios to check. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.",
+    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. The deliverable is the witness (or a clean no-witness sweep) plus the traces — the caller finds and owns the fix; this API does not propose fixes. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them. It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly before trusting any verdict. When simulation quality is insufficient, iterate with three levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably; (c) use a stronger JUDGE_MODEL — so divergence is caught.",
     "license": {
       "name": ""
     },
@@ -19,45 +19,6 @@
             "description": "Web UI (HTML)",
             "content": {
               "text/html": {}
-            }
-          }
-        }
-      }
-    },
-    "/api/apply": {
-      "post": {
-        "tags": [],
-        "summary": "Apply a proposal: the LLM rewrites the target field (template, or\ndesign goals for goal_revision), and a deterministic word-level diff\nis returned for review alongside the updated prompt.",
-        "operationId": "apply_proposal",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApplyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Updated prompt plus template/goals diffs",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApplyResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "LLM apply failed",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
             }
           }
         }
@@ -86,7 +47,7 @@
       },
       "post": {
         "tags": [],
-        "summary": "Start an investigation: run every given scenario against the PUT and\njudge each trace against the question. Runs in the background; poll\nthe returned id. The result includes every attempt (scenario + trace\n+ verdict), any witness, unverified fix proposals, and token usage.",
+        "summary": "Start an investigation: run every given scenario against the PUT and\njudge each trace against the question. Runs in the background; poll\nthe returned id. The result includes every attempt (scenario + trace\n+ verdict), any witness, incidental findings, and token usage.",
         "operationId": "create_investigation",
         "requestBody": {
           "content": {
@@ -189,63 +150,6 @@
         }
       }
     },
-    "/api/investigations/{id}/apply": {
-      "post": {
-        "tags": [
-          "investigations"
-        ],
-        "operationId": "apply_to_job",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Job id whose proposals to apply",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApplyToJobRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "A new job re-running the same scenarios against the rewritten PUT",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobCreated"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Job not found"
-          },
-          "409": {
-            "description": "Job has no result yet, or no proposals (no witness)"
-          },
-          "500": {
-            "description": "LLM apply failed",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/models": {
       "get": {
         "tags": [
@@ -269,59 +173,6 @@
   },
   "components": {
     "schemas": {
-      "ApplyRequest": {
-        "type": "object",
-        "required": [
-          "put",
-          "proposal"
-        ],
-        "properties": {
-          "proposal": {
-            "$ref": "#/components/schemas/Proposal"
-          },
-          "put": {
-            "$ref": "#/components/schemas/PromptUnderTest"
-          }
-        }
-      },
-      "ApplyResponse": {
-        "type": "object",
-        "required": [
-          "put",
-          "template_diff",
-          "goals_diff"
-        ],
-        "properties": {
-          "goals_diff": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DiffPart"
-            }
-          },
-          "put": {
-            "$ref": "#/components/schemas/PromptUnderTest"
-          },
-          "template_diff": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DiffPart"
-            }
-          }
-        }
-      },
-      "ApplyToJobRequest": {
-        "type": "object",
-        "description": "Apply a proposal generated by a finished job to that job's PUT and\nre-run the SAME scenarios against the rewritten PUT — closing the\nedit/test loop the spec tells users to walk (\"apply, then re-run to\ncheck\") without echoing the whole request back.",
-        "required": [
-          "proposal_id"
-        ],
-        "properties": {
-          "proposal_id": {
-            "type": "string",
-            "description": "The id of a proposal in this job's `result.proposals`."
-          }
-        }
-      },
       "AttemptView": {
         "type": "object",
         "required": [
@@ -430,64 +281,6 @@
           }
         }
       },
-      "DiffPart": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "value",
-              "tag"
-            ],
-            "properties": {
-              "tag": {
-                "type": "string",
-                "enum": [
-                  "equal"
-                ]
-              },
-              "value": {
-                "type": "string"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "value",
-              "tag"
-            ],
-            "properties": {
-              "tag": {
-                "type": "string",
-                "enum": [
-                  "insert"
-                ]
-              },
-              "value": {
-                "type": "string"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "value",
-              "tag"
-            ],
-            "properties": {
-              "tag": {
-                "type": "string",
-                "enum": [
-                  "delete"
-                ]
-              },
-              "value": {
-                "type": "string"
-              }
-            }
-          }
-        ]
-      },
       "InvestigateRequest": {
         "type": "object",
         "required": [
@@ -511,14 +304,7 @@
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (runner PUT + judge + proposer). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT is judged in the same simulated environment."
-          },
-          "proposer_model": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Model for the PROPOSER only (the LLM that suggests prompt fixes\nfrom a witness). Defaults to `model`. Lower priority than the\njudge; proposals are always unverified anyway."
+            "description": "Model for every LLM role (runner PUT + judge). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT is judged in the same simulated environment."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
@@ -765,7 +551,7 @@
         "properties": {
           "design_goals": {
             "type": "string",
-            "description": "MANDATORY. The author's stated intent for the prompt — the\nyardstick it's supposed to uphold, and itself an optimization\ntarget (`GoalRevision` proposals). Advisory in the current\nverdict: the judge's criterion is the `question` alone; design\ngoals are not automatically enforced during a run."
+            "description": "MANDATORY. The author's stated intent for the prompt — the\nyardstick it's supposed to uphold, and itself an optimization\ntarget. Advisory in the current\nverdict: the judge's criterion is the `question` alone; design\ngoals are not automatically enforced during a run."
           },
           "id": {
             "type": "string"
@@ -792,49 +578,6 @@
             "description": "This prompt's tool surface, exactly as the model sees it.\nEmpty = no tool loop (but intent lives in `design_goals`, not here)."
           }
         }
-      },
-      "Proposal": {
-        "type": "object",
-        "required": [
-          "id",
-          "kind",
-          "content",
-          "addresses",
-          "confidence_note"
-        ],
-        "properties": {
-          "addresses": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Instruction spans this proposal addresses."
-          },
-          "confidence_note": {
-            "type": "string",
-            "description": "Must state explicitly that the proposal is unverified."
-          },
-          "content": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "description": "Stable id within the run (e.g. \"prop-0\"). Used by\nPOST /api/investigations/{id}/apply to pick a proposal without\nechoing the whole object back."
-          },
-          "kind": {
-            "$ref": "#/components/schemas/ProposalKind"
-          }
-        }
-      },
-      "ProposalKind": {
-        "type": "string",
-        "enum": [
-          "reword",
-          "split",
-          "merge",
-          "data_transform",
-          "goal_revision"
-        ]
       },
       "ProviderModels": {
         "oneOf": [
@@ -891,8 +634,7 @@
         "description": "The LLM phase an investigation is currently in. Exposed so a reader can\nsee what the job is doing while it runs — never just a bare \"running\".\nSee the API description: every LLM phase is an observable status.",
         "enum": [
           "scenarios",
-          "checking_goals",
-          "proposing"
+          "checking_goals"
         ]
       },
       "RunProgress": {
@@ -921,8 +663,7 @@
           "status",
           "scenarios_tried",
           "strategies_tried",
-          "incidental_findings",
-          "proposals"
+          "incidental_findings"
         ],
         "properties": {
           "failures": {
@@ -949,13 +690,6 @@
               "type": "string"
             },
             "description": "Advisory design-goal violations found across completed traces —\nbest-effort: skipped when `design_goals` is empty or the goal\njudge errors. These do NOT affect the witness verdict (the\nquestion is the sole criterion); they are surfaced for the\noperator to read."
-          },
-          "proposals": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Proposal"
-            },
-            "description": "Generated ONLY when a witness is found (fixes for the witnessed\nbehavior). Empty on negative results — the proposer does not run\nwithout a witness. Always unverified; the user owns everything\nafter the run."
           },
           "scenarios_tried": {
             "type": "integer",
@@ -1316,7 +1050,7 @@
           "llm_calls": {
             "type": "integer",
             "format": "int64",
-            "description": "Completions requested across all roles (hypothesizer, builder,\nrunner PUT + simulator, judge, proposer).",
+            "description": "Completions requested across all roles (hypothesizer, builder,\nrunner PUT + simulator, judge).",
             "minimum": 0
           },
           "output_tokens": {

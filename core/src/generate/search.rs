@@ -19,7 +19,6 @@ use crate::model::predicate::{Predicate, SuccessMode};
 use crate::model::simulation::Scenario;
 use crate::simulate::Runner;
 
-use super::propose::ProposalGenerator;
 
 /// One LLM client + model name, reused across generator roles.
 #[derive(Clone)]
@@ -32,7 +31,6 @@ pub struct Investigator {
     pub runner_put: LlmRole,
     pub runner_sim: LlmRole,
     pub judge: LlmRole,
-    pub proposer: LlmRole,
 }
 
 pub struct InvestigateOutcome {
@@ -195,7 +193,6 @@ impl Investigator {
                     strategies_tried,
                     witness: None,
                     incidental_findings: incidental_findings.clone(),
-                    proposals: vec![],
                     failures,
                     final_state: None,
                 },
@@ -206,11 +203,6 @@ impl Investigator {
 
         // Existential mode: the first matched attempt is the witness.
         if let Some(att) = attempts.iter().find(|a| a.matched) {
-            if let Some(p) = &progress {
-                if let Ok(mut g) = p.lock() {
-                    g.set_phase(crate::model::simulation::RunPhase::Proposing);
-                }
-            }
             let trace = &att.trace;
             let witness = Witness {
                 attribution: Attribution {
@@ -219,16 +211,6 @@ impl Investigator {
                 },
                 traces: vec![trace.clone()],
             };
-            let proposals =
-                ProposalGenerator::new(self.proposer.client.clone(), &self.proposer.model)
-                    .propose(
-                        put,
-                        &witness.attribution,
-                        &crate::judge::render_transcript(trace),
-                        Some(&att.scenario),
-                    )
-                    .await
-                    .unwrap_or_default();
 
             InvestigateOutcome {
                 result: RunResult {
@@ -237,7 +219,6 @@ impl Investigator {
                     strategies_tried,
                     witness: Some(witness),
                     incidental_findings: incidental_findings.clone(),
-                    proposals,
                     failures,
                     final_state: Some(trace.final_world_state.clone()),
                 },
@@ -258,7 +239,6 @@ impl Investigator {
                     strategies_tried,
                     witness: None,
                     incidental_findings: incidental_findings.clone(),
-                    proposals: vec![],
                     failures,
                     final_state: attempts.last().map(|a| a.trace.final_world_state.clone()),
                 },

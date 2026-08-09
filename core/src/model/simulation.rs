@@ -19,9 +19,6 @@ pub enum RunPhase {
     /// (one judge call per completed trace). This is the "tail" phase — a
     /// job may sit here after every scenario already looks done.
     CheckingGoals,
-    /// A witness was found; the proposer is generating (unverified) fix
-    /// proposals.
-    Proposing,
 }
 
 /// Live progress of a run, exposed while it's in flight: one entry per
