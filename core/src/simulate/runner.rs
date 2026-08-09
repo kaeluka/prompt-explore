@@ -55,9 +55,13 @@ impl Runner {
         // Resolve the template's {{variables}} from the scenario's
         // input_domain — finding concrete inputs is the simulator's
         // job. Empty map when the template has no placeholders.
-        let resolved_inputs = self
-            .simulator
-            .resolve_inputs(&put.template, &scenario.input_domain)
+        // One simulator conversation for the whole trace. The first turn
+        // resolves the template's {{variables}} from input_domain — IN
+        // this world-briefed conversation, so the picked values are
+        // consistent with the world the tools will render against.
+        let mut sim = self.simulator.session(&build_simulator_notes(scenario));
+        let resolved_inputs = sim
+            .resolve(&put.template, &scenario.input_domain)
             .await
             .map_err(RunnerError::Simulator)?;
         // Surface the resolved bindings immediately (before step 1) so
@@ -73,7 +77,6 @@ impl Runner {
         // `world` prose, not a structured input. Write-tools mutate this
         // during the trace.
         let mut world_state: Map<String, Value> = Map::new();
-        let mut sim = self.simulator.session(&build_simulator_notes(scenario));
         let mut steps = Vec::new();
         let mut tokens_used: u64 = 0;
 

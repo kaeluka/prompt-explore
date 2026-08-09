@@ -1,14 +1,16 @@
-//! The simulator LLM: answers tool calls with realistic responses and
-//! proposes world-state patches. It runs as *one persistent conversation
-//! per trace*: every tool call is a user message and every reply an
-//! assistant turn, so the model looks back at what it already established
-//! rather than the harness trying to foresee what future calls will need.
-//! Code applies patches; the LLM only proposes. When a reply is unusable,
-//! the repair is a conversation message ("your previous reply could not be
-//! used: …"), not a parsing branch in code.
+//! The simulator LLM: runs as *one persistent conversation per trace*.
+//! The first turn resolves the prompt template's `{{variables}}` from the
+//! scenario's `input_domain`; every later turn renders a tool call's
+//! response. Folding resolution into the same (world-briefed) conversation
+//! means the picked input values are consistent with the world the tools
+//! will render against — and with the simulator's own later replies. Code
+//! applies state patches; the LLM only proposes. When a reply is unusable,
+//! the repair is a conversation message, not a parsing branch in code.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -45,109 +47,30 @@ impl ToolSimulator {
         }
     }
 
-    /// Resolve a PUT template's `{{variables}}` from the scenario's
-    /// `input_domain`. The caller describes each variable's domain
-    /// (value space, semantics, preconditions); the simulator picks a
-    /// concrete value for each. Returns an empty map when the template
-    /// has no placeholders (no LLM call). Errors if a template variable
-    /// has no domain entry.
-    pub async fn resolve_inputs(
-        &self,
-        template: &str,
-        input_domain: &std::collections::HashMap<String, String>,
-    ) -> Result<std::collections::HashMap<String, Value>, LlmError> {
-        let vars = extract_template_vars(template);
-        if vars.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-        // Every template variable needs a domain description.
-        if let Some(missing) = vars.iter().find(|v| !input_domain.contains_key(*v)) {
-            return Err(LlmError::MalformedResponse(format!(
-                "no input_domain entry for template variable '{{{missing}}}'"
-            )));
-        }
-
-        let domain_block = vars
-            .iter()
-            .map(|v| format!("{v}: {}", input_domain[v]))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let system = "You pick concrete input values for a prompt template's \
-                      {{variables}} from described input domains. For each variable, \
-                      choose a value that is consistent with the domain — its type, \
-                      value space, semantics, and any stated preconditions. Quote large \
-                      blocks verbatim; do not paraphrase. Reply with a single JSON \
-                      object mapping each variable name to its value, and nothing else. \
-                      Values are strings unless the domain clearly implies structured \
-                      data."
-            .to_string();
-        let user = format!("INPUT DOMAINS:\n{domain_block}");
-
-        let mut messages = vec![
-            Message::System { content: system },
-            Message::User { content: user },
-        ];
-        // Repair is conversational: on an unusable reply, name the
-        // failure and re-ask, once.
-        let mut last_failure = String::new();
-        for attempt in 0..2 {
-            if attempt > 0 {
-                messages.push(Message::System {
-                    content: format!(
-                        "Your previous reply could not be used: {last_failure}. Reply again \
-                         with a single JSON object mapping each variable name to its value, \
-                         and nothing else."
-                    ),
-                });
-            }
-            let reply = self
-                .client
-                .complete(ChatRequest {
-                    model: self.model.clone(),
-                    messages: messages.clone(),
-                    tools: vec![],
-                    temperature: Some(0.0),
-                    max_tokens: Some(8192),
-                })
-                .await?;
-            match reply.content.filter(|c| !c.trim().is_empty()) {
-                None => last_failure = "reply was empty".into(),
-                Some(content) => {
-                    match parse_json::<std::collections::HashMap<String, Value>>(&content) {
-                        Some(map) => return Ok(map),
-                        None => {
-                            messages.push(Message::Assistant {
-                                content: Some(content),
-                                tool_calls: vec![],
-                            });
-                            last_failure = "reply was not a JSON object of variable values".into();
-                        }
-                    }
-                }
-            }
-        }
-        Err(LlmError::MalformedResponse(format!(
-            "could not resolve input domain ({last_failure})"
-        )))
-    }
-
     /// Start a simulator conversation for one scenario trace. The world
-    /// specification (narrative + notes) is given once, up front; from
-    /// then on the conversation itself is the record of what exists.
+    /// specification (world + notes) is given once, up front; from then on
+    /// the conversation itself is the record of what exists. The first
+    /// turn (`SimSession::resolve`) picks the template's input values;
+    /// later turns (`SimSession::respond`) render tool calls.
     pub fn session(&self, notes: &str) -> SimSession {
         let system = format!(
-            "You are simulating software tools inside an agent test harness. \
-             Each user message describes one tool call; reply to each with a \
-             single JSON object — the tool's response — and nothing else.\n\n\
-             Your earlier replies in this conversation are the established \
-             record of the environment: every response MUST be consistent \
-             with them (same files, same contents, same facts — what has \
-             been read stays read).\n\n\
-             The WORLD SPECIFICATION below is ground truth: render responses \
-             consistent with it, refuse queries for things it says do not \
-             exist or that its inventory does not cover, and never introduce \
-             facts that contradict it. Filler for unspecified content must \
+            "You are simulating software tools inside an agent test harness. You answer \
+             a sequence of requests in ONE conversation, each as a single JSON object \
+             and nothing else:\n\
+             • The FIRST request asks you to pick concrete values for the prompt \
+             template's {{variables}} from their input domains — reply with a JSON \
+             object mapping each variable name to its value (strings unless the domain \
+             implies structure; quote large blocks verbatim, do not paraphrase).\n\
+             • Every LATER request describes one tool call — reply with \
+             {{\"response\": <the tool's return value>, \"state_patch\": <write calls \
+             only>}}.\n\n\
+             Your earlier replies in this conversation are the established record of the \
+             environment: every response MUST be consistent with them (same files, same \
+             contents, same facts — what has been read stays read; the input values you \
+             picked stay picked). The WORLD SPECIFICATION below is ground truth: render \
+             responses and choose input values consistent with it, refuse queries for \
+             things it says do not exist or that its inventory does not cover, and never \
+             introduce facts that contradict it. Filler for unspecified content must \
              introduce no new facts.\n\n\
              WORLD SPECIFICATION AND NOTES:\n{notes}"
         );
@@ -160,6 +83,45 @@ impl ToolSimulator {
 }
 
 impl SimSession {
+    /// The first turn: pick concrete values for the template's
+    /// `{{variables}}` from `input_domain`, in this world-briefed
+    /// conversation (so the values are consistent with the world). Empty
+    /// map when the template has no placeholders (no call). Errors if a
+    /// template variable has no domain entry.
+    pub async fn resolve(
+        &mut self,
+        template: &str,
+        input_domain: &HashMap<String, String>,
+    ) -> Result<HashMap<String, Value>, LlmError> {
+        let vars = extract_template_vars(template);
+        if vars.is_empty() {
+            return Ok(HashMap::new());
+        }
+        if let Some(missing) = vars.iter().find(|v| !input_domain.contains_key(*v)) {
+            return Err(LlmError::MalformedResponse(format!(
+                "no input_domain entry for template variable '{{{missing}}}'"
+            )));
+        }
+        let domain_block = vars
+            .iter()
+            .map(|v| format!("{v}: {}", input_domain[v]))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user = format!(
+            "Pick concrete values for the prompt template's variables below, consistent \
+             with the WORLD SPECIFICATION above. Reply with a single JSON object mapping \
+             each variable name to its value, and nothing else.\n\n\
+             VARIABLES AND THEIR DOMAINS:\n{domain_block}"
+        );
+        self.ask_json::<HashMap<String, Value>>(
+            user,
+            "{\"<variable>\": <value>, ...}",
+        )
+        .await
+    }
+
+    /// A later turn: render one tool call's response. Appends the call as
+    /// a user message, gets the reply, applies any state patch.
     pub async fn respond(
         &mut self,
         tool: &ToolSchema,
@@ -167,7 +129,6 @@ impl SimSession {
         world_state: &Map<String, Value>,
     ) -> Result<SimOutcome, LlmError> {
         let is_write = matches!(tool.side_effect, crate::model::SideEffect::Write);
-
         let write_instructions = if is_write {
             "This is a WRITE tool. Also return \"state_patch\": a JSON object that will be \
              shallow-merged into the world state to reflect the call's effect \
@@ -176,7 +137,6 @@ impl SimSession {
         } else {
             "This is a READ tool. Do not include \"state_patch\"."
         };
-
         let user = serde_json::to_string_pretty(&json!({
             "tool": {
                 "name": tool.name,
@@ -192,12 +152,28 @@ impl SimSession {
         }))
         .map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
 
-        self.messages.push(Message::User { content: user });
+        let parsed: SimReply = self
+            .ask_json(
+                user,
+                "{\"response\": <the tool's return value>, \"state_patch\": <write calls only>}",
+            )
+            .await?;
+        Ok(SimOutcome {
+            response: parsed.response,
+            state_patch: if is_write { parsed.state_patch } else { None },
+        })
+    }
 
-        // Up to three attempts: the initial reply plus up to two repair
-        // turns. Repair is conversational — the model is told what was
-        // wrong and answers again. If repairs run out, the scenario fails
-        // loudly with the raw reply preserved for the operator.
+    /// Push a user message, then ask and (if needed) repair in
+    /// conversation: on an unusable reply, name the failure and re-ask,
+    /// up to two repair turns, then fail loudly with the raw reply
+    /// preserved. `shape` describes the required JSON for the repair note.
+    async fn ask_json<T: DeserializeOwned>(
+        &mut self,
+        user: String,
+        shape: &str,
+    ) -> Result<T, LlmError> {
+        self.messages.push(Message::User { content: user });
         let mut last_failure = String::new();
         let mut last_raw = String::new();
         for attempt in 0..3 {
@@ -210,13 +186,11 @@ impl SimSession {
                 self.messages.push(Message::System {
                     content: format!(
                         "Your previous reply could not be used: {last_failure}. \
-                         Reply again with a single JSON object of the form \
-                         {{\"response\": <the tool's return value>, \
-                         \"state_patch\": <write calls only>}} and nothing else."
+                         Reply again with a single JSON object of the form {shape} \
+                         and nothing else."
                     ),
                 });
             }
-
             let reply = self
                 .client
                 .complete(ChatRequest {
@@ -232,23 +206,18 @@ impl SimSession {
                 .map_err(|e| LlmError::Provider(e.to_string()))?;
 
             match reply.content.filter(|c| !c.trim().is_empty()) {
-                None => {
-                    last_failure = "reply was empty".into();
-                }
-                Some(content) => match parse_json::<SimReply>(&content) {
-                    Some(parsed) => {
+                None => last_failure = "reply was empty".into(),
+                Some(content) => match parse_json::<T>(&content) {
+                    Some(v) => {
                         self.messages.push(Message::Assistant {
                             content: Some(content),
                             tool_calls: vec![],
                         });
-                        return Ok(SimOutcome {
-                            response: parsed.response,
-                            state_patch: if is_write { parsed.state_patch } else { None },
-                        });
+                        return Ok(v);
                     }
                     None => {
-                        // Keep the malformed reply in the history so the
-                        // repair turn can see exactly what went wrong.
+                        // Keep the malformed reply visible so the repair
+                        // turn can see exactly what went wrong.
                         self.messages.push(Message::Assistant {
                             content: Some(content.clone()),
                             tool_calls: vec![],
@@ -260,7 +229,6 @@ impl SimSession {
                 },
             }
         }
-
         Err(LlmError::MalformedResponse(format!(
             "simulator reply unusable after repair attempts ({last_failure}): {last_raw}"
         )))
