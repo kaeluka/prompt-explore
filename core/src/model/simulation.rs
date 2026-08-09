@@ -116,7 +116,8 @@ impl RunProgress {
 /// rather than a comfortable situation where the agent easily behaves
 /// well. A scenario that lets the agent succeed proves nothing.
 ///
-/// LLMs are notoriously bad at questioning their own output: the same
+/// If you are an LLM (or are using LLMs) to author scenarios, note that
+/// they are notoriously bad at questioning their own output: the same
 /// context that wrote (or is reading) the prompt tends to construct
 /// scenarios that confirm it rather than break it. A SEPARATE agent
 /// helps — construct each scenario with a SUBAGENT if you have one: a
