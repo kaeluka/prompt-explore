@@ -150,14 +150,68 @@ impl LlmClient for ProviderClient {
             options = options.with_max_tokens(m);
         }
 
-        let resp: GChatResponse = self
-            .client
-            .exec_chat(&req.model, chat_req, Some(&options))
-            .await
-            .map_err(|e| LlmError::Provider(e.to_string()))?;
-
-        Ok(convert_response(resp))
+        // Retry transient 429 rate limits (e.g. z.ai code 1302 "Rate limit
+        // reached for requests") with exponential backoff + jitter. A
+        // QUOTA-window 429 (e.g. z.ai code 1308 "Usage limit reached for
+        // 5 hour") is NOT retried — backoff won't help, so fail fast.
+        // Providers don't surface a usable Retry-After here (the body has
+        // no duration and genai flattens response headers into the error
+        // string), so we backoff ourselves.
+        const MAX_ATTEMPTS: u32 = 5;
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            match self
+                .client
+                .exec_chat(&req.model, chat_req.clone(), Some(&options))
+                .await
+            {
+                Ok(resp) => return Ok(convert_response(resp)),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if attempt < MAX_ATTEMPTS && is_transient_429(&msg) {
+                        let backoff = backoff_with_jitter(attempt);
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                    return Err(LlmError::Provider(msg));
+                }
+            }
+        }
     }
+}
+
+/// A 429 that's worth retrying: a transient per-request rate limit, NOT a
+/// long quota window. Detected from genai's flattened error string (which
+/// includes the HTTP status and the response body).
+fn is_transient_429(err: &str) -> bool {
+    if !err.contains("429") {
+        return false;
+    }
+    // Quota-window signals — backoff won't help, so don't retry.
+    let quota = [
+        "usage limit",
+        "5 hour",
+        "quota",
+        "exceeded your current quota",
+        "insufficient_quota",
+    ];
+    !quota.iter().any(|q| err.to_lowercase().contains(q))
+}
+
+/// Exponential backoff (0.5, 1, 2, 4, …s) plus up to ~40% jitter so that
+/// N concurrent retries (e.g. a 10-scenario run hitting a rate limit at
+/// once) don't all fire on the same tick and re-trigger it.
+fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
+    let base_ms: u64 = 500_u64.checked_shl(attempt.saturating_sub(1)).unwrap_or(8_000);
+    let cap_ms = base_ms.min(8_000);
+    // Poor-man's jitter from wall-clock nanos (no rand dep): 0..=40% of cap.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let jitter_ms = cap_ms * (nanos % 5) / 10; // 0, 10, 20, 30, or 40%
+    std::time::Duration::from_millis(cap_ms + jitter_ms)
 }
 
 fn convert_response(resp: GChatResponse) -> ChatResponse {
