@@ -43,6 +43,12 @@ pub struct ScenarioProgress {
     /// chat view render the whole conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_message: Option<String>,
+    /// The concrete `{{variable}}` values the simulator generated from
+    /// the scenario's `input_domain` and rendered the PUT template with.
+    /// Populated as soon as the scenario starts running (before step 1),
+    /// so it's visible live — the exact input this trace runs with.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub resolved_inputs: HashMap<String, Value>,
 }
 
 /// The state of one scenario within a run.
@@ -79,6 +85,14 @@ impl RunProgress {
     pub fn push_step(&mut self, index: usize, step: TraceStep) {
         if let Some(s) = self.scenarios.get_mut(index) {
             s.steps.push(step);
+        }
+    }
+
+    /// Record the resolved input values for a scenario (called by the
+    /// runner as soon as the simulator has generated them, before step 1).
+    pub fn set_resolved(&mut self, index: usize, resolved: HashMap<String, Value>) {
+        if let Some(s) = self.scenarios.get_mut(index) {
+            s.resolved_inputs = resolved;
         }
     }
 }

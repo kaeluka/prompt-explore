@@ -60,6 +60,13 @@ impl Runner {
             .resolve_inputs(&put.template, &scenario.input_domain)
             .await
             .map_err(RunnerError::Simulator)?;
+        // Surface the resolved bindings immediately (before step 1) so
+        // they're visible live and positionally aligned in progress.
+        if let Some(p) = &progress {
+            if let Ok(mut g) = p.lock() {
+                g.set_resolved(index, resolved_inputs.clone());
+            }
+        }
         let mut messages = initial_messages(put, scenario, &resolved_inputs);
         let tools: Vec<ToolDef> = put.tools.iter().map(convert_tool).collect();
         // World state starts empty — initial state is described in the

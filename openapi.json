@@ -774,6 +774,14 @@
           "steps"
         ],
         "properties": {
+          "resolved_inputs": {
+            "type": "object",
+            "description": "The concrete `{{variable}}` values the simulator generated from\nthe scenario's `input_domain` and rendered the PUT template with.\nPopulated as soon as the scenario starts running (before step 1),\nso it's visible live — the exact input this trace runs with.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "state": {
             "$ref": "#/components/schemas/ScenarioState"
           },

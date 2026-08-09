@@ -82,6 +82,7 @@ impl Investigator {
                         state: crate::model::simulation::ScenarioState::Running,
                         steps: Vec::new(),
                         user_message: s.user_message.clone(),
+                        resolved_inputs: Default::default(),
                     })
                     .collect();
             }

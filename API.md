@@ -257,6 +257,7 @@ One scenario's progress within a run. Positional: index in the parent `scenarios
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `resolved_inputs` | map&lt;string, any&gt; | no | The concrete `{{variable}}` values the simulator generated from the scenario's `input_domain` and rendered the PUT template with. Populated as soon as the scenario starts running (before step 1), so it's visible live — the exact input this trace runs with. |
 | `state` | [`ScenarioState`](#scenariostate) | yes |  |
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Steps simulated so far (tool calls + responses + model output). |
 | `user_message` | string? | no | The opening user message (the protagonist's first turn). Lets a chat view render the whole conversation. |
