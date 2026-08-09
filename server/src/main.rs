@@ -560,3 +560,31 @@ async fn vendor_hooks() -> impl axum::response::IntoResponse {
 async fn vendor_htm() -> impl axum::response::IntoResponse {
     ([("content-type", "text/javascript;charset=utf-8")], VENDOR_HTM)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::INDEX_HTML;
+
+    #[test]
+    fn openapi_spec_is_discoverable_from_root_body() {
+        // WHY THIS EXISTS: spec discovery used to be header-only
+        // (a `Link: rel="service-desc"` header on every response). That
+        // is the RFC 8631 standard and it is correct — but it is invisible
+        // to agents/tools that read only the response BODY. When a body-
+        // only consumer hit "/" it got an HTML page with no reference to
+        // the spec anywhere, and could not discover it (observed: an
+        // agent pasted http://host/ and found nothing). The "/" body now
+        // carries a `<link rel="service-desc" href="/openapi.json">` tag
+        // in <head> (plus a visible footer line) so the spec is
+        // discoverable from the body itself, not just the header. This
+        // test guards against that marker being silently removed —
+        // removing it re-breaks body-only consumers, which is easy to do
+        // by accident since the header still works and hides the regression.
+        assert!(
+            INDEX_HTML.contains(r#"rel="service-desc" href="/openapi.json""#),
+            "the / body must advertise the OpenAPI spec via a service-desc \
+             link tag; body-only consumers (most agent HTTP tools) cannot \
+             see the Link header"
+        );
+    }
+}
