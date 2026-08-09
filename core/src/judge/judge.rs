@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message, parse_json};
@@ -99,9 +100,8 @@ impl Judge {
         let mut user = format!("DESIGN GOALS:\n{design_goals}\n\nTRANSCRIPT:\n{transcript}");
         push_scenario_context(&mut user, scenario);
 
-        let reply = self.call(&system, &user).await?;
-        let report: LlmGoalReport = parse_json(&reply)
-            .ok_or_else(|| LlmError::MalformedResponse(format!("goal report not JSON: {reply}")))?;
+        let report: LlmGoalReport =
+            self.ask_json(&system, &user, "a JSON object with a \"findings\" array").await?;
 
         Ok(report
             .findings
@@ -136,9 +136,8 @@ impl Judge {
             render_transcript(b)
         );
 
-        let reply = self.call(&system, &user).await?;
-        let d: LlmDivergence = parse_json(&reply)
-            .ok_or_else(|| LlmError::MalformedResponse(format!("divergence not JSON: {reply}")))?;
+        let d: LlmDivergence =
+            self.ask_json(&system, &user, "a JSON object with \"divergent\", \"differing_aspect\", \"rationale\"").await?;
 
         Ok(DivergenceVerdict {
             divergent: d.divergent,
@@ -177,9 +176,8 @@ impl Judge {
         let mut user = format!("CRITERION: {criterion}\n\nTRANSCRIPT:\n{transcript}");
         push_scenario_context(&mut user, scenario);
 
-        let reply = self.call(&system, &user).await?;
-        let v: LlmVerdict = parse_json(&reply)
-            .ok_or_else(|| LlmError::MalformedResponse(format!("verdict not JSON: {reply}")))?;
+        let v: LlmVerdict =
+            self.ask_json(&system, &user, "a JSON object with \"matched\", \"confidence\", \"rationale\", \"matched_step_indices\"").await?;
 
         Ok(Verdict {
             matched: v.matched,
@@ -190,26 +188,65 @@ impl Judge {
     }
 
     async fn call(&self, system: &str, user: &str) -> Result<String, LlmError> {
-        let reply = self
-            .client
-            .complete(ChatRequest {
-                model: self.model.clone(),
-                messages: vec![
-                    Message::System {
-                        content: system.into(),
-                    },
-                    Message::User {
-                        content: user.into(),
-                    },
-                ],
-                tools: vec![],
-                temperature: Some(0.0),
-                max_tokens: Some(2048),
-            })
-            .await?;
-        reply
-            .content
-            .ok_or_else(|| LlmError::MalformedResponse("empty judge reply".into()))
+        self.ask_json::<serde_json::Value>(system, user, "any JSON")
+            .await
+            .map(|v| v.to_string())
+    }
+
+    /// One judge conversation per question: ask, and if the reply is
+    /// empty or not the required JSON, repair in conversation (append a
+    /// system note naming the failure and re-ask) rather than with a
+    /// parsing branch. Up to two repair turns, then fail loudly with the
+    /// raw reply preserved.
+    async fn ask_json<T: DeserializeOwned>(
+        &self,
+        system: &str,
+        user: &str,
+        want: &str,
+    ) -> Result<T, LlmError> {
+        let mut messages = vec![
+            Message::System { content: system.into() },
+            Message::User { content: user.into() },
+        ];
+        let mut last_failure = String::new();
+        let mut last_raw = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                messages.push(Message::System {
+                    content: format!(
+                        "Your previous reply could not be used: {last_failure}. \
+                         Reply again with {want} and nothing else."
+                    ),
+                });
+            }
+            let reply = self
+                .client
+                .complete(ChatRequest {
+                    model: self.model.clone(),
+                    messages: messages.clone(),
+                    tools: vec![],
+                    temperature: Some(0.0),
+                    max_tokens: Some(8192),
+                })
+                .await?;
+            match reply.content.filter(|c| !c.trim().is_empty()) {
+                None => last_failure = "reply was empty".into(),
+                Some(content) => match parse_json::<T>(&content) {
+                    Some(v) => return Ok(v),
+                    None => {
+                        messages.push(Message::Assistant {
+                            content: Some(content.clone()),
+                            tool_calls: vec![],
+                        });
+                        last_raw = content;
+                        last_failure = "reply was not the required JSON object".into();
+                    }
+                },
+            }
+        }
+        Err(LlmError::MalformedResponse(format!(
+            "judge reply unusable after repair attempts ({last_failure}): {last_raw}"
+        )))
     }
 }
 
