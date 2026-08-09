@@ -233,9 +233,18 @@ struct JobSummary {
                        • The answer to simulation unreliability is TRANSPARENCY, not \
                        enforcement. Every tool response is in the trace; the judge sees the \
                        same narrative and can flag a response that contradicts the stated \
-                       facts. Divergence is SURFACED for you to read, not silently fixed. If \
-                       the simulation is insufficient, the remediation is a user action — \
-                       sharpen the narrative and re-investigate — not harness machinery."
+                       facts. Divergence is SURFACED for you to read, not silently fixed.
+ \
+                       • Because tool responses are LLM-simulated, an investigation MAY \
+                       contain unrealistic or WRONG results — responses that contradict the \
+                       narrative, invent facts, or drift across calls. The harness does NOT \
+                       vet them. It is the CALLER'S responsibility to read the traces and \
+                       double-check the simulated tool responses thoroughly before trusting \
+                       any verdict. When simulation quality is insufficient, iterate with \
+                       three levers and re-run the same scenarios: (a) sharpen the scenario \
+                       NARRATIVE — tighter facts and negative facts; (b) use a stronger \
+                       SIM_MODEL — it must be powerful enough to simulate believably; (c) use \
+                       a stronger JUDGE_MODEL — so divergence is caught."
     ),
     paths(index, list_investigations, create_investigation, get_investigation, apply_proposal, list_models)
 )]
