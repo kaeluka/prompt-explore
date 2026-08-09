@@ -48,7 +48,9 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
+| `judge_model` | string? | no | Model for the JUDGE only (the LLM that evaluates each trace against your question). Defaults to `model`. The judge is the safety-critical role: a weak judge fails to catch what a weak PUT does, so it should be at least as strong as the PUT, ideally stronger. Splitting it out lets you keep a strong judge while you vary the PUT model — and a stronger judge also catches simulator divergence (tool responses that contradict the narrative). |
 | `model` | string? | no | Model for every LLM role (runner PUT + judge + proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT is judged in the same simulated environment. |
+| `proposer_model` | string? | no | Model for the PROPOSER only (the LLM that suggests prompt fixes from a witness). Defaults to `model`. Lower priority than the judge; proposals are always unverified anyway. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Defaults to `model`.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
@@ -73,11 +75,9 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 
 ### `GET /api/models`
 
-Returns a map keyed by provider namespace (`zai_coding`, `open_router`, `bedrock_sigv4`). Each value is either `{models: [{name}]}` — where `name` is the full pastable, namespaced string (e.g. `open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: "…"}` explaining why that provider couldn't be listed (no API key in the environment, no AWS credentials, region-gated, …). Listing is best-effort and per-provider: one provider failing never breaks the others. Cached for a short time so repeated listing is cheap.
-
 | Status | Response |
 |---|---|
-| `200` | Available models per provider: map&lt;string, [`ProviderModels`](#providermodels)&gt; |
+| `200` | Available models per provider: [`ModelsResponse`](#modelsresponse) |
 
 ## Schemas
 
@@ -153,7 +153,9 @@ Returns a map keyed by provider namespace (`zai_coding`, `open_router`, `bedrock
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
+| `judge_model` | string? | no | Model for the JUDGE only (the LLM that evaluates each trace against your question). Defaults to `model`. The judge is the safety-critical role: a weak judge fails to catch what a weak PUT does, so it should be at least as strong as the PUT, ideally stronger. Splitting it out lets you keep a strong judge while you vary the PUT model — and a stronger judge also catches simulator divergence (tool responses that contradict the narrative). |
 | `model` | string? | no | Model for every LLM role (runner PUT + judge + proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT is judged in the same simulated environment. |
+| `proposer_model` | string? | no | Model for the PROPOSER only (the LLM that suggests prompt fixes from a witness). Defaults to `model`. Lower priority than the judge; proposals are always unverified anyway. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Defaults to `model`.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
@@ -218,6 +220,16 @@ One model the caller can put in a request's `model` field. `name` is the full na
 | `name` | string | yes |  |
 | `pricing` | object? | no | Per-token USD pricing as reported by the provider. Keys follow OpenRouter's conventions: `prompt` (input), `completion` (output), `input_cache_read` (cached input). Present only when the provider exposes pricing — absent for subscription endpoints (z.ai coding plan) and providers that don't report it (Bedrock). If future pricing sources are added, reuse these same keys. |
 
+### `ModelsResponse`
+
+Models available to put in a request's `model` field, by provider.  Returns the server defaults plus a map keyed by provider namespace (`zai_coding`, `open_router`, `bedrock_sigv4`). Each provider value is either `{available: {models: [{name, pricing?}]}}` — where `name` is the full pastable, namespaced string (e.g. `open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: "…"}` explaining why that provider couldn't be listed (no API key in the environment, no AWS credentials, region-gated, …). Listing is best-effort and per-provider: one provider failing never breaks the others. Cached for a short time so repeated listing is cheap.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `providers` | map&lt;string, [`ProviderModels`](#providermodels)&gt; | yes |  |
+| `server_default_model` | string | yes | Model used when a request omits `model` (a bare name; the server resolves it via `server_default_provider`). |
+| `server_default_provider` | string | yes | Provider applied to bare model names when no namespace is given (from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix: `zai` -> `zai_coding::`, `zai_standard` -> `zai::`, `openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`. |
+
 ### `PromptUnderTest`
 
 One prompt under test: the system-prompt template, input variables, tool surface, and (mandatory) design goals. The harness executes this prompt inside scenario worlds and judges the resulting traces.
@@ -226,7 +238,7 @@ One prompt under test: the system-prompt template, input variables, tool surface
 |---|---|---|---|
 | `design_goals` | string | yes | MANDATORY. The author's stated intent for the prompt — the yardstick it's supposed to uphold, and itself an optimization target (`GoalRevision` proposals). Advisory in the current verdict: the judge's criterion is the `question` alone; design goals are not automatically enforced during a run. |
 | `id` | string | yes |  |
-| `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | yes | Documents the template's expected `{{variables}}` and how to generate values. With scenarios authored externally, this is metadata for authors; concrete values come from each scenario's `resolved_inputs`, which the runner substitutes into the template. |
+| `input_vars` | map&lt;string, [`VarSpec`](#varspec)&gt; | no | Documents the template's expected `{{variables}}` and how to generate values. With scenarios authored externally, this is metadata for authors; concrete values come from each scenario's `resolved_inputs`, which the runner substitutes into the template. Optional (defaults empty) — it documents intent but does not drive the run. |
 | `template` | string | yes | The system-prompt template. `{{var}}` placeholders are substituted from the scenario's `resolved_inputs`. The opening user turn is separate — it comes from the scenario's `user_message`, not the template. |
 | `tools` | [`ToolSchema`](#toolschema)[] | yes | This prompt's tool surface, exactly as the model sees it. Empty = no tool loop (but intent lives in `design_goals`, not here). |
 
@@ -273,7 +285,7 @@ Live progress of a run, exposed while it's in flight: one entry per scenario, wi
 |---|---|---|---|
 | `failures` | [`ScenarioFailure`](#scenariofailure)[] | no | Scenarios that errored instead of producing a judged trace (PUT execution, tool simulation, or judge failure). When non-empty, `attempts` may be shorter than `scenarios_tried`; when ALL scenarios failed, `status` is `error`. |
 | `final_state` | object? | no | The world state at the end: the witness trace's when one was found, otherwise the last completed attempt's. Informational. |
-| `incidental_findings` | string[] | yes | Reserved for goal violations found incidentally; currently always empty (goal checking is not wired into the run path). |
+| `incidental_findings` | string[] | yes | Advisory design-goal violations found across completed traces — best-effort: skipped when `design_goals` is empty or the goal judge errors. These do NOT affect the witness verdict (the question is the sole criterion); they are surfaced for the operator to read. |
 | `proposals` | [`Proposal`](#proposal)[] | yes | Generated ONLY when a witness is found (fixes for the witnessed behavior). Empty on negative results — the proposer does not run without a witness. Always unverified; the user owns everything after the run. |
 | `scenarios_tried` | integer | yes | Scenarios attempted (= completed, in the response's `attempts`, + failed, in `failures`). |
 | `status` | [`RunStatus`](#runstatus) | yes |  |
@@ -290,15 +302,15 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `hypothesis_id` | string | yes | Provenance label: what this scenario was authored to test. Informational only. |
+| `hypothesis_id` | string | no | Provenance label: what this scenario was authored to test. Informational only; optional (legacy field from the old hypothesizer — safe to omit). |
 | `id` | string | yes | Free-form label, echoed back in reports. |
 | `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. A narrative is a SPECIFICATION (prose), not instantiated data: open worlds (web, email, payments) can never be materialized, so the simulator lazily renders concrete responses from it. See the API description's DESIGN INTENT for why this is prose and not a fixture. Required; every scenario must pin one — cover (1) inventory, (2) facts including NEGATIVE facts, (3) completeness assertions, (4) rendering rules. |
-| `put_id` | string | yes | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. |
-| `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete values for the PUT template's {{variables}}. |
-| `simulator_notes` | string | yes | Persona/stance guidance for a simulated user, if the scenario involves one. |
+| `put_id` | string | no | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. Optional (legacy); safe to omit. |
+| `resolved_inputs` | map&lt;string, any&gt; | no | Concrete values for the PUT template's {{variables}}. Empty for templates with no placeholders. |
+| `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |
 | `stated_state` | string? | no | Operator-required environment facts for THIS scenario (e.g. "cancel_order is broken and returns E_CONN"). Appended to the simulator's context so it respects them. Independent per scenario; there is no investigation-level environment-state field. |
 | `user_message` | string? | no | The opening message from the user/protagonist. For a tool-less PUT this is the entire work input. |
-| `world_state` | map&lt;string, any&gt; | yes | Mutable world facts, updated by write-tool patches during the trace. Static truth belongs in the narrative, not here. |
+| `world_state` | map&lt;string, any&gt; | no | Mutable world facts, updated by write-tool patches during the trace. Static truth belongs in the narrative, not here. Defaults empty. |
 
 ### `ScenarioFailure`
 

@@ -19,6 +19,9 @@ pub struct PromptUnderTest {
     /// generate values. With scenarios authored externally, this is
     /// metadata for authors; concrete values come from each scenario's
     /// `resolved_inputs`, which the runner substitutes into the template.
+    /// Optional (defaults empty) — it documents intent but does not drive
+    /// the run.
+    #[serde(default)]
     pub input_vars: HashMap<String, VarSpec>,
     /// This prompt's tool surface, exactly as the model sees it.
     /// Empty = no tool loop (but intent lives in `design_goals`, not here).

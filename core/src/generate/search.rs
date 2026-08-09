@@ -152,6 +152,30 @@ impl Investigator {
             .map(|s| format!("caller-provided scenario '{}'", s.id))
             .collect::<Vec<_>>();
 
+        // Advisory: surface design-goal violations across completed
+        // traces as incidental findings. Best-effort (judge errors are
+        // skipped, not fatal) and only when design_goals is non-empty.
+        // These do NOT affect the witness verdict — the question is the
+        // sole criterion; goals are surfaced for the operator to read.
+        let mut incidental_findings: Vec<String> = Vec::new();
+        let design_goals = put.design_goals.trim();
+        if !design_goals.is_empty() {
+            let goal_judge = Judge::new(self.judge.client.clone(), &self.judge.model);
+            for att in &attempts {
+                if let Ok(findings) = goal_judge
+                    .check_goals(&att.trace, design_goals, Some(&att.scenario))
+                    .await
+                {
+                    for f in findings.into_iter().filter(|f| f.violated) {
+                        incidental_findings.push(format!(
+                            "[scenario {}] goal violated: {} — {}",
+                            att.scenario.id, f.goal, f.rationale
+                        ));
+                    }
+                }
+            }
+        }
+
         // Every scenario errored -> the run itself is an error, not a
         // clean "no witness".
         if attempts.is_empty() && !failures.is_empty() {
@@ -161,7 +185,7 @@ impl Investigator {
                     scenarios_tried: scenarios.len() as u32,
                     strategies_tried,
                     witness: None,
-                    incidental_findings: vec![],
+                    incidental_findings: incidental_findings.clone(),
                     proposals: vec![],
                     failures,
                     final_state: None,
@@ -198,7 +222,7 @@ impl Investigator {
                     scenarios_tried: scenarios.len() as u32,
                     strategies_tried,
                     witness: Some(witness),
-                    incidental_findings: vec![],
+                    incidental_findings: incidental_findings.clone(),
                     proposals,
                     failures,
                     final_state: Some(trace.final_world_state.clone()),
@@ -219,7 +243,7 @@ impl Investigator {
                     scenarios_tried: scenarios.len() as u32,
                     strategies_tried,
                     witness: None,
-                    incidental_findings: vec![],
+                    incidental_findings: incidental_findings.clone(),
                     proposals: vec![],
                     failures,
                     final_state: attempts.last().map(|a| a.trace.final_world_state.clone()),

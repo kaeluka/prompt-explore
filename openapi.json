@@ -150,8 +150,6 @@
         "tags": [
           "models"
         ],
-        "summary": "Models available to put in a request's `model` field, by provider.",
-        "description": "Returns a map keyed by provider namespace (`zai_coding`,\n`open_router`, `bedrock_sigv4`). Each value is either `{models: [{name}]}`\n— where `name` is the full pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
         "operationId": "list_models",
         "responses": {
           "200": {
@@ -159,13 +157,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "$ref": "#/components/schemas/ProviderModels"
-                  },
-                  "propertyNames": {
-                    "type": "string"
-                  }
+                  "$ref": "#/components/schemas/ModelsResponse"
                 }
               }
             }
@@ -393,12 +385,26 @@
           "investigation": {
             "$ref": "#/components/schemas/Investigation"
           },
+          "judge_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model for the JUDGE only (the LLM that evaluates each trace against\nyour question). Defaults to `model`. The judge is the\nsafety-critical role: a weak judge fails to catch what a weak PUT\ndoes, so it should be at least as strong as the PUT, ideally\nstronger. Splitting it out lets you keep a strong judge while you\nvary the PUT model — and a stronger judge also catches simulator\ndivergence (tool responses that contradict the narrative)."
+          },
           "model": {
             "type": [
               "string",
               "null"
             ],
             "description": "Model for every LLM role (runner PUT + judge + proposer). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT is judged in the same simulated environment."
+          },
+          "proposer_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model for the PROPOSER only (the LLM that suggests prompt fixes\nfrom a witness). Defaults to `model`. Lower priority than the\njudge; proposals are always unverified anyway."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
@@ -600,13 +606,40 @@
           }
         }
       },
+      "ModelsResponse": {
+        "type": "object",
+        "description": "Models available to put in a request's `model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`). Each provider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
+        "required": [
+          "server_default_model",
+          "server_default_provider",
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProviderModels"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "server_default_model": {
+            "type": "string",
+            "description": "Model used when a request omits `model` (a bare name; the server\nresolves it via `server_default_provider`)."
+          },
+          "server_default_provider": {
+            "type": "string",
+            "description": "Provider applied to bare model names when no namespace is given\n(from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix:\n`zai` -> `zai_coding::`, `zai_standard` -> `zai::`,\n`openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`."
+          }
+        }
+      },
       "PromptUnderTest": {
         "type": "object",
         "description": "One prompt under test: the system-prompt template, input variables,\ntool surface, and (mandatory) design goals. The harness executes this\nprompt inside scenario worlds and judges the resulting traces.",
         "required": [
           "id",
           "template",
-          "input_vars",
           "tools",
           "design_goals"
         ],
@@ -620,7 +653,7 @@
           },
           "input_vars": {
             "type": "object",
-            "description": "Documents the template's expected `{{variables}}` and how to\ngenerate values. With scenarios authored externally, this is\nmetadata for authors; concrete values come from each scenario's\n`resolved_inputs`, which the runner substitutes into the template.",
+            "description": "Documents the template's expected `{{variables}}` and how to\ngenerate values. With scenarios authored externally, this is\nmetadata for authors; concrete values come from each scenario's\n`resolved_inputs`, which the runner substitutes into the template.\nOptional (defaults empty) — it documents intent but does not drive\nthe run.",
             "additionalProperties": {
               "$ref": "#/components/schemas/VarSpec"
             },
@@ -777,7 +810,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Reserved for goal violations found incidentally; currently always\nempty (goal checking is not wired into the run path)."
+            "description": "Advisory design-goal violations found across completed traces —\nbest-effort: skipped when `design_goals` is empty or the goal\njudge errors. These do NOT affect the witness verdict (the\nquestion is the sole criterion); they are surfaced for the\noperator to read."
           },
           "proposals": {
             "type": "array",
@@ -828,17 +861,12 @@
         "description": "A test case: a world specification plus a protagonist. The harness\nruns the prompt under test inside this world — the simulator LLM\nrenders tool responses from the `narrative` — and judges whether the\nquestioned behavior occurred in the resulting trace.\n\nScenarios are authored OUTSIDE the harness (by the operator's agent);\nthis API never generates them. Authoring guidance: the narrative\nshould pin (1) an inventory of what exists, covering every query type\nthe PUT's tools allow, (2) facts, including negative facts (what does\nNOT exist or happen), (3) completeness assertions (\"these are ALL the\nentry points\"), and (4) rendering rules (refuse queries outside the\ninventory; filler introduces no new facts).\n\nEverything needed to (stochastically) reproduce a trajectory lives\nhere; everything else in a trace is derived.",
         "required": [
           "id",
-          "hypothesis_id",
-          "put_id",
-          "resolved_inputs",
-          "world_state",
-          "simulator_notes",
           "narrative"
         ],
         "properties": {
           "hypothesis_id": {
             "type": "string",
-            "description": "Provenance label: what this scenario was authored to test.\nInformational only."
+            "description": "Provenance label: what this scenario was authored to test.\nInformational only; optional (legacy field from the old\nhypothesizer — safe to omit)."
           },
           "id": {
             "type": "string",
@@ -850,11 +878,11 @@
           },
           "put_id": {
             "type": "string",
-            "description": "Provenance: which prompt this scenario was authored for. NOT\nenforced — a scenario may be run against any PUT."
+            "description": "Provenance: which prompt this scenario was authored for. NOT\nenforced — a scenario may be run against any PUT. Optional\n(legacy); safe to omit."
           },
           "resolved_inputs": {
             "type": "object",
-            "description": "Concrete values for the PUT template's {{variables}}.",
+            "description": "Concrete values for the PUT template's {{variables}}. Empty for\ntemplates with no placeholders.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -862,7 +890,7 @@
           },
           "simulator_notes": {
             "type": "string",
-            "description": "Persona/stance guidance for a simulated user, if the scenario\ninvolves one."
+            "description": "Persona/stance guidance for a simulated user, if the scenario\ninvolves one. Defaults empty."
           },
           "stated_state": {
             "type": [
@@ -880,7 +908,7 @@
           },
           "world_state": {
             "type": "object",
-            "description": "Mutable world facts, updated by write-tool patches during the\ntrace. Static truth belongs in the narrative, not here.",
+            "description": "Mutable world facts, updated by write-tool patches during the\ntrace. Static truth belongs in the narrative, not here. Defaults\nempty.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"

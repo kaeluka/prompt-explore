@@ -88,21 +88,30 @@ pub struct Scenario {
     /// Free-form label, echoed back in reports.
     pub id: String,
     /// Provenance label: what this scenario was authored to test.
-    /// Informational only.
+    /// Informational only; optional (legacy field from the old
+    /// hypothesizer — safe to omit).
+    #[serde(default)]
     pub hypothesis_id: String,
     /// Provenance: which prompt this scenario was authored for. NOT
-    /// enforced — a scenario may be run against any PUT.
+    /// enforced — a scenario may be run against any PUT. Optional
+    /// (legacy); safe to omit.
+    #[serde(default)]
     pub put_id: String,
-    /// Concrete values for the PUT template's {{variables}}.
+    /// Concrete values for the PUT template's {{variables}}. Empty for
+    /// templates with no placeholders.
+    #[serde(default)]
     pub resolved_inputs: HashMap<String, Value>,
     /// The opening message from the user/protagonist. For a tool-less
     /// PUT this is the entire work input.
     pub user_message: Option<String>,
     /// Mutable world facts, updated by write-tool patches during the
-    /// trace. Static truth belongs in the narrative, not here.
+    /// trace. Static truth belongs in the narrative, not here. Defaults
+    /// empty.
+    #[serde(default)]
     pub world_state: HashMap<String, Value>,
     /// Persona/stance guidance for a simulated user, if the scenario
-    /// involves one.
+    /// involves one. Defaults empty.
+    #[serde(default)]
     pub simulator_notes: String,
     /// The world specification — ground truth the simulator renders
     /// tool responses from, and the judge checks claims against. A

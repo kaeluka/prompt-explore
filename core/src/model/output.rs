@@ -16,8 +16,11 @@ pub struct RunResult {
     /// 'id'"), surfaced so negative results show what was tried.
     pub strategies_tried: Vec<String>,
     pub witness: Option<Witness>,
-    /// Reserved for goal violations found incidentally; currently always
-    /// empty (goal checking is not wired into the run path).
+    /// Advisory design-goal violations found across completed traces —
+    /// best-effort: skipped when `design_goals` is empty or the goal
+    /// judge errors. These do NOT affect the witness verdict (the
+    /// question is the sole criterion); they are surfaced for the
+    /// operator to read.
     pub incidental_findings: Vec<String>,
     /// Generated ONLY when a witness is found (fixes for the witnessed
     /// behavior). Empty on negative results — the proposer does not run

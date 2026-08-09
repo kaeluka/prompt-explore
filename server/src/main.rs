@@ -36,10 +36,13 @@ const MODEL: &str = "glm-5.2";
 struct AppState {
     client: Option<Arc<ProviderClient>>,
     jobs: Mutex<HashMap<String, Job>>,
+    /// The effective default provider (PROMPT_EXPLORE_PROVIDER), surfaced
+    /// by GET /api/models so callers know what a bare model name resolves to.
+    default_provider: String,
     /// LLM model listing (GET /models) — genai client + a short-TTL cache
     /// so repeated listing doesn't hammer the providers.
     models_client: prompt_explore::llm::GenaiClient,
-    models_cache: Mutex<Option<(Instant, BTreeMap<String, ProviderModels>)>>,
+    models_cache: Mutex<Option<(Instant, ModelsResponse)>>,
 }
 
 struct Job {
@@ -103,6 +106,20 @@ struct InvestigateRequest {
     ///    cheaper. Pick a strong model here and leave it set.
     #[serde(default)]
     sim_model: Option<String>,
+    /// Model for the JUDGE only (the LLM that evaluates each trace against
+    /// your question). Defaults to `model`. The judge is the
+    /// safety-critical role: a weak judge fails to catch what a weak PUT
+    /// does, so it should be at least as strong as the PUT, ideally
+    /// stronger. Splitting it out lets you keep a strong judge while you
+    /// vary the PUT model — and a stronger judge also catches simulator
+    /// divergence (tool responses that contradict the narrative).
+    #[serde(default)]
+    judge_model: Option<String>,
+    /// Model for the PROPOSER only (the LLM that suggests prompt fixes
+    /// from a witness). Defaults to `model`. Lower priority than the
+    /// judge; proposals are always unverified anyway.
+    #[serde(default)]
+    proposer_model: Option<String>,
     /// The test cases to run. Required; ALL of them are run (an explicit
     /// list is a contract — the step/token budget applies per trace, not
     /// to the count). Scenarios are authored outside this API and are
@@ -299,6 +316,7 @@ async fn main() {
     let state = Arc::new(AppState {
         client: Some(Arc::new(client)),
         jobs: Mutex::new(HashMap::new()),
+        default_provider: provider.clone(),
         models_client: prompt_explore::llm::GenaiClient::builder().build(),
         models_cache: Mutex::new(None),
     });
@@ -332,32 +350,51 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 
 /// Models available to put in a request's `model` field, by provider.
 ///
-/// Returns a map keyed by provider namespace (`zai_coding`,
-/// `open_router`, `bedrock_sigv4`). Each value is either `{models: [{name}]}`
-/// — where `name` is the full pastable, namespaced string (e.g.
+/// Returns the server defaults plus a map keyed by provider namespace
+/// (`zai_coding`, `open_router`, `bedrock_sigv4`). Each provider value is
+/// either `{available: {models: [{name, pricing?}]}}` — where `name` is the
+/// full pastable, namespaced string (e.g.
 /// `open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: "…"}`
 /// explaining why that provider couldn't be listed (no API key in the
 /// environment, no AWS credentials, region-gated, …). Listing is
 /// best-effort and per-provider: one provider failing never breaks the
 /// others. Cached for a short time so repeated listing is cheap.
+#[derive(Serialize, Clone, utoipa::ToSchema)]
+struct ModelsResponse {
+    /// Model used when a request omits `model` (a bare name; the server
+    /// resolves it via `server_default_provider`).
+    server_default_model: String,
+    /// Provider applied to bare model names when no namespace is given
+    /// (from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix:
+    /// `zai` -> `zai_coding::`, `zai_standard` -> `zai::`,
+    /// `openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`.
+    server_default_provider: String,
+    providers: BTreeMap<String, ProviderModels>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/models",
     tag = "models",
-    responses((status = 200, description = "Available models per provider", body = BTreeMap<String, ProviderModels>))
+    responses((status = 200, description = "Available models per provider", body = ModelsResponse))
 )]
 async fn list_models(
     State(state): State<Arc<AppState>>,
-) -> Json<BTreeMap<String, ProviderModels>> {
+) -> Json<ModelsResponse> {
     const TTL: Duration = Duration::from_secs(60);
     if let Some((fetched_at, cached)) = state.models_cache.lock().unwrap().clone() {
-        if fetched_at.elapsed() < TTL {
+        if fetched_at.elapsed() < TTL && cached.server_default_provider == state.default_provider {
             return Json(cached);
         }
     }
-    let fresh = list_all_map(&state.models_client).await;
-    *state.models_cache.lock().unwrap() = Some((Instant::now(), fresh.clone()));
-    Json(fresh)
+    let providers = list_all_map(&state.models_client).await;
+    let resp = ModelsResponse {
+        server_default_model: MODEL.into(),
+        server_default_provider: state.default_provider.clone(),
+        providers,
+    };
+    *state.models_cache.lock().unwrap() = Some((Instant::now(), resp.clone()));
+    Json(resp)
 }
 
 /// Discovery: every response advertises the OpenAPI spec
@@ -434,22 +471,16 @@ async fn create_investigation(
     let id2 = id.clone();
     let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
     let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
+    let judge_model = req.judge_model.clone().unwrap_or_else(|| put_model.clone());
+    let proposer_model = req.proposer_model.clone().unwrap_or_else(|| put_model.clone());
     tokio::spawn(async move {
         let inner = state2.client.as_ref().unwrap().clone();
         let tracker = Arc::new(UsageTracker::new(inner));
-        let put_role = LlmRole {
-            client: tracker.clone(),
-            model: put_model.clone(),
-        };
-        let sim_role = LlmRole {
-            client: tracker.clone(),
-            model: sim_model,
-        };
         let investigator = Investigator {
-            runner_put: put_role.clone(),
-            runner_sim: sim_role,
-            judge: put_role.clone(),
-            proposer: put_role,
+            runner_put: LlmRole { client: tracker.clone(), model: put_model.clone() },
+            runner_sim: LlmRole { client: tracker.clone(), model: sim_model },
+            judge: LlmRole { client: tracker.clone(), model: judge_model },
+            proposer: LlmRole { client: tracker.clone(), model: proposer_model },
         };
 
         let outcome = investigator
