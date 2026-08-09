@@ -2068,6 +2068,7 @@ dependencies = [
  "async-trait",
  "genai",
  "jsonschema",
+ "reqwest",
  "serde",
  "serde_json",
  "similar",

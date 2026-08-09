@@ -214,6 +214,7 @@ One model the caller can put in a request's `model` field. `name` is the full na
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes |  |
+| `pricing` | object? | no | Per-token USD pricing as reported by the provider. Keys follow OpenRouter's conventions: `prompt` (input), `completion` (output), `input_cache_read` (cached input). Present only when the provider exposes pricing — absent for subscription endpoints (z.ai coding plan) and providers that don't report it (Bedrock). If future pricing sources are added, reuse these same keys. |
 
 ### `PromptUnderTest`
 

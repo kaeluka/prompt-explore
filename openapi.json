@@ -577,6 +577,19 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "pricing": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Per-token USD pricing as reported by the provider. Keys follow\nOpenRouter's conventions: `prompt` (input), `completion`\n(output), `input_cache_read` (cached input). Present only when\nthe provider exposes pricing — absent for subscription endpoints\n(z.ai coding plan) and providers that don't report it (Bedrock).\nIf future pricing sources are added, reuse these same keys.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
