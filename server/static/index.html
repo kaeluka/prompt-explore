@@ -102,6 +102,21 @@ function Bubble({ side, role, body, tool }) {
 
 function Chat({ s }) {
   const out = [];
+  // Resolved input bindings (sim agent's output) — first, SIM side.
+  const ri = s.resolved_inputs;
+  if (ri && Object.keys(ri).length) {
+    const rows = Object.entries(ri).map(([k, v], i) => {
+      // Strings render as-is; only actual objects/arrays pretty-print,
+      // collapsible so a deep value doesn't blow out the pane.
+      const isObj = v !== null && typeof v === 'object';
+      const shown = isObj ? JSON.stringify(v, null, 2) : String(v);
+      const body = (!isObj || shown.length <= 80)
+        ? html`<span>${shown}</span>`
+        : html`<details><summary class="mono" style="cursor:pointer;color:var(--text-dim)">${shown.split('\n')[0].slice(0,70)}…</summary><pre class="step" style="max-height:12em;overflow:auto;margin:0.3rem 0">${shown}</pre></details>`;
+      return html`<div key=${'ri'+i} style="display:flex;gap:0.4rem;padding:0.15rem 0;border-bottom:1px solid var(--border)"><span class="mono" style="color:var(--text-dim);flex-shrink:0">${k} →</span><span style="word-break:break-word">${body}</span></div>`;
+    });
+    out.push(html`<div class="bubble sim" key="ri"><div class="role">SIM</div><div class="body">${rows}</div></div>`);
+  }
   if (s.user_message && s.user_message.trim()) out.push(html`<${Bubble} key="u" side="sim" role="USER" body=${s.user_message} />`);
   (s.steps || []).forEach((st, i) => {
     if (st.model_output && st.model_output.trim())
