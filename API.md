@@ -48,9 +48,10 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
-| `model` | string? | no | Model for every LLM role (runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). |
+| `model` | string? | no | Model for every LLM role (runner PUT + judge + proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
+| `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Defaults to `model`. Use a cheaper/different model here independently of the PUT model — the cost-optimization knob. |
 
 
 | Status | Response |
@@ -152,9 +153,10 @@ Returns a map keyed by provider namespace (`zai_coding`, `open_router`, `bedrock
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `investigation` | [`Investigation`](#investigation) | yes |  |
-| `model` | string? | no | Model for every LLM role (runner PUT + simulator, judge, proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). |
+| `model` | string? | no | Model for every LLM role (runner PUT + judge + proposer). Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
+| `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Defaults to `model`. Use a cheaper/different model here independently of the PUT model — the cost-optimization knob. |
 
 ### `InvestigateResponse`
 

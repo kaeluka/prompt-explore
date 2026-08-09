@@ -72,13 +72,19 @@ enum JobStatus {
 struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
-    /// Model for every LLM role (runner PUT + simulator, judge,
-    /// proposer). Omit to use the server default (`glm-5.2`). Provider is
-    /// selected by namespace prefix, e.g. `zai_coding::glm-5.2`,
-    /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name
-    /// uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
+    /// Model for every LLM role (runner PUT + judge + proposer). Omit to
+    /// use the server default (`glm-5.2`). Provider is selected by
+    /// namespace prefix, e.g. `zai_coding::glm-5.2`,
+    /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare
+    /// name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
+    /// See `GET /api/models` for available namespaced model strings.
     #[serde(default)]
     model: Option<String>,
+    /// Model for the tool SIMULATOR only (the LLM that roleplays the
+    /// environment). Defaults to `model`. Use a cheaper/different model
+    /// here independently of the PUT model — the cost-optimization knob.
+    #[serde(default)]
+    sim_model: Option<String>,
     /// The test cases to run. Required; ALL of them are run (an explicit
     /// list is a contract — the step/token budget applies per trace, not
     /// to the count). Scenarios are authored outside this API and are
@@ -372,19 +378,24 @@ async fn create_investigation(
 
     let state2 = state.clone();
     let id2 = id.clone();
-    let model = req.model.clone().unwrap_or_else(|| MODEL.into());
+    let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
+    let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
     tokio::spawn(async move {
         let inner = state2.client.as_ref().unwrap().clone();
         let tracker = Arc::new(UsageTracker::new(inner));
-        let role = || LlmRole {
+        let put_role = LlmRole {
             client: tracker.clone(),
-            model: model.clone(),
+            model: put_model.clone(),
+        };
+        let sim_role = LlmRole {
+            client: tracker.clone(),
+            model: sim_model,
         };
         let investigator = Investigator {
-            runner_put: role(),
-            runner_sim: role(),
-            judge: role(),
-            proposer: role(),
+            runner_put: put_role.clone(),
+            runner_sim: sim_role,
+            judge: put_role.clone(),
+            proposer: put_role,
         };
 
         let outcome = investigator

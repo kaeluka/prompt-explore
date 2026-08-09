@@ -398,7 +398,7 @@
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (runner PUT + simulator, judge,\nproposer). Omit to use the server default (`glm-5.2`). Provider is\nselected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare name\nuses the server's default provider (`PROMPT_EXPLORE_PROVIDER`)."
+            "description": "Model for every LLM role (runner PUT + judge + proposer). Omit to\nuse the server default (`glm-5.2`). Provider is selected by\nnamespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
@@ -409,6 +409,13 @@
               "$ref": "#/components/schemas/Scenario"
             },
             "description": "The test cases to run. Required; ALL of them are run (an explicit\nlist is a contract — the step/token budget applies per trace, not\nto the count). Scenarios are authored outside this API and are\neditable before running: reviewing them is the intended workflow."
+          },
+          "sim_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Defaults to `model`. Use a cheaper/different model\nhere independently of the PUT model — the cost-optimization knob."
           }
         }
       },
