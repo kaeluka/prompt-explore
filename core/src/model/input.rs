@@ -51,7 +51,10 @@ pub struct ToolSchema {
     /// JSON Schema for the tool's parameters.
     pub parameters: Value,
     pub side_effect: SideEffect,
-    /// Optional realism anchors for the simulator LLM.
+    /// Realism hints for the simulator LLM. These are anchors/examples,
+    /// NOT pinned outputs — the simulator renders its own concrete
+    /// responses from the narrative (see the API description's DESIGN
+    /// INTENT: scripted/pinned tool responses are a deliberate non-goal).
     #[serde(default)]
     pub example_responses: Vec<String>,
 }

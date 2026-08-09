@@ -208,7 +208,34 @@ struct JobSummary {
                        trace where the questioned behavior actually occurred. Proposed prompt \
                        fixes are always unverified — apply them (POST /api/apply), then \
                        re-run the same scenarios to check. The API is job-based: POST returns \
-                       a job id immediately; poll GET /api/investigations/{id} for the result."
+                       a job id immediately; poll GET /api/investigations/{id} for the result.
+
+ \
+                       DESIGN INTENT — why it works this way:
+ \
+                       • Scenarios are world SPECIFICATIONS, not instantiated data. A \
+                       narrative pins what exists (inventory; facts, including NEGATIVE \
+                       facts; completeness assertions; rendering rules) and the simulator \
+                       lazily renders concrete tool responses from it. Materializing a full \
+                       environment requires a closed world (enumerable, bounded, copyable); \
+                       open worlds — web search, email, a payment network — can never be \
+                       materialized, so a narrative (prose) is the only mechanism that \
+                       generalizes. This is why a scenario is a spec, not a fixture.
+ \
+                       • Tool responses are SIMULATED by an LLM from the narrative, not \
+                       scripted. Deterministic / pinned responses (e.g. a `when_called_with` \
+                       override) are a deliberate NON-GOAL: any fixture or DSL you build \
+                       fails to express a realistic case, and making the harness own \
+                       simulation fidelity just swaps LLM flakiness (already accepted) for \
+                       harness bugs (now your problem). `example_responses` are realism \
+                       hints for the simulator, NOT pinned outputs.
+ \
+                       • The answer to simulation unreliability is TRANSPARENCY, not \
+                       enforcement. Every tool response is in the trace; the judge sees the \
+                       same narrative and can flag a response that contradicts the stated \
+                       facts. Divergence is SURFACED for you to read, not silently fixed. If \
+                       the simulation is insufficient, the remediation is a user action — \
+                       sharpen the narrative and re-investigate — not harness machinery."
     ),
     paths(index, list_investigations, create_investigation, get_investigation, apply_proposal, list_models)
 )]

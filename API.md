@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. Proposed prompt fixes are always unverified — apply them (POST /api/apply), then re-run the same scenarios to check. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.
+Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world specification plus a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and a behavioral question. Every scenario is run: an LLM simulates the world from the scenario's narrative, the PUT acts in it, and a judge evaluates each resulting trace against your question. A witness is a trace where the questioned behavior actually occurred. Proposed prompt fixes are always unverified — apply them (POST /api/apply), then re-run the same scenarios to check. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace; the judge sees the same narrative and can flag a response that contradicts the stated facts. Divergence is SURFACED for you to read, not silently fixed. If the simulation is insufficient, the remediation is a user action — sharpen the narrative and re-investigate — not harness machinery.
 
 Version: `0.1.0` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -292,7 +292,7 @@ A test case: a world specification plus a protagonist. The harness runs the prom
 |---|---|---|---|
 | `hypothesis_id` | string | yes | Provenance label: what this scenario was authored to test. Informational only. |
 | `id` | string | yes | Free-form label, echoed back in reports. |
-| `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. Required; every scenario must pin one (see the struct docs for the four parts it should cover). |
+| `narrative` | string | yes | The world specification — ground truth the simulator renders tool responses from, and the judge checks claims against. A narrative is a SPECIFICATION (prose), not instantiated data: open worlds (web, email, payments) can never be materialized, so the simulator lazily renders concrete responses from it. See the API description's DESIGN INTENT for why this is prose and not a fixture. Required; every scenario must pin one — cover (1) inventory, (2) facts including NEGATIVE facts, (3) completeness assertions, (4) rendering rules. |
 | `put_id` | string | yes | Provenance: which prompt this scenario was authored for. NOT enforced — a scenario may be run against any PUT. |
 | `resolved_inputs` | map&lt;string, any&gt; | yes | Concrete values for the PUT template's {{variables}}. |
 | `simulator_notes` | string | yes | Persona/stance guidance for a simulated user, if the scenario involves one. |
@@ -362,7 +362,7 @@ Values: `read`, `write`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `description` | string | yes |  |
-| `example_responses` | string[] | no | Optional realism anchors for the simulator LLM. |
+| `example_responses` | string[] | no | Realism hints for the simulator LLM. These are anchors/examples, NOT pinned outputs — the simulator renders its own concrete responses from the narrative (see the API description's DESIGN INTENT: scripted/pinned tool responses are a deliberate non-goal). |
 | `name` | string | yes |  |
 | `parameters` | any | yes | JSON Schema for the tool's parameters. |
 | `side_effect` | [`SideEffect`](#sideeffect) | yes |  |

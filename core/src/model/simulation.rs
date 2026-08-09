@@ -105,9 +105,14 @@ pub struct Scenario {
     /// involves one.
     pub simulator_notes: String,
     /// The world specification — ground truth the simulator renders
-    /// tool responses from, and the judge checks claims against.
-    /// Required; every scenario must pin one (see the struct docs for
-    /// the four parts it should cover).
+    /// tool responses from, and the judge checks claims against. A
+    /// narrative is a SPECIFICATION (prose), not instantiated data:
+    /// open worlds (web, email, payments) can never be materialized, so
+    /// the simulator lazily renders concrete responses from it. See the
+    /// API description's DESIGN INTENT for why this is prose and not a
+    /// fixture. Required; every scenario must pin one — cover (1)
+    /// inventory, (2) facts including NEGATIVE facts, (3) completeness
+    /// assertions, (4) rendering rules.
     pub narrative: String,
     /// Operator-required environment facts for THIS scenario (e.g.
     /// "cancel_order is broken and returns E_CONN"). Appended to the
