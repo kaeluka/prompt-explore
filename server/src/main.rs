@@ -80,7 +80,8 @@ struct InvestigateRequest {
     /// Model for every LLM role (the PUT runner and the tool
     /// simulator). Omit to use the server default (`glm-5.2`). Provider
     /// is selected by namespace prefix, e.g. `zai_coding::glm-5.2`,
-    /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare
+    /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,
+    /// `vertex::gemini-2.5-pro`; a bare
     /// name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
     /// See `GET /api/models` for available namespaced model strings.
     ///
@@ -261,10 +262,13 @@ fn print_help() {
     println!();
     println!("ENVIRONMENT:");
     println!("    PROMPT_EXPLORE_PROVIDER  Which provider runs the LLM calls (default: zai).");
-    println!("                           zai | zai_standard | openrouter | bedrock");
+    println!("                           zai | zai_standard | openrouter | bedrock | baseten | gemini");
     println!("    ZAI_API_KEY            API key for zai / zai_standard (coding-plan default).");
     println!("    OPENROUTER_API_KEY     API key for openrouter.");
     println!("    bedrock uses the default AWS credential chain (aws sso login, profiles, IMDS).");
+    println!("    gemini uses GCP Application Default Credentials (gcloud auth application-default");
+    println!("                           login). Project: VERTEX_PROJECT_ID or gcloud config;");
+    println!("                           region: VERTEX_LOCATION (default: global).");
     println!("    BASETEN_API_KEY      API key for baseten (OpenAI-compatible).");
     println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://api.baseten.co/v1/).");
     println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).");
@@ -294,7 +298,8 @@ async fn main() {
         "openrouter" => ProviderClient::openrouter(),
         "bedrock" => ProviderClient::bedrock(),
         "baseten" => ProviderClient::baseten(),
-        other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock | baseten)"),
+        "gemini" => ProviderClient::gemini(),
+        other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock | baseten | gemini)"),
     };
     let state = Arc::new(AppState {
         client: Some(Arc::new(client)),
@@ -333,7 +338,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 /// Models available to put in a request's `model` field, by provider.
 ///
 /// Returns the server defaults plus a map keyed by provider namespace
-/// (`zai_coding`, `open_router`, `bedrock_sigv4`). Each provider value is
+/// (`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each
+/// provider value is
 /// either `{available: {models: [{name, pricing?}]}}` — where `name` is the
 /// full pastable, namespaced string (e.g.
 /// `open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: "…"}`
@@ -349,7 +355,8 @@ struct ModelsResponse {
     /// Provider applied to bare model names when no namespace is given
     /// (from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix:
     /// `zai` -> `zai_coding::`, `zai_standard` -> `zai::`,
-    /// `openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`.
+    /// `openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`,
+    /// `gemini` -> `vertex::`.
     server_default_provider: String,
     providers: BTreeMap<String, ProviderModels>,
 }

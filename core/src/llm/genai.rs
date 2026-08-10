@@ -10,10 +10,13 @@
 //! | `zai::glm-4.6` | z.ai standard endpoint | `ZAI_API_KEY` env |
 //! | `open_router::<model>` | OpenRouter | `OPENROUTER_API_KEY` env |
 //! | `bedrock_sigv4::<model>` | AWS Bedrock (native Converse, SigV4) | default AWS credential chain (env / profile / SSO / IMDS) |
+//! | `vertex::gemini-2.5-pro` | Google Vertex AI (Gemini) | GCP Application Default Credentials (`gcloud auth application-default login`) |
 //! | bare name (e.g. `glm-5.2`) | resolved by [`ModelMapper`] (ZAI default — see [`ProviderClient::zai`]) | per provider |
 //!
 //! The `bedrock-sigv4` cargo feature pulls in `aws-config` for the full
 //! AWS credential chain, so `aws sso login` works with no extra setup.
+//! Likewise `gcp_auth` implements the GCP ADC chain, so
+//! `gcloud auth application-default login` is all Gemini needs.
 
 use async_trait::async_trait;
 use genai::chat::{
@@ -42,6 +45,7 @@ pub enum DefaultProvider {
     OpenRouter,
     Bedrock,
     Baseten,
+    Gemini,
 }
 
 impl DefaultProvider {
@@ -56,6 +60,7 @@ impl DefaultProvider {
             Self::OpenRouter => format!("open_router::{model}"),
             Self::Bedrock => format!("bedrock_sigv4::{model}"),
             Self::Baseten => format!("baseten::{model}"),
+            Self::Gemini => format!("vertex::{model}"),
         }
     }
 
@@ -66,6 +71,7 @@ impl DefaultProvider {
             Self::OpenRouter => AdapterKind::OpenRouter,
             Self::Bedrock => AdapterKind::BedrockSigv4,
             Self::Baseten => AdapterKind::OpenAI,
+            Self::Gemini => AdapterKind::Vertex,
         }
     }
 }
@@ -77,15 +83,29 @@ pub struct ProviderClient {
 impl ProviderClient {
     fn build(default: DefaultProvider) -> Self {
         // Baseten env config (OpenAI-compatible; endpoint overridable).
+        // Default is the serverless Model-APIs endpoint — api.baseten.co
+        // is the control plane and serves neither /models nor chat
+        // completions for these models.
         let baseten_endpoint = std::env::var("BASETEN_ENDPOINT")
-            .unwrap_or_else(|_| "https://api.baseten.co/v1/".into());
+            .unwrap_or_else(|_| "https://inference.baseten.co/v1/".into());
         let baseten_key = std::env::var("BASETEN_API_KEY").unwrap_or_default();
 
         let client = Client::builder()
             .with_model_mapper(ModelMapper::from_mapper_fn(move |model_ident: ModelIden| {
-                // Namespaced model strings already resolved to the right
-                // adapter — pass through. Bare names get the client's
-                // default provider.
+                // `baseten::` is OUR namespace — genai has no Baseten
+                // adapter, so its name-based guess falls back to Ollama
+                // (Baseten model ids like `deepseek-ai/...` match no
+                // known prefix). Re-pin it to OpenAI; the service-target
+                // resolver below supplies endpoint + auth.
+                if model_ident.model_name.namespace_is("baseten") {
+                    return Ok(ModelIden::new(
+                        AdapterKind::OpenAI,
+                        model_ident.model_name,
+                    ));
+                }
+                // Other namespaced model strings already resolved to the
+                // right adapter — pass through. Bare names get the
+                // client's default provider.
                 if model_ident.model_name.namespace().is_some() {
                     return Ok(model_ident);
                 }
@@ -94,19 +114,46 @@ impl ProviderClient {
                     ModelName::new(default.qualify(model_ident.model_name.as_str())),
                 ))
             }))
-            // Route baseten:: models to the Baseten endpoint with its API
-            // key, regardless of the default provider — composable with
-            // z.ai / OpenRouter / Bedrock in a single client.
-            .with_service_target_resolver(ServiceTargetResolver::from_resolver_fn(
-                move |mut st: ServiceTarget| {
-                    if st.model.model_name.namespace_is("baseten") {
-                        st.endpoint =
-                            genai::resolver::Endpoint::from_owned(baseten_endpoint.clone());
-                        if !baseten_key.is_empty() {
-                            st.auth = AuthData::from_single(baseten_key.clone());
+            // Per-request routing overrides, composable with any default
+            // provider in a single client:
+            // - baseten:: models go to the Baseten endpoint with its API key.
+            // - vertex:: models (Gemini) get a fresh OAuth2 token from GCP
+            //   Application Default Credentials (`gcloud auth
+            //   application-default login`) and the aiplatform endpoint for
+            //   the resolved project/region — genai's Vertex adapter only
+            //   reads a static VERTEX_API_KEY, so we supply the ADC token
+            //   ourselves, like aws-config does for Bedrock SigV4.
+            .with_service_target_resolver(ServiceTargetResolver::from_resolver_async_fn(
+                move |mut st: ServiceTarget| -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = genai::resolver::Result<ServiceTarget>,
+                            > + Send,
+                    >,
+                > {
+                    let baseten_endpoint = baseten_endpoint.clone();
+                    let baseten_key = baseten_key.clone();
+                    Box::pin(async move {
+                        if st.model.model_name.namespace_is("baseten") {
+                            st.endpoint =
+                                genai::resolver::Endpoint::from_owned(baseten_endpoint);
+                            if !baseten_key.is_empty() {
+                                st.auth = AuthData::from_single(baseten_key);
+                            }
                         }
-                    }
-                    Ok(st)
+                        if st.model.model_name.namespace_is("vertex") {
+                            let token = super::gcloud::access_token()
+                                .await
+                                .map_err(genai::resolver::Error::Custom)?;
+                            st.auth = AuthData::from_single(token);
+                            st.endpoint = genai::resolver::Endpoint::from_owned(
+                                super::gcloud::vertex_endpoint()
+                                    .await
+                                    .map_err(genai::resolver::Error::Custom)?,
+                            );
+                        }
+                        Ok(st)
+                    })
                 },
             ))
             .build();
@@ -135,8 +182,17 @@ impl ProviderClient {
         Self::build(DefaultProvider::Bedrock)
     }
 
+    /// Google Gemini via Vertex AI. Credentials come from GCP Application
+    /// Default Credentials (`gcloud auth application-default login`,
+    /// `GOOGLE_APPLICATION_CREDENTIALS`, GCE metadata) — no API key.
+    /// Project from `VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT` or the
+    /// gcloud config; region from `VERTEX_LOCATION` (default: `global`).
+    pub fn gemini() -> Self {
+        Self::build(DefaultProvider::Gemini)
+    }
+
     /// Baseten (OpenAI-compatible). Reads `BASETEN_API_KEY`; endpoint
-    /// defaults to `https://api.baseten.co/v1/`, overridable via
+    /// defaults to `https://inference.baseten.co/v1/`, overridable via
     /// `BASETEN_ENDPOINT`. Bare model names default to this provider.
     pub fn baseten() -> Self {
         Self::build(DefaultProvider::Baseten)

@@ -15,9 +15,11 @@
 use std::collections::BTreeMap;
 
 use genai::adapter::AdapterKind;
-use genai::resolver::{AuthData, Endpoint, ProviderConfig};
+use genai::resolver::{Endpoint, ProviderConfig};
 use genai::Client;
 use serde::{Deserialize, Serialize};
+
+use super::gcloud;
 
 /// One model the caller can put in a request's `model` field. `name` is
 /// the full namespaced, pastable string (e.g.
@@ -77,24 +79,16 @@ pub async fn list_all(client: &Client) -> Vec<(String, ProviderModels)> {
             ProviderConfig::default(),
         )
         .await,
-        // Baseten (OpenAI-compatible). Auth from BASETEN_API_KEY;
-        // endpoint from BASETEN_ENDPOINT (default https://api.baseten.co/v1/).
-        list_via_genai(
-            client,
-            "baseten",
-            AdapterKind::OpenAI,
-            ProviderConfig {
-                endpoint: Some(Endpoint::from_owned(
-                    std::env::var("BASETEN_ENDPOINT")
-                        .unwrap_or_else(|_| "https://api.baseten.co/v1/".into()),
-                )),
-                auth: std::env::var("BASETEN_API_KEY")
-                    .ok()
-                    .filter(|k| !k.is_empty())
-                    .map(AuthData::from_single),
-            },
-        )
-        .await,
+        // Google Vertex AI (Gemini); auth from GCP Application Default
+        // Credentials (`gcloud auth application-default login`). Live
+        // Model Garden query; no pricing.
+        list_vertex().await,
+        // Baseten (OpenAI-compatible Model APIs): direct /models call so
+        // we keep pricing (same key conventions as OpenRouter). Auth
+        // from BASETEN_API_KEY; endpoint from BASETEN_ENDPOINT (default
+        // https://inference.baseten.co/v1/ — api.baseten.co is the
+        // control plane and does not serve the OpenAI-style listing).
+        list_baseten().await,
     ]
 }
 
@@ -120,6 +114,202 @@ async fn list_via_genai(
         }
         Err(e) => (key.into(), ProviderModels::Error { error: e.to_string() }),
     }
+}
+
+/// Live Vertex AI listing via the Model Garden publisher-models
+/// endpoint — the same one `gcloud ai model-garden models list` calls
+/// (genai's own Vertex list is a hardcoded, stale snapshot, so we don't
+/// use it). The endpoint needs a quota project (`x-goog-user-project`)
+/// where the aiplatform API + billing are enabled and the caller has
+/// `serviceusage.services.use`; we try the ADC quota project and the
+/// resolved project in turn, so whichever one is set up works. On
+/// failure the returned error is Google's own message, which names the
+/// exact missing piece (enable the API / billing / grant the role).
+async fn list_vertex() -> (String, ProviderModels) {
+    let token = match gcloud::access_token().await {
+        Ok(t) => t,
+        Err(e) => return ("vertex".into(), ProviderModels::Error { error: e }),
+    };
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(q) = gcloud::adc_quota_project().await {
+        candidates.push(q);
+    }
+    if let Ok(p) = gcloud::project_id().await {
+        candidates.push(p);
+    }
+    candidates.dedup();
+    if candidates.is_empty() {
+        return (
+            "vertex".into(),
+            ProviderModels::Error {
+                error: "no GCP project for the quota header".into(),
+            },
+        );
+    }
+    let mut last_err = String::new();
+    for quota_project in &candidates {
+        match fetch_vertex_models(&token, quota_project).await {
+            Ok(mut models) => {
+                models.sort_by(|a, b| a.name.cmp(&b.name));
+                return ("vertex".into(), ProviderModels::Available { models });
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    ("vertex".into(), ProviderModels::Error { error: last_err })
+}
+
+#[derive(Deserialize)]
+struct VertexListResp {
+    #[serde(default, rename = "publisherModels")]
+    publisher_models: Vec<VertexPublisherModel>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+#[derive(Deserialize)]
+struct VertexPublisherModel {
+    name: String,
+}
+
+/// Model Garden inventory covers every publisher and modality; keep
+/// only what genai's Vertex adapter can serve chat for: gemini-* and
+/// claude-*, minus non-chat specialties. (Any id the API accepts can be
+/// used in a request even if filtered out here.)
+fn is_vertex_chat_model(id: &str) -> bool {
+    let chat_family = id.starts_with("gemini") || id.starts_with("claude");
+    let non_chat = ["embedding", "robotics", "tts"];
+    chat_family && !non_chat.iter().any(|s| id.contains(s))
+}
+
+async fn fetch_vertex_models(
+    token: &str,
+    quota_project: &str,
+) -> Result<Vec<ModelEntry>, String> {
+    // Regional host, like `gcloud ai model-garden models list`
+    // (us-central1 is its default); the inventory is not region-scoped.
+    let url = "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/*/models";
+    let http = reqwest::Client::new();
+    let mut ids: std::collections::BTreeSet<String> = Default::default();
+    let mut page_token: Option<String> = None;
+    loop {
+        let mut query = vec![
+            ("listAllVersions", "true".to_string()),
+            ("filter", "is_hf_wildcard(false)".to_string()),
+            ("pageSize", "500".to_string()),
+        ];
+        if let Some(t) = &page_token {
+            query.push(("pageToken", t.clone()));
+        }
+        let resp = http
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-goog-user-project", quota_project)
+            .query(&query)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // Surface Google's message (it names the missing permission
+            // / API / billing), trimmed of JSON noise.
+            return Err(format!(
+                "Model Garden list failed ({status}) with quota project \
+                 {quota_project}: {}",
+                google_error_message(&body).unwrap_or(body)
+            ));
+        }
+        let page: VertexListResp = resp.json().await.map_err(|e| e.to_string())?;
+        for m in page.publisher_models {
+            // `name` is `publishers/<pub>/models/<id>`; versioned
+            // variants share the id, so a set dedupes them.
+            if let Some(id) = m.name.rsplit('/').next() {
+                let id = id.split('@').next().unwrap_or(id);
+                if is_vertex_chat_model(id) {
+                    ids.insert(id.to_string());
+                }
+            }
+        }
+        match page.next_page_token {
+            Some(t) if !t.is_empty() => page_token = Some(t),
+            _ => break,
+        }
+    }
+    Ok(ids
+        .into_iter()
+        .map(|id| ModelEntry {
+            name: format!("vertex::{id}"),
+            pricing: None,
+        })
+        .collect())
+}
+
+/// Pulls `error.message` out of a Google JSON error body.
+fn google_error_message(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    Some(v.get("error")?.get("message")?.as_str()?.to_string())
+}
+
+const BASETEN_API_KEY_ENV: &str = "BASETEN_API_KEY";
+
+async fn list_baseten() -> (String, ProviderModels) {
+    let api_key = match std::env::var(BASETEN_API_KEY_ENV) {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            return (
+                "baseten".into(),
+                ProviderModels::Error {
+                    error: format!("no API key in ${BASETEN_API_KEY_ENV}"),
+                },
+            )
+        }
+    };
+    match fetch_baseten(&api_key).await {
+        Ok(mut models) => {
+            models.sort_by(|a, b| a.name.cmp(&b.name));
+            ("baseten".into(), ProviderModels::Available { models })
+        }
+        Err(e) => ("baseten".into(), ProviderModels::Error { error: e }),
+    }
+}
+
+#[derive(Deserialize)]
+struct BasetenResp {
+    data: Vec<BasetenModel>,
+}
+#[derive(Deserialize)]
+struct BasetenModel {
+    id: String,
+    pricing: Option<OpenRouterPricing>,
+}
+
+async fn fetch_baseten(api_key: &str) -> Result<Vec<ModelEntry>, String> {
+    let base = std::env::var("BASETEN_ENDPOINT")
+        .unwrap_or_else(|_| "https://inference.baseten.co/v1/".into());
+    let url = format!("{}/models", base.trim_end_matches('/'));
+    let resp: BasetenResp = reqwest::Client::new()
+        .get(url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(resp
+        .data
+        .into_iter()
+        .map(|m| {
+            // Baseten reports pricing with the same keys as OpenRouter
+            // (prompt / completion / input_cache_read) — reuse the
+            // shared helper so consumers keep one vocabulary.
+            ModelEntry {
+                name: format!("baseten::{}", m.id),
+                pricing: m.pricing.and_then(pricing_map),
+            }
+        })
+        .collect())
 }
 
 const OPENROUTER_API_KEY_ENV: &str = "OPEN_ROUTER_API_KEY";
@@ -175,28 +365,27 @@ async fn fetch_openrouter(api_key: &str) -> Result<Vec<ModelEntry>, String> {
     Ok(resp
         .data
         .into_iter()
-        .map(|m| {
-            // Keys follow OpenRouter's conventions; reuse them for any
-            // future pricing source so consumers keep one vocabulary.
-            let pricing = m.pricing.and_then(|p| {
-                let mut map = BTreeMap::new();
-                if let Some(v) = p.prompt {
-                    map.insert("prompt".into(), v);
-                }
-                if let Some(v) = p.completion {
-                    map.insert("completion".into(), v);
-                }
-                if let Some(v) = p.input_cache_read {
-                    map.insert("input_cache_read".into(), v);
-                }
-                (!map.is_empty()).then_some(map)
-            });
-            ModelEntry {
-                name: format!("open_router::{}", m.id),
-                pricing,
-            }
+        .map(|m| ModelEntry {
+            name: format!("open_router::{}", m.id),
+            pricing: m.pricing.and_then(pricing_map),
         })
         .collect())
+}
+
+/// Keys follow OpenRouter's conventions; reuse them for any pricing
+/// source so consumers keep one vocabulary.
+fn pricing_map(p: OpenRouterPricing) -> Option<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    if let Some(v) = p.prompt {
+        map.insert("prompt".into(), v);
+    }
+    if let Some(v) = p.completion {
+        map.insert("completion".into(), v);
+    }
+    if let Some(v) = p.input_cache_read {
+        map.insert("input_cache_read".into(), v);
+    }
+    (!map.is_empty()).then_some(map)
 }
 
 /// Convenience: build the map shape the endpoint serializes to.

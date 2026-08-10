@@ -1,11 +1,13 @@
 //! LLM access layer. Everything outside this module speaks
 //! `LlmClient` + provider-neutral `types`; provider details live in
 //! `genai` (the `genai` multi-provider library: z.ai, OpenRouter,
-//! AWS Bedrock, …). `mock` enables deterministic tests of the runtime
-//! layers.
+//! AWS Bedrock, …). `gcloud` supplies GCP Application Default
+//! Credentials for the Vertex AI (Gemini) provider. `mock` enables
+//! deterministic tests of the runtime layers.
 
 pub mod client;
 pub mod genai;
+mod gcloud;
 pub mod mock;
 pub mod models;
 pub mod parse;

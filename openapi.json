@@ -254,7 +254,7 @@
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (the PUT runner and the tool\nsimulator). Omit to use the server default (`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT runs in the same simulated environment."
+            "description": "Model for every LLM role (the PUT runner and the tool\nsimulator). Omit to use the server default (`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,\n`vertex::gemini-2.5-pro`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT runs in the same simulated environment."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
@@ -460,7 +460,7 @@
       },
       "ModelsResponse": {
         "type": "object",
-        "description": "Models available to put in a request's `model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`). Each provider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
+        "description": "Models available to put in a request's `model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each\nprovider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
         "required": [
           "server_default_model",
           "server_default_provider",
@@ -482,7 +482,7 @@
           },
           "server_default_provider": {
             "type": "string",
-            "description": "Provider applied to bare model names when no namespace is given\n(from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix:\n`zai` -> `zai_coding::`, `zai_standard` -> `zai::`,\n`openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`."
+            "description": "Provider applied to bare model names when no namespace is given\n(from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix:\n`zai` -> `zai_coding::`, `zai_standard` -> `zai::`,\n`openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`,\n`gemini` -> `vertex::`."
           }
         }
       },

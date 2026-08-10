@@ -10,8 +10,12 @@ async-trait = "0.1.91"
 # Converse+SigV4). `bedrock-sigv4` pulls aws-config (heavy) for the default
 # AWS credential chain (env/profile/SSO/IMDS).
 genai = { version = "0.7.0-beta", features = ["bedrock-sigv4"] }
+# GCP Application Default Credentials for the Vertex AI (Gemini) provider —
+# the GCP analog of aws-config: reads the ADC file written by
+# `gcloud auth application-default login`, caches + refreshes OAuth2 tokens.
+gcp_auth = "0.12"
 jsonschema = "0.49.3"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 similar = { version = "3.1.1", default-features = false, features = ["text", "unicode"] }

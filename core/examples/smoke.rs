@@ -3,6 +3,8 @@
 //! Usage:
 //!   ZAI_API_KEY=...        cargo run --example smoke -- zai glm-4.5
 //!   OPENROUTER_API_KEY=... cargo run --example smoke -- openrouter openai/gpt-4o-mini
+//!   (after `gcloud auth application-default login`)
+//!                          cargo run --example smoke -- gemini gemini-2.5-flash
 //!
 //! Sends a chat request with a tool defined; prints the model's
 //! response and whether it called the tool.
@@ -19,8 +21,9 @@ async fn main() {
         "zai_standard" => ProviderClient::zai_standard(),
         "openrouter" => ProviderClient::openrouter(),
         "bedrock" => ProviderClient::bedrock(),
+        "gemini" => ProviderClient::gemini(),
         other => {
-            eprintln!("unknown provider {other:?}; expected zai | zai_standard | openrouter | bedrock");
+            eprintln!("unknown provider {other:?}; expected zai | zai_standard | openrouter | bedrock | gemini");
             std::process::exit(1);
         }
     };
