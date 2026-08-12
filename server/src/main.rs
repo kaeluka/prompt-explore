@@ -342,7 +342,7 @@ fn print_help() {
     println!("                           login). Project: VERTEX_PROJECT_ID or gcloud config;");
     println!("                           region: VERTEX_LOCATION (default: global).");
     println!("    BASETEN_API_KEY      API key for baseten (OpenAI-compatible).");
-    println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://api.baseten.co/v1/).");
+    println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/).");
     println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).");
 }
 
