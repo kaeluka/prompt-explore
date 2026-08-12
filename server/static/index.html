@@ -63,6 +63,15 @@
     border-radius: 6px; padding: 0.3rem 0.7rem; cursor: pointer; font-size: 0.8rem; }
   button:hover { border-color: var(--accent); }
   .toggle { font-size: 0.78rem; }
+  /* Per-role usage tags mirror the chat bubbles: PUT is neutral, SIM is purple. */
+  .usage-line { margin-top: 0.15rem; }
+  .utag { display: inline-block; font-size: 0.66rem; font-weight: 700; padding: 0.06rem 0.4rem;
+    border-radius: 4px; letter-spacing: 0.04em; margin-right: 0.35rem; vertical-align: 1px; font-family: var(--mono); }
+  .utag.put { background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border); }
+  .utag.sim { background: rgba(124,108,255,0.14); color: #b7aaff; border: 1px solid rgba(124,108,255,0.35); }
+  .utag.ws { background: rgba(46,170,160,0.14); color: #7fd9cf; border: 1px solid rgba(46,170,160,0.4); }
+  .wsops { margin: 0.15rem 0 0.15rem 1.4rem; border-left: 2px solid rgba(46,170,160,0.4); padding-left: 0.5rem; }
+  .wsop { margin: 0.2rem 0; }
 </style>
 </head>
 <body>
@@ -82,7 +91,12 @@ import htm from 'htm';
 const html = htm.bind(h);
 
 const API = id => `/api/investigations${id ? '/'+id : ''}`;
-const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_tokens?` (${u.cache_read_tokens.toLocaleString()} cached)`:''} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm · ${u.tool_calls} tool calls` : '';
+// Format one role's UsageTotals. `tool_calls` is only the simulated PUT
+// (the sim model has no tools), so it's hidden when zero to avoid noise.
+const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_tokens?` (${u.cache_read_tokens.toLocaleString()} cached)`:''} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm${u.tool_calls?` · ${u.tool_calls} tool calls`:''}` : '';
+// One usage line: a colored role tag + the totals. Colors match the chat
+// bubbles so `put`/`sim` are recognizable across the card.
+const roleLine = (label, u, cls) => u ? html`<div class="meta usage-line"><span class=${`utag ${cls}`}>${label}</span>${fmtUsage(u)}</div>` : null;
 const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({scenarios:'simulating scenarios'})[p] || p;
@@ -125,12 +139,27 @@ function Chat({ s }) {
       const args = typeof a === 'string' ? a : JSON.stringify(a);
       out.push(html`<${Bubble} key=${'t'+i} side="put" role="PUT · tool" tool=${true} body=${`🔧 ${st.tool_call.name}(${args})`} />`);
     }
+    if (st.workspace_ops && st.workspace_ops.length) {
+      out.push(html`<${WsOps} key=${'w'+i} ops=${st.workspace_ops} />`);
+    }
     if (st.tool_response != null) {
       const t = typeof st.tool_response === 'string' ? st.tool_response : JSON.stringify(st.tool_response, null, 2);
       out.push(html`<${Bubble} key=${'r'+i} side="sim" role="SIM" body=${t} />`);
     }
   });
   return html`<div class="chat">${out.length ? out : html`<span class="meta">(no messages yet)</span>`}</div>`;
+}
+
+function WsOps({ ops }) {
+  // The simulator's workspace lookups while rendering this step — so a
+  // reader can see whether the answer was GROUNDED in the uploaded files
+  // (real reads/greps) or INVENTED. Collapsible; each op shows tool(args)
+  // and the workspace's JSON result.
+  return html`<details class="wsops"><summary class="meta" style="cursor:pointer">🔍 simulator workspace · ${ops.length} op${ops.length===1?'':'s'}: ${ops.map(o=>o.tool).join(', ')}</summary><div>${ops.map((o,i)=>{
+    const a = (o.args !== null && typeof o.args === 'object') ? JSON.stringify(o.args) : String(o.args);
+    const r = (o.result !== null && typeof o.result === 'object') ? JSON.stringify(o.result, null, 2) : String(o.result);
+    return html`<div class="wsop" key=${i}><span class="mono meta">${o.tool}(${a})</span><pre class="step" style="max-height:9em;overflow:auto;margin:0.2rem 0">${r}</pre></div>`;
+  })}</div></details>`;
 }
 
 function ScenarioPanel({ prog, input }) {
@@ -187,7 +216,7 @@ function ResultLine({ j }) {
     <div style="margin-top:0.5rem">
       <span class="badge ${rr.status}">${rr.status}</span>
       <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} trace(s)${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
-      ${r.usage ? html`<div class="meta" style="margin-top:0.2rem">${fmtUsage(r.usage)}</div>` : null}
+      ${r.usage ? html`<div style="margin-top:0.2rem">${roleLine('put', r.usage.put, 'put')}${roleLine('sim', r.usage.sim, 'sim')}</div>` : null}
       ${rr.failures && rr.failures.length ? html`<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f => html`<div class="step"><b>${(f.scenario&&f.scenario.user_message)||'(no user message)'}</b> (${f.stage}): ${f.error}</div>`)}</div></details>` : null}
     </div>`;
 }
@@ -202,6 +231,11 @@ function JobCard({ j }) {
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
         <span class="mono meta">${(j.id || '').slice(0,8)}</span>
         <span class="meta">${'· ' + relTime(j.started_at)}</span>
+        ${(j.model || j.sim_model) ? html`<span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          ${j.model ? html`<span class="utag put" title="prompt under test model">${j.model}</span>` : null}
+          ${j.sim_model ? html`<span class="utag sim" title="tool simulator model">${j.sim_model}</span>` : null}
+          ${j.workspace_files ? html`<span class="utag ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
+        </span>` : null}
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.question ? html`<span><b>question:</b> ${j.question}</span>` : html`<span class="meta" style="opacity:0.7">(no question — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />

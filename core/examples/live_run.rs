@@ -87,7 +87,7 @@ async fn main() {
         max_tokens: None,
     };
 
-    let runner = Runner::new(client.clone(), MODEL, client, MODEL);
+    let runner = Runner::new(client.clone(), MODEL, client, MODEL, prompt_explore::simulate::Workspace::empty());
     let trace = runner
         .run(&put, &scenario, &budget, 0, None)
         .await

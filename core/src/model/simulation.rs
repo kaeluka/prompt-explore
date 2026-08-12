@@ -6,6 +6,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// One operation the tool SIMULATOR performed against its simulation
+/// workspace while rendering a tool response (e.g. it read a file, or
+/// grepped, before answering). Recorded for the trace so the caller can
+/// judge whether an answer was GROUNDED in the workspace (looked up) or
+/// INVENTED by the model — transparency, not enforcement. Pure data.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct WorkspaceOp {
+    /// Which workspace tool: read, write, list_dir, or grep.
+    pub tool: String,
+    /// The arguments the simulator passed (JSON).
+    pub args: Value,
+    /// The result the workspace returned (JSON). Always a value; errors
+    /// are in-band (e.g. `{"error": "not found"}`).
+    pub result: Value,
+}
+
 /// The LLM phase an investigation is currently in. Exposed so a reader can
 /// see what the job is doing while it runs — never just a bare "running".
 /// See the API description: every LLM phase is an observable status.
@@ -191,6 +207,13 @@ pub struct TraceStep {
     pub tool_response: Option<Value>,
     /// Present on write-tool steps: world state after the patch applied.
     pub world_state_after: Option<HashMap<String, Value>>,
+    /// Workspace operations the SIMULATOR performed while rendering this
+    /// step's tool response — e.g. it read or grepped the simulation
+    /// workspace before answering. Lets the caller see whether the
+    /// response was grounded in the uploaded files or invented. Empty
+    /// when the simulator answered without consulting the workspace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_ops: Vec<WorkspaceOp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

@@ -6,7 +6,9 @@
 pub mod runner;
 pub mod simulator;
 pub mod transcript;
+pub mod workspace;
 
 pub use runner::{Runner, RunnerError};
 pub use simulator::ToolSimulator;
 pub use transcript::render_transcript;
+pub use workspace::{Workspace, WorkspaceError, unpack_zip};

@@ -15,6 +15,7 @@ use crate::model::simulation::{RunProgress, Scenario, ToolCall, Trace, TraceStep
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
 use super::simulator::{SimSession, ToolSimulator, apply_patch};
+use super::workspace::Workspace;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
@@ -36,11 +37,12 @@ impl Runner {
         put_model: impl Into<String>,
         sim_client: Arc<dyn LlmClient>,
         sim_model: impl Into<String>,
+        workspace_seed: Workspace,
     ) -> Self {
         Self {
             put_client,
             put_model: put_model.into(),
-            simulator: ToolSimulator::new(sim_client, sim_model),
+            simulator: ToolSimulator::new(sim_client, sim_model, workspace_seed),
         }
     }
 
@@ -115,6 +117,7 @@ impl Runner {
                     tool_call: None,
                     tool_response: None,
                     world_state_after: None,
+                    workspace_ops: Vec::new(),
                 });
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
@@ -127,7 +130,7 @@ impl Runner {
             // A response may carry several tool calls; each becomes its
             // own step so the trace reads as a linear story.
             for (i, tc) in response.tool_calls.iter().enumerate() {
-                let (tool_response, state_after) = self
+                let (tool_response, state_after, workspace_ops) = self
                     .handle_tool_call(
                         put, tc, &mut world_state, &mut messages, &mut sim,
                     )
@@ -146,6 +149,7 @@ impl Runner {
                     }),
                     tool_response: Some(tool_response.clone()),
                     world_state_after: state_after.clone(),
+                    workspace_ops,
                 });
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
@@ -176,8 +180,9 @@ impl Runner {
         world_state: &mut Map<String, Value>,
         messages: &mut Vec<Message>,
         sim: &mut SimSession,
-    ) -> Result<(Value, Option<std::collections::HashMap<String, Value>>), RunnerError> {
+    ) -> Result<(Value, Option<std::collections::HashMap<String, Value>>, Vec<crate::model::simulation::WorkspaceOp>), RunnerError> {
         let tool = put.tools.iter().find(|t| t.name == tc.name);
+        let mut workspace_ops = Vec::new();
 
         let outcome: Value = match tool {
             None => Value::String(format!("error: unknown tool '{}'", tc.name)),
@@ -199,6 +204,7 @@ impl Runner {
                     if let Some(patch) = sim_outcome.state_patch {
                         apply_patch(world_state, patch);
                     }
+                    workspace_ops = sim_outcome.workspace_ops;
                     sim_outcome.response
                 }
             },
@@ -215,7 +221,7 @@ impl Runner {
             }
             _ => None,
         };
-        Ok((outcome, state_after))
+        Ok((outcome, state_after, workspace_ops))
     }
 }
 

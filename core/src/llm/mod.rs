@@ -19,5 +19,5 @@ pub use genai::{ProviderClient, GenaiClient};
 pub use mock::MockLlmClient;
 pub use models::{list_all_map, ModelEntry, ProviderModels};
 pub use parse::{extract_json, parse_json};
-pub use track::{UsageTotals, UsageTracker};
+pub use track::{UsageByRole, UsageTotals, UsageTracker};
 pub use types::*;

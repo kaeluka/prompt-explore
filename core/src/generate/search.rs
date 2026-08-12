@@ -16,7 +16,7 @@ use crate::llm::LlmClient;
 use crate::model::input::{Investigation, PromptUnderTest};
 use crate::model::output::{RunResult, RunStatus, ScenarioFailure};
 use crate::model::simulation::Scenario;
-use crate::simulate::Runner;
+use crate::simulate::{Runner, Workspace};
 
 
 /// One LLM client + model name, reused across runner roles.
@@ -29,6 +29,10 @@ pub struct LlmRole {
 pub struct Investigator {
     pub runner_put: LlmRole,
     pub runner_sim: LlmRole,
+    /// The simulation-workspace seed (an uploaded zip, or empty). Cloned
+    /// per trace so every scenario run gets an isolated workspace; the
+    /// seed itself is shared by `Arc` so a large upload is paid for once.
+    pub workspace_seed: Workspace,
 }
 
 pub struct InvestigateOutcome {
@@ -175,6 +179,7 @@ impl Investigator {
         let put_role = self.runner_put.clone();
         let sim_role = self.runner_sim.clone();
         let budget = budget.clone();
+        let workspace_seed = self.workspace_seed.clone();
         let put_template = put.template.clone();
         let put_tools = put.tools.clone();
         tasks.spawn(async move {
@@ -183,6 +188,7 @@ impl Investigator {
                 &put_role.model,
                 sim_role.client,
                 &sim_role.model,
+                workspace_seed,
             );
 
             // A lightweight PUT view for the runner (design_goals are

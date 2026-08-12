@@ -95,6 +95,7 @@ async fn main() {
     let investigator = Investigator {
         runner_put: role.clone(),
         runner_sim: role.clone(),
+        workspace_seed: prompt_explore::simulate::Workspace::empty(),
     };
 
     let InvestigateOutcome {

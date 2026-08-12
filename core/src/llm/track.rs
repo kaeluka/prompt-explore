@@ -25,8 +25,24 @@ pub struct UsageTotals {
     pub tool_calls: u64,
 }
 
+/// Token usage and call counts split by model role: the prompt under
+/// test vs. the tool simulator. The two models serve very different
+/// purposes (the sim is the test ENVIRONMENT, the PUT is the thing
+/// under test), so their spend is never lumped together — a single
+/// combined total would hide which side is expensive.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, utoipa::ToSchema)]
+pub struct UsageByRole {
+    /// Usage of the prompt-under-test model (the agent being tested).
+    pub put: UsageTotals,
+    /// Usage of the tool-simulator model (the LLM that roleplays the
+    /// environment — rendering tool responses and resolving inputs).
+    pub sim: UsageTotals,
+}
+
 /// Wraps an `LlmClient` and accumulates `UsageTotals`. Cheap to clone
 /// into as many roles as needed; all clones share the same totals.
+/// To split usage by role, wrap each role's client in its OWN tracker
+/// and read each one's `totals()` separately.
 pub struct UsageTracker {
     inner: Arc<dyn LlmClient>,
     totals: Mutex<UsageTotals>,

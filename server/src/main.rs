@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use axum::{
     Router,
-    extract::{Path, Request, State},
+    body::to_bytes,
+    extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
@@ -25,10 +26,11 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole};
-use prompt_explore::llm::{list_all_map, ProviderClient, ProviderModels, UsageTotals, UsageTracker};
+use prompt_explore::llm::{list_all_map, ProviderClient, ProviderModels, UsageByRole, UsageTracker};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
+use prompt_explore::simulate::{Workspace, unpack_zip};
 use serde_json::Value;
 
 const MODEL: &str = "glm-5.2";
@@ -63,6 +65,20 @@ struct Job {
     /// The full input scenarios (narrative, world_state, simulator_notes),
     /// so the ground truth is visible while the run unfolds.
     scenarios: Vec<Scenario>,
+    /// The resolved model name running the prompt under test (the `model`
+    /// from the request, or the server default). Stored so the dashboard
+    /// can show which model produced the traces — set at job creation,
+    /// visible while running.
+    model: String,
+    /// The resolved model name running the tool simulator (the `sim_model`
+    /// from the request, defaulting to the PUT model, then the server
+    /// default). The simulator is the test environment; surfacing it lets
+    /// a reader judge whether it was powerful enough to render believably.
+    sim_model: String,
+    /// How many files seeded the simulation workspace (0 if no zip was
+    /// uploaded). Surfaced so a reader knows whether the simulator had a
+    /// materialized world to consult, or answered purely from narrative.
+    workspace_files: usize,
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
@@ -124,8 +140,13 @@ struct InvestigateResponse {
     /// Every completed run — the evidence. The caller reads these traces
     /// and judges; the harness produces no verdict.
     attempts: Vec<AttemptView>,
-    /// Cumulative token usage and call counts across the whole run.
-    usage: UsageTotals,
+    /// Cumulative token usage and call counts across the whole run,
+    /// split by model role: the prompt under test (`put`) and the tool
+    /// simulator (`sim`). Read them separately — the sim is the test
+    /// environment (often the bigger spender, since every tool response
+    /// and input resolution goes through it), the PUT is the agent
+    /// under test.
+    usage: UsageByRole,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
@@ -164,6 +185,22 @@ struct JobView {
     /// what they are worried about). Optional; surfaced to guide reading
     /// the traces. Nothing is judged against it.
     question: Option<String>,
+    /// The resolved model name that ran the prompt under test (the `model`
+    /// from the request, or the server default). Echoed RESOLVED so a
+    /// reader knows exactly what produced the traces — including the
+    /// default, which the request leaves implicit.
+    model: String,
+    /// The resolved model name that ran the tool simulator (the `sim_model`
+    /// from the request, defaulting to the PUT model, then the server
+    /// default). The simulator is the test ENVIRONMENT; a reader needs to
+    /// see it to judge whether it was powerful enough to render the
+    /// world believably.
+    sim_model: String,
+    /// How many files seeded the simulation workspace (0 = no zip upload;
+    /// the simulator answered from narrative alone). The workspace is an
+    /// in-memory filesystem the SIMULATOR consults via read/write/list_dir/
+    /// grep — it is NOT the PUT's tools. See the endpoint description.
+    workspace_files: usize,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative = ground truth, etc.).
@@ -242,7 +279,31 @@ struct JobSummary {
                        thoroughly. When simulation quality is insufficient, iterate with two \
                        levers and re-run the same scenarios: (a) sharpen the scenario \
                        NARRATIVE — tighter facts and negative facts; (b) use a stronger \
-                       SIM_MODEL — it must be powerful enough to simulate believably."
+                       SIM_MODEL — it must be powerful enough to simulate believably.
+ \
+                       THE SIMULATION WORKSPACE (optional, closed-world materialization). \
+                       POST /api/investigations also accepts `multipart/form-data` with an \
+                       optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY \
+                       (never on disk) that seeds an in-memory filesystem the tool SIMULATOR \
+                       consults. Narratives remain the only mechanism that generalizes (open \
+                       worlds can't be materialized), but a zip IS a closed world — so when \
+                       you have one (a repo slice, a corpus of articles, a mailbox export) you \
+                       can hand it over and the simulator answers reads/greps/listings \
+                       truthfully instead of inventing them. The simulator accesses the \
+                       workspace with four tools — read, write, list_dir, grep — and it is \
+                       named the \"simulation workspace\" in its own prompt, so your scenario \
+                       `world` can address it by that name and instruct it (e.g. \"use the \
+                       write tool to record any generated source code\"). The workspace is \
+                       EPHEMERAL and per-trace (every scenario run gets a fresh copy; the \
+                       agent under test never sees it — only tool responses). WHEN the \
+                       simulator uses it is the world narrative's policy, not the harness's: \
+                       state what the zip contains, where things live, and its completeness \
+                       stance (closed: \"these are ALL the files; anything else is not \
+                       found\"; partial: \"these are SOME files; simulate the rest\"). Each \
+                       trace step records the simulator's workspace operations \
+                       (`workspace_ops`) so you can judge whether an answer was grounded in \
+                       the uploaded files or invented. Caps: ≤ 5 MB compressed, ≤ 50 MB \
+                       decompressed; zip-slip entries are rejected."
     ),
     paths(index, list_investigations, create_investigation, get_investigation, list_models)
 )]
@@ -317,7 +378,9 @@ async fn main() {
         .route("/vendor/htm.mjs", get(vendor_htm))
         .route(
             "/api/investigations",
-            get(list_investigations).post(create_investigation),
+            get(list_investigations)
+                .post(create_investigation)
+                .route_layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/models", get(list_models))
@@ -424,12 +487,37 @@ async fn index() -> impl axum::response::IntoResponse {
 /// surface the resulting traces. There is no judge — the caller reads
 /// the traces and judges. Runs in the background; poll the returned id.
 /// The result includes every attempt (scenario + trace) and token usage.
+///
+/// Two request shapes are accepted:
+/// - `application/json` — the body is an `InvestigateRequest` (no workspace).
+/// - `multipart/form-data` — TWO parts: a `request` part whose body is the
+///   `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body
+///   is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never
+///   written to disk) and seeds the SIMULATION WORKSPACE — an in-memory
+///   filesystem the tool SIMULATOR consults with four tools (read, write,
+///   list_dir, grep). Hard caps: the compressed zip must be ≤ 5 MB and
+///   decompress to ≤ 50 MB total, or the request is rejected. Zip entries
+///   that escape the workspace root (zip-slip) are rejected.
+///
+/// The workspace is the simulator's CAPABILITY, not a policy. The harness
+/// tells the simulator the workspace exists, how many files it contains,
+/// and that it is ephemeral (per-trace: every scenario run gets a fresh
+/// copy; the agent under test NEVER sees it — only tool responses). WHEN
+/// and WHETHER the simulator uses it — including tactics like persisting
+/// generated content — is the WORLD NARRATIVE's job: say in the scenario's
+/// `world` what the zip contains, where things live, and its completeness
+/// stance ("these are ALL the files; anything else is not found" vs "these
+/// are SOME files; simulate the rest"). The harness enforces none of that;
+/// the simulator's workspace operations appear in each trace step
+/// (`workspace_ops`) so you can judge whether an answer was grounded in the
+/// uploaded files or invented.
 #[utoipa::path(
     post,
     path = "/api/investigations",
     request_body(
         content = InvestigateRequest,
         content_type = "application/json",
+        description = "Send as `application/json` (no workspace), OR as `multipart/form-data` with a `request` part (this JSON) and an optional `workspace` part (a .zip that seeds the simulator's in-memory filesystem). See the endpoint description.",
         examples((
             "minimal" = (
                 summary = "A tool-less PUT, one scenario, no model overrides",
@@ -462,26 +550,137 @@ async fn index() -> impl axum::response::IntoResponse {
         ))
     ),
     responses(
-        (status = 202, description = "Investigation job created", body = JobCreated)
+        (status = 202, description = "Investigation job created", body = JobCreated),
+        (status = 400, description = "Malformed request body or invalid/oversized zip")
     )
 )]
 async fn create_investigation(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<InvestigateRequest>,
-) -> (StatusCode, Json<JobCreated>) {
-    let id = spawn_investigation(state, req);
-    (StatusCode::ACCEPTED, Json(JobCreated { id }))
+    req: Request,
+) -> Response {
+    let content_type = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let (investigate_req, workspace_seed) = if content_type.starts_with("multipart/") {
+        match parse_multipart_request(req, &state).await {
+            Ok(v) => v,
+            Err(msg) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": msg })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        // application/json (the default): the body is the JSON, no workspace.
+        let limit = 16 * 1024 * 1024;
+        let bytes = match to_bytes(req.into_body(), limit).await {
+            Ok(b) => b,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": format!("could not read request body: {e}") })),
+                )
+                    .into_response();
+            }
+        };
+        let r: InvestigateRequest = match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("body is not valid InvestigateRequest JSON: {e}")
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        (r, Workspace::empty())
+    };
+
+    let id = spawn_investigation(state, investigate_req, workspace_seed);
+    (StatusCode::ACCEPTED, Json(JobCreated { id })).into_response()
 }
 
-/// Create a job for `req`, spawn its run, and return the job id. Shared
+/// Parse a `multipart/form-data` body: a required `request` part (the
+/// `InvestigateRequest` JSON) and an optional `workspace` part (a .zip
+/// that seeds the simulation workspace). Returns an error string on any
+/// failure (reported to the caller as HTTP 400).
+async fn parse_multipart_request(
+    req: Request,
+    state: &Arc<AppState>,
+) -> Result<(InvestigateRequest, Workspace), String> {
+    let mut multipart = Multipart::from_request(req, state)
+        .await
+        .map_err(|e| format!("could not begin multipart parsing: {e}"))?;
+    let mut request: Option<InvestigateRequest> = None;
+    let mut workspace = Workspace::empty();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| format!("could not read multipart field: {e}"))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "request" => {
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| format!("could not read 'request' part: {e}"))?;
+                let r: InvestigateRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| {
+                        format!("the 'request' part is not valid InvestigateRequest JSON: {e}")
+                    })?;
+                request = Some(r);
+            }
+            "workspace" => {
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| format!("could not read 'workspace' part: {e}"))?;
+                // unpack_zip enforces the compressed/decompressed caps and
+                // zip-slip rejection; nothing is written to disk.
+                workspace = unpack_zip(&bytes).map_err(|e| e.to_string())?;
+            }
+            other => {
+                eprintln!("ignoring unknown multipart part '{other}'");
+            }
+        }
+    }
+    let request = request.ok_or_else(|| {
+        "multipart body is missing the required 'request' part \
+         (the InvestigateRequest JSON)"
+            .to_string()
+    })?;
+    Ok((request, workspace))
+}
+
 /// Create a job for `req`, spawn its run, and return the job id.
-fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String {
+/// `workspace_seed` seeds the simulator's in-memory workspace for every
+/// trace (cloned per trace; the seed is shared by Arc).
+fn spawn_investigation(
+    state: Arc<AppState>,
+    req: InvestigateRequest,
+    workspace_seed: Workspace,
+) -> String {
     let id = Uuid::new_v4().to_string();
     let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
     let started_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    // Resolve the model names now (defaults applied) so they can be
+    // surfaced on the job immediately — visible while the run is still
+    // in flight, not only after it finishes.
+    let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
+    let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
+    let workspace_files = workspace_seed.file_count();
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
@@ -493,19 +692,24 @@ fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String 
             question: req.investigation.question.clone(),
             put: req.put.clone(),
             scenarios: req.scenarios.clone(),
+            model: put_model.clone(),
+            sim_model: sim_model.clone(),
+            workspace_files,
         },
     );
 
     let state2 = state.clone();
     let id2 = id.clone();
-    let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
-    let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
     tokio::spawn(async move {
         let inner = state2.client.as_ref().unwrap().clone();
-        let tracker = Arc::new(UsageTracker::new(inner));
+        // One tracker per role so usage is attributable to the PUT
+        // model vs. the simulator model separately.
+        let put_tracker = Arc::new(UsageTracker::new(inner.clone()));
+        let sim_tracker = Arc::new(UsageTracker::new(inner));
         let investigator = Investigator {
-            runner_put: LlmRole { client: tracker.clone(), model: put_model.clone() },
-            runner_sim: LlmRole { client: tracker.clone(), model: sim_model },
+            runner_put: LlmRole { client: put_tracker.clone(), model: put_model.clone() },
+            runner_sim: LlmRole { client: sim_tracker.clone(), model: sim_model },
+            workspace_seed,
         };
 
         let outcome = investigator
@@ -541,7 +745,10 @@ fn spawn_investigation(state: Arc<AppState>, req: InvestigateRequest) -> String 
                 result: outcome.result,
                 scenarios_run: outcome.scenarios.len(),
                 attempts,
-                usage: tracker.totals(),
+                usage: UsageByRole {
+                    put: put_tracker.totals(),
+                    sim: sim_tracker.totals(),
+                },
             });
         }
     });
@@ -604,6 +811,9 @@ async fn get_investigation(
         phase,
         started_at: job.started_at,
         question: job.question.clone(),
+        model: job.model.clone(),
+        sim_model: job.sim_model.clone(),
+        workspace_files: job.workspace_files,
         put: job.put.clone(),
         scenarios: job.scenarios.clone(),
         progress: progress_snapshot,

@@ -7,7 +7,7 @@ use serde_json::json;
 
 use prompt_explore::llm::{ChatResponse, MockLlmClient, ToolCallRequest};
 use prompt_explore::model::*;
-use prompt_explore::simulate::Runner;
+use prompt_explore::simulate::{Runner, Workspace};
 
 fn support_put() -> PromptUnderTest {
     PromptUnderTest {
@@ -79,6 +79,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
         "put-model",
         Arc::new(sim_model),
         "sim-model",
+        Workspace::empty(),
     );
     let trace = runner
         .run(&support_put(), &scenario(), &budget(), 0, None)
@@ -128,6 +129,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         "put-model",
         Arc::new(sim_model),
         "sim-model",
+        Workspace::empty(),
     );
     let trace = runner
         .run(&support_put(), &scenario(), &budget(), 0, None)
@@ -155,6 +157,7 @@ async fn empty_tool_array_means_single_shot() {
         "put-model",
         Arc::new(sim_model),
         "sim-model",
+        Workspace::empty(),
     );
     let trace = runner
         .run(&put, &scenario(), &budget(), 0, None)

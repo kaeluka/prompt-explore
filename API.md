@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. The question is advisory framing — it states what the caller is worried about and is surfaced with the result to guide reading the traces — not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.
+Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. The question is advisory framing — it states what the caller is worried about and is surfaced with the result to guide reading the traces — not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.  THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the "simulation workspace" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. "use the write tool to record any generated source code"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: "these are ALL the files; anything else is not found"; partial: "these are SOME files; simulate the rest"). Each trace step records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 5 MB compressed, ≤ 50 MB decompressed; zip-slip entries are rejected.
 
 Version: `0.1.0` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -24,7 +24,7 @@ List all jobs (for the dashboard). Running jobs first, then by recency. Returns 
 
 ### `POST /api/investigations`
 
-Start an investigation: run every given scenario against the PUT and surface the resulting traces. There is no judge — the caller reads the traces and judges. Runs in the background; poll the returned id. The result includes every attempt (scenario + trace) and token usage.
+Two request shapes are accepted: - `application/json` — the body is an `InvestigateRequest` (no workspace). - `multipart/form-data` — TWO parts: a `request` part whose body is the   `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body   is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never   written to disk) and seeds the SIMULATION WORKSPACE — an in-memory   filesystem the tool SIMULATOR consults with four tools (read, write,   list_dir, grep). Hard caps: the compressed zip must be ≤ 5 MB and   decompress to ≤ 50 MB total, or the request is rejected. Zip entries   that escape the workspace root (zip-slip) are rejected.  The workspace is the simulator's CAPABILITY, not a policy. The harness tells the simulator the workspace exists, how many files it contains, and that it is ephemeral (per-trace: every scenario run gets a fresh copy; the agent under test NEVER sees it — only tool responses). WHEN and WHETHER the simulator uses it — including tactics like persisting generated content — is the WORLD NARRATIVE's job: say in the scenario's `world` what the zip contains, where things live, and its completeness stance ("these are ALL the files; anything else is not found" vs "these are SOME files; simulate the rest"). The harness enforces none of that; the simulator's workspace operations appear in each trace step (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented.
 
 Body: [`InvestigateRequest`](#investigaterequest)
 
@@ -40,6 +40,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Status | Response |
 |---|---|
 | `202` | Investigation job created: [`JobCreated`](#jobcreated) |
+| `400` | Malformed request body or invalid/oversized zip |
 
 ### `GET /api/investigations/{id}`
 
@@ -96,7 +97,7 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `attempts` | [`AttemptView`](#attemptview)[] | yes | Every completed run — the evidence. The caller reads these traces and judges; the harness produces no verdict. |
 | `result` | [`RunResult`](#runresult) | yes |  |
 | `scenarios_run` | integer | yes | How many of the input scenarios completed a trace. |
-| `usage` | [`UsageTotals`](#usagetotals) | yes | Cumulative token usage and call counts across the whole run. |
+| `usage` | [`UsageByRole`](#usagebyrole) | yes | Cumulative token usage and call counts across the whole run, split by model role: the prompt under test (`put`) and the tool simulator (`sim`). Read them separately — the sim is the test environment (often the bigger spender, since every tool response and input resolution goes through it), the PUT is the agent under test. |
 
 ### `Investigation`
 
@@ -131,14 +132,17 @@ Values: `running`, `done`, `failed`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string? | no |  |
+| `model` | string | yes | The resolved model name that ran the prompt under test (the `model` from the request, or the server default). Echoed RESOLVED so a reader knows exactly what produced the traces — including the default, which the request leaves implicit. |
 | `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in (see RunPhase: scenarios). This is the observable status of the job's LLM work. Mirrors `progress.phase`. |
 | `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + steps simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes | The prompt under test. |
 | `question` | string? | no | The investigation question (advisory framing for the caller — what they are worried about). Optional; surfaced to guide reading the traces. Nothing is judged against it. |
 | `result` | [`InvestigateResponse`](#investigateresponse)? | no |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The full input scenarios (narrative = ground truth, etc.). |
+| `sim_model` | string | yes | The resolved model name that ran the tool simulator (the `sim_model` from the request, defaulting to the PUT model, then the server default). The simulator is the test ENVIRONMENT; a reader needs to see it to judge whether it was powerful enough to render the world believably. |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
+| `workspace_files` | integer | yes | How many files seeded the simulation workspace (0 = no zip upload; the simulator answered from narrative alone). The workspace is an in-memory filesystem the SIMULATOR consults via read/write/list_dir/ grep — it is NOT the PUT's tools. See the endpoint description. |
 
 ### `ModelEntry`
 
@@ -302,7 +306,17 @@ Values: `read`, `write`
 | `model_output` | string | yes | The model's text output for this turn (empty on non-first tool calls within one completion). |
 | `tool_call` | [`ToolCall`](#toolcall)? | no |  |
 | `tool_response` | any | no | The simulated tool response. |
+| `workspace_ops` | [`WorkspaceOp`](#workspaceop)[] | no | Workspace operations the SIMULATOR performed while rendering this step's tool response — e.g. it read or grepped the simulation workspace before answering. Lets the caller see whether the response was grounded in the uploaded files or invented. Empty when the simulator answered without consulting the workspace. |
 | `world_state_after` | object? | no | Present on write-tool steps: world state after the patch applied. |
+
+### `UsageByRole`
+
+Token usage and call counts split by model role: the prompt under test vs. the tool simulator. The two models serve very different purposes (the sim is the test ENVIRONMENT, the PUT is the thing under test), so their spend is never lumped together — a single combined total would hide which side is expensive.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `put` | [`UsageTotals`](#usagetotals) | yes | Usage of the prompt-under-test model (the agent being tested). |
+| `sim` | [`UsageTotals`](#usagetotals) | yes | Usage of the tool-simulator model (the LLM that roleplays the environment — rendering tool responses and resolving inputs). |
 
 ### `UsageTotals`
 
@@ -315,3 +329,13 @@ Cumulative usage across every call routed through a `UsageTracker`.
 | `llm_calls` | integer | yes | Completions requested across all roles (the runner PUT and the tool simulator). |
 | `output_tokens` | integer | yes |  |
 | `tool_calls` | integer | yes | Tool calls the model requested. Only the simulated PUT has tools, so this counts tool calls in simulated traces. |
+
+### `WorkspaceOp`
+
+One operation the tool SIMULATOR performed against its simulation workspace while rendering a tool response (e.g. it read a file, or grepped, before answering). Recorded for the trace so the caller can judge whether an answer was GROUNDED in the workspace (looked up) or INVENTED by the model — transparency, not enforcement. Pure data.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `args` | any | yes | The arguments the simulator passed (JSON). |
+| `result` | any | yes | The result the workspace returned (JSON). Always a value; errors are in-band (e.g. `{"error": "not found"}`). |
+| `tool` | string | yes | Which workspace tool: read, write, list_dir, or grep. |
