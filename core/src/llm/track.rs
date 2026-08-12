@@ -23,6 +23,14 @@ pub struct UsageTotals {
     /// Tool calls the model requested. Only the simulated PUT has
     /// tools, so this counts tool calls in simulated traces.
     pub tool_calls: u64,
+    /// Estimated USD cost of this usage, when the server knows the
+    /// per-token pricing for the model that produced it (e.g.
+    /// OpenRouter models). Absent for subscription / no-pricing
+    /// providers and for models the catalog doesn't price. The tracker
+    /// never sets this (it sees tokens, not prices); the server fills
+    /// it in from the model catalog when assembling a response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 /// Token usage and call counts split by model role: the prompt under

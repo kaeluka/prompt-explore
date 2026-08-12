@@ -325,6 +325,7 @@ Cumulative usage across every call routed through a `UsageTracker`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `cache_read_tokens` | integer | yes |  |
+| `cost_usd` | number? | no | Estimated USD cost of this usage, when the server knows the per-token pricing for the model that produced it (e.g. OpenRouter models). Absent for subscription / no-pricing providers and for models the catalog doesn't price. The tracker never sets this (it sees tokens, not prices); the server fills it in from the model catalog when assembling a response. |
 | `input_tokens` | integer | yes |  |
 | `llm_calls` | integer | yes | Completions requested across all roles (the runner PUT and the tool simulator). |
 | `output_tokens` | integer | yes |  |

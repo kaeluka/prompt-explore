@@ -392,3 +392,50 @@ fn pricing_map(p: OpenRouterPricing) -> Option<BTreeMap<String, String>> {
 pub async fn list_all_map(client: &Client) -> BTreeMap<String, ProviderModels> {
     list_all(client).await.into_iter().collect()
 }
+
+/// Build a `model name → pricing` map from a provider catalog, keeping
+/// only entries that report per-token pricing. Keys are the full
+/// namespaced model names — the same strings callers paste into a
+/// request's `model` field — so a job's stored model name can be looked
+/// up directly.
+pub fn catalog_pricing_map(
+    providers: &BTreeMap<String, ProviderModels>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for pm in providers.values() {
+        if let ProviderModels::Available { models } = pm {
+            for m in models {
+                if let Some(p) = &m.pricing {
+                    out.insert(m.name.clone(), p.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Estimated USD cost of one usage total, from a per-token pricing map
+/// (the `prompt` / `completion` / `input_cache_read` vocabulary).
+///
+/// `cache_read_tokens` is a subset of `input_tokens` (see `Usage`), so
+/// the full `prompt` rate applies only to the uncached remainder; cached
+/// tokens are billed at `input_cache_read`, falling back to `prompt`
+/// when the provider quotes no cache rate. Returns `None` when the map
+/// lacks the `prompt` or `completion` rate needed to price the run —
+/// the caller then leaves cost unset rather than guessing.
+pub fn cost_usd(
+    input_tokens: u64,
+    cache_read_tokens: u64,
+    output_tokens: u64,
+    pricing: &BTreeMap<String, String>,
+) -> Option<f64> {
+    let rate = |k: &str| pricing.get(k)?.parse::<f64>().ok();
+    let prompt = rate("prompt")?;
+    let completion = rate("completion")?;
+    let cache = rate("input_cache_read").unwrap_or(prompt);
+    let uncached = input_tokens.saturating_sub(cache_read_tokens) as f64;
+    let usd =
+        uncached * prompt + cache_read_tokens as f64 * cache + output_tokens as f64 * completion;
+    // Round to nano-dollars so float noise never shows in the output.
+    Some((usd * 1e9).round() / 1e9)
+}

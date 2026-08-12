@@ -92,8 +92,15 @@ const html = htm.bind(h);
 
 const API = id => `/api/investigations${id ? '/'+id : ''}`;
 // Format one role's UsageTotals. `tool_calls` is only the simulated PUT
+// Estimated USD cost, only present for priced (e.g. OpenRouter) models.
+// Scale precision to magnitude so sub-cent costs stay meaningful.
+const fmtUsd = c => {
+  if (c == null) return '';
+  const s = c >= 1 ? c.toFixed(2) : c >= 0.0001 ? c.toPrecision(2) : c.toExponential(1);
+  return ` · ~$${s}`;
+};
 // (the sim model has no tools), so it's hidden when zero to avoid noise.
-const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_tokens?` (${u.cache_read_tokens.toLocaleString()} cached)`:''} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm${u.tool_calls?` · ${u.tool_calls} tool calls`:''}` : '';
+const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_tokens?` (${u.cache_read_tokens.toLocaleString()} cached)`:''} / ${u.output_tokens.toLocaleString()} out · ${u.llm_calls} llm${u.tool_calls?` · ${u.tool_calls} tool calls`:''}${fmtUsd(u.cost_usd)}` : '';
 // One usage line: a colored role tag + the totals. Colors match the chat
 // bubbles so `put`/`sim` are recognizable across the card.
 const roleLine = (label, u, cls) => u ? html`<div class="meta usage-line"><span class=${`utag ${cls}`}>${label}</span>${fmtUsage(u)}</div>` : null;

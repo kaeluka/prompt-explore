@@ -26,7 +26,10 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use prompt_explore::generate::{Investigator, LlmRole};
-use prompt_explore::llm::{list_all_map, ProviderClient, ProviderModels, UsageByRole, UsageTracker};
+use prompt_explore::llm::{
+    catalog_pricing_map, cost_usd, list_all_map, ProviderClient, ProviderModels, UsageByRole,
+    UsageTracker,
+};
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
@@ -433,10 +436,17 @@ struct ModelsResponse {
 async fn list_models(
     State(state): State<Arc<AppState>>,
 ) -> Json<ModelsResponse> {
+    Json(models_cached(&state).await)
+}
+
+/// The model catalog, cached briefly so repeated listing is cheap.
+/// Shared by `GET /api/models` and by cost attribution at result time
+/// (pricing comes from the same catalog, so both stay in sync).
+async fn models_cached(state: &AppState) -> ModelsResponse {
     const TTL: Duration = Duration::from_secs(60);
     if let Some((fetched_at, cached)) = state.models_cache.lock().unwrap().clone() {
         if fetched_at.elapsed() < TTL && cached.server_default_provider == state.default_provider {
-            return Json(cached);
+            return cached;
         }
     }
     let providers = list_all_map(&state.models_client).await;
@@ -446,7 +456,7 @@ async fn list_models(
         providers,
     };
     *state.models_cache.lock().unwrap() = Some((Instant::now(), resp.clone()));
-    Json(resp)
+    resp
 }
 
 /// Discovery: every response advertises the OpenAPI spec
@@ -706,6 +716,10 @@ fn spawn_investigation(
         // model vs. the simulator model separately.
         let put_tracker = Arc::new(UsageTracker::new(inner.clone()));
         let sim_tracker = Arc::new(UsageTracker::new(inner));
+        // Keep the model names for cost attribution below; `sim_model`
+        // is moved into the runner role.
+        let put_model_cost = put_model.clone();
+        let sim_model_cost = sim_model.clone();
         let investigator = Investigator {
             runner_put: LlmRole { client: put_tracker.clone(), model: put_model.clone() },
             runner_sim: LlmRole { client: sim_tracker.clone(), model: sim_model },
@@ -738,6 +752,21 @@ fn spawn_investigation(
             })
             .collect();
 
+        // Attach estimated USD cost where the model catalog prices the
+        // model that produced the usage. Absent (field omitted) for
+        // subscription / no-pricing providers, so the absence of a
+        // number is itself the signal "we don't know the cost".
+        let pricing = catalog_pricing_map(&models_cached(&state2).await.providers);
+        let mut put_usage = put_tracker.totals();
+        let mut sim_usage = sim_tracker.totals();
+        put_usage.cost_usd = pricing
+            .get(&put_model_cost)
+            .and_then(|p| cost_usd(put_usage.input_tokens, put_usage.cache_read_tokens, put_usage.output_tokens, p));
+        sim_usage.cost_usd = pricing
+            .get(&sim_model_cost)
+            .and_then(|p| cost_usd(sim_usage.input_tokens, sim_usage.cache_read_tokens, sim_usage.output_tokens, p));
+        let usage = UsageByRole { put: put_usage, sim: sim_usage };
+
         let mut jobs = state2.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id2) {
             job.status = JobStatus::Done;
@@ -745,10 +774,7 @@ fn spawn_investigation(
                 result: outcome.result,
                 scenarios_run: outcome.scenarios.len(),
                 attempts,
-                usage: UsageByRole {
-                    put: put_tracker.totals(),
-                    sim: sim_tracker.totals(),
-                },
+                usage,
             });
         }
     });
