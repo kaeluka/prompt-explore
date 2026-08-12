@@ -178,6 +178,14 @@ struct JobCreated {
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct JobView {
+    /// The job's id (same value as the `{id}` path segment and the id in
+    /// `JobSummary`). Echoed in the body so a consumer holding only this
+    /// representation knows which job it is — without it, a dashboard that
+    /// reconciles a list of views by key has nothing stable to key on and
+    /// silently falls back to positional matching (which leaks per-item
+    /// UI state such as an unfolded conversation to whatever job sorts
+    /// into that slot next).
+    id: String,
     status: JobStatus,
     /// Which LLM phase the investigation is currently in (see RunPhase:
     /// scenarios). This is the observable status of the job's LLM work.
@@ -833,6 +841,7 @@ async fn get_investigation(
     let progress_snapshot = job.progress.lock().unwrap().clone();
     let phase = progress_snapshot.phase;
     Ok(Json(JobView {
+        id: id.clone(),
         status: job.status,
         phase,
         started_at: job.started_at,

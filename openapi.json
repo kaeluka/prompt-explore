@@ -378,6 +378,7 @@
       "JobView": {
         "type": "object",
         "required": [
+          "id",
           "status",
           "phase",
           "started_at",
@@ -394,6 +395,10 @@
               "string",
               "null"
             ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The job's id (same value as the `{id}` path segment and the id in\n`JobSummary`). Echoed in the body so a consumer holding only this\nrepresentation knows which job it is — without it, a dashboard that\nreconciles a list of views by key has nothing stable to key on and\nsilently falls back to positional matching (which leaks per-item\nUI state such as an unfolded conversation to whatever job sorts\ninto that slot next)."
           },
           "model": {
             "type": "string",
