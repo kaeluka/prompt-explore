@@ -35,6 +35,9 @@ use prompt_explore::model::output::RunResult;
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
 use prompt_explore::simulate::{Workspace, unpack_zip};
 use serde_json::Value;
+use subtle::ConstantTimeEq;
+use utoipa::Modify;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 const MODEL: &str = "glm-5.2";
 
@@ -48,6 +51,10 @@ struct AppState {
     /// so repeated listing doesn't hammer the providers.
     models_client: prompt_explore::llm::GenaiClient,
     models_cache: Mutex<Option<(Instant, ModelsResponse)>>,
+    /// Bearer token required on `/api/*` routes when set
+    /// (PROMPT_EXPLORE_API_TOKEN). `None`/empty = open mode (no auth).
+    /// Stored raw; compared constant-time.
+    api_token: Option<String>,
 }
 
 struct Job {
@@ -314,11 +321,46 @@ struct JobSummary {
                        trace step records the simulator's workspace operations \
                        (`workspace_ops`) so you can judge whether an answer was grounded in \
                        the uploaded files or invented. Caps: ≤ 5 MB compressed, ≤ 50 MB \
-                       decompressed; zip-slip entries are rejected."
+                       decompressed; zip-slip entries are rejected.
+
+ \
+                       AUTHENTICATION. The server is open by default. When \
+                       PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* \
+                       route EXCEPT /api/openapi.json requires an `Authorization: \
+                       Bearer <token>` header (security scheme `api_token`). The \
+                       web UI prompts for the token and stores it in localStorage."
     ),
+    modifiers(&SecurityAddon),
     paths(index, list_investigations, create_investigation, get_investigation, list_models)
 )]
 struct ApiDoc;
+
+/// Adds the bearer `api_token` security scheme referenced by the
+/// protected operations. `#[openapi]` components only support `schemas` and
+/// `responses`, so a security scheme is injected via a `Modify` addon.
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi
+            .components
+            .get_or_insert_with(utoipa::openapi::Components::new)
+            .add_security_scheme(
+                "api_token",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .description(Some(
+                            "Bearer token set via PROMPT_EXPLORE_API_TOKEN. \
+                             When the server runs with a token, every /api/* \
+                             route except /api/openapi.json requires an \
+                             `Authorization: Bearer <token>` header.",
+                        ))
+                        .build(),
+                ),
+            );
+    }
+}
 
 fn print_help() {
     println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
@@ -345,6 +387,10 @@ fn print_help() {
     println!("    BASETEN_API_KEY      API key for baseten (OpenAI-compatible).");
     println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/).");
     println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).");
+    println!("    PROMPT_EXPLORE_API_TOKEN  Optional bearer token. When set, every /api/* route");
+    println!("                           (except the OpenAPI spec) requires an");
+    println!("                           `Authorization: Bearer <token>` header.");
+    println!("                           Empty or unset = open mode (no auth).");
 }
 
 #[tokio::main]
@@ -379,12 +425,18 @@ async fn main() {
         "gemini" => ProviderClient::gemini(),
         other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock | baseten | gemini)"),
     };
+    let api_token = std::env::var("PROMPT_EXPLORE_API_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    let token_set = api_token.is_some();
+
     let state = Arc::new(AppState {
         client: Some(Arc::new(client)),
         jobs: Mutex::new(HashMap::new()),
         default_provider: provider.clone(),
         models_client: prompt_explore::llm::GenaiClient::builder().build(),
         models_cache: Mutex::new(None),
+        api_token,
     });
 
     let app = Router::new()
@@ -402,10 +454,23 @@ async fn main() {
         .route("/api/investigations/{id}", get(get_investigation))
         .route("/api/models", get(list_models))
         .route("/api/openapi.json", get(openapi_json))
+        // Middleware order (axum applies the last layer outermost, i.e. first):
+        // require_auth gates /api/*, then security headers, then spec discovery.
         .layer(middleware::from_fn(spec_discovery))
+        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .with_state(state);
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let public_bind = addr.starts_with("0.0.0.0") || addr.starts_with("::");
+    if public_bind && !token_set {
+        eprintln!(
+            "WARNING: listening on {addr} with no PROMPT_EXPLORE_API_TOKEN set — \
+             the API is reachable on the LAN and POST /api/investigations spends \
+             your provider credits. Set PROMPT_EXPLORE_API_TOKEN to require a \
+             bearer token on /api/* routes."
+        );
+    }
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     eprintln!("prompt-explore server listening on http://{addr}");
     axum::serve(listener, app).await.unwrap();
@@ -445,7 +510,11 @@ struct ModelsResponse {
     get,
     path = "/api/models",
     tag = "models",
-    responses((status = 200, description = "Available models per provider", body = ModelsResponse))
+    security(("api_token" = [])),
+    responses(
+        (status = 200, description = "Available models per provider", body = ModelsResponse),
+        (status = 401, description = "Missing or invalid bearer token")
+    )
 )]
 async fn list_models(
     State(state): State<Arc<AppState>>,
@@ -483,6 +552,67 @@ async fn spec_discovery(req: Request, next: Next) -> Response {
         header::LINK,
         HeaderValue::from_static(r#"</openapi.json>; rel="service-desc", </>; rel="service-doc""#),
     );
+    res
+}
+
+/// Bearer-token gate for `/api/*` routes. No-op when the server runs open
+/// (no PROMPT_EXPLORE_API_TOKEN). The OpenAPI spec stays public for
+/// discovery; everything else under `/api/` requires a valid token.
+async fn require_auth(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.api_token.as_deref() else {
+        return next.run(req).await;
+    };
+    let path = req.uri().path();
+    if !path.starts_with("/api/") || path == "/api/openapi.json" {
+        return next.run(req).await;
+    }
+    let provided = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let ok = provided.is_some_and(|p| constant_time_eq(p.as_bytes(), expected.as_bytes()));
+    if ok {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            [
+                (header::WWW_AUTHENTICATE, "Bearer"),
+                (header::CONTENT_TYPE, "application/json"),
+            ],
+            Json(serde_json::json!({
+                "error": "unauthorized: missing or invalid bearer token \
+                          (send `Authorization: Bearer <PROMPT_EXPLORE_API_TOKEN>`)"
+            })),
+        )
+            .into_response()
+    }
+}
+
+/// Constant-time byte comparison for the bearer token, so the auth check
+/// does not leak the token via early-exit timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    bool::from(a.ct_eq(b))
+}
+
+/// Minimal hardening headers on every response. The CSP allows the web UI's
+/// inline styles and ES-module scripts (it is a single self-contained page
+/// with no third-party origins), while pinning everything else down.
+async fn security_headers(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"),
+    );
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     res
 }
 
@@ -573,9 +703,11 @@ async fn index() -> impl axum::response::IntoResponse {
             )
         ))
     ),
+    security(("api_token" = [])),
     responses(
         (status = 202, description = "Investigation job created", body = JobCreated),
-        (status = 400, description = "Malformed request body or invalid/oversized zip")
+        (status = 400, description = "Malformed request body or invalid/oversized zip"),
+        (status = 401, description = "Missing or invalid bearer token")
     )
 )]
 async fn create_investigation(
@@ -801,7 +933,11 @@ fn spawn_investigation(
 #[utoipa::path(
     get,
     path = "/api/investigations",
-    responses((status = 200, description = "All jobs", body = [JobSummary]))
+    security(("api_token" = [])),
+    responses(
+        (status = 200, description = "All jobs", body = [JobSummary]),
+        (status = 401, description = "Missing or invalid bearer token")
+    )
 )]
 async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<JobSummary>> {
     let jobs = state.jobs.lock().unwrap();
@@ -829,9 +965,11 @@ async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<Job
     get,
     path = "/api/investigations/{id}",
     params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
+    security(("api_token" = [])),
     responses(
         (status = 200, description = "Job status + live progress (+ result when done)", body = JobView),
-        (status = 404, description = "Unknown job id")
+        (status = 404, description = "Unknown job id"),
+        (status = 401, description = "Missing or invalid bearer token")
     )
 )]
 async fn get_investigation(

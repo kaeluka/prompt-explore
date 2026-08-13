@@ -18,7 +18,15 @@ The tool functions as a server with an endpoint that serves a thoroughly documen
 
 ## Code
 
-This entire repo is a vibe coded server without auth (only the README is mostly written hand-written). There was no security audit. It comes without warranty.
+This entire repo is a vibe coded server (only the README is mostly written hand-written). There was no security audit. It comes without warranty.
+
+### Authentication (optional)
+
+By default the server is open (no auth) and binds to `0.0.0.0:8080`, so it is
+reachable on your LAN. `POST /api/investigations` spends your provider credits,
+so protect it: set `PROMPT_EXPLORE_API_TOKEN`, and every `/api/*` route (except
+the OpenAPI spec) requires an `Authorization: Bearer <token>` header. The web UI
+prompts for the token and stores it in localStorage.
 
 ## Supported APIs
 
@@ -81,6 +89,10 @@ ENVIRONMENT:
     BASETEN_API_KEY      API key for baseten (OpenAI-compatible).
     BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/).
     PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).
+    PROMPT_EXPLORE_API_TOKEN  Optional bearer token. When set, every /api/* route
+                           (except the OpenAPI spec) requires an
+                           `Authorization: Bearer <token>` header.
+                           Empty or unset = open mode (no auth).
 ```
 
 ### 2. Setup with your coding agent
@@ -89,3 +101,7 @@ Tell your coding agent to
 1. read the README. Place an api key for one of the supported providers in a local file and point the agent at the file (or log in using the `aws` or `gcloud` clis).
 2. ask the agent to start the server and read the openapi specs.
 3. ask the agent to try the tool out, while you watch the output in the web ui at http://127.0.0.1:8080
+
+If you started the server with `PROMPT_EXPLORE_API_TOKEN` set, give the token to
+your agent too (it goes in an `Authorization: Bearer <token>` header on `/api/*`
+calls), and enter the same token in the web UI when prompted.

@@ -2155,6 +2155,7 @@ dependencies = [
  "prompt-explore",
  "serde",
  "serde_json",
+ "subtle",
  "tokio",
  "tower-http",
  "utoipa",

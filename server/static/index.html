@@ -91,6 +91,8 @@ import htm from 'htm';
 const html = htm.bind(h);
 
 const API = id => `/api/investigations${id ? '/'+id : ''}`;
+const TOKEN_KEY = 'pe_api_token';
+const authHeaders = token => token ? {'Authorization': 'Bearer '+token} : {};
 // Format one role's UsageTotals. `tool_calls` is only the simulated PUT
 // Estimated USD cost, only present for priced (e.g. OpenRouter) models.
 // Scale precision to magnitude so sub-cent costs stay meaningful.
@@ -256,22 +258,46 @@ function JobCard({ j }) {
 function App() {
   const [jobs, setJobs] = useState(null); // null = loading
   const [auto, setAuto] = useState(true);
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [draft, setDraft] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
     if (!auto) return;
     let stop = false;
     const poll = async () => {
       try {
-        const list = await fetch(API()).then(r => r.json());
-        if (!list.length) { if (!stop) setJobs([]); return; }
-        const views = await Promise.all(list.map(s => fetch(API(s.id)).then(r => r.json())));
-        if (!stop) setJobs(views);
+        const r = await fetch(API(), { headers: authHeaders(token) });
+        if (r.status === 401) {
+          if (!stop) { setAuthRequired(true); if (token) setAuthError(true); }
+          return;
+        }
+        const list = await r.json();
+        if (!Array.isArray(list)) return;
+        if (!list.length) { if (!stop) { setJobs([]); setAuthRequired(false); setAuthError(false); } return; }
+        const views = await Promise.all(list.map(s => fetch(API(s.id), { headers: authHeaders(token) }).then(r => r.json())));
+        if (!stop) { setJobs(views); setAuthRequired(false); setAuthError(false); }
       } catch (e) { console.error(e); }
     };
     poll();
     const id = setInterval(poll, 2500);
     return () => { stop = true; clearInterval(id); };
-  }, [auto]);
+  }, [auto, token]);
+
+  const saveToken = () => {
+    const t = draft.trim();
+    localStorage.setItem(TOKEN_KEY, t);
+    setToken(t);
+    setAuthError(false);
+  };
+
+  const clearToken = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    setToken('');
+    setDraft('');
+    setAuthError(false);
+  };
 
   const expandAll = () => {
     const all = [...document.querySelectorAll('#root details')];
@@ -286,10 +312,22 @@ function App() {
       <span class="auto">
         <label class="meta"><input type="checkbox" checked=${auto} onClick=${() => setAuto(!auto)} /> auto-refresh</label>
         <button class="toggle" onClick=${expandAll}>expand all logs</button>
+        ${token ? html`<button class="toggle" onClick=${clearToken} title="forget the stored API token">clear token</button>` : null}
       </span>
     </header>
+    ${authRequired ? html`
+      <div class="card" style="border-color:var(--accent)">
+        <h2>🔒 API token required</h2>
+        <div class="meta" style="margin:0.4rem 0">This server requires an <span class="mono">Authorization: Bearer</span> token (set via <span class="mono">PROMPT_EXPLORE_API_TOKEN</span>). Enter it to view and submit jobs. It is stored only in this browser's localStorage.</div>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <input type="password" value=${draft} onInput=${e => setDraft(e.target.value)} placeholder="API token" style="background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.3rem 0.6rem;font-family:var(--mono);flex:1;min-width:16em" />
+          <button onClick=${saveToken}>save</button>
+        </div>
+        ${authError ? html`<div class="note" style="margin-top:0.4rem">That token was rejected — check it and try again.</div>` : null}
+      </div>` : null}
     <div id="jobs">
-      ${jobs === null ? html`<div class="empty">loading…</div>`
+      ${authRequired ? null
+       : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
        : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} />`)}
     </div>
