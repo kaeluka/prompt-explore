@@ -178,6 +178,62 @@ namespace: `zai_coding::glm-5.2` (default; `ZAI_API_KEY`),
 uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`, default
 `zai`).
 
+## Releasing
+
+**Releases are tag-driven: push a `v*` tag, CI builds the binaries, a
+GitHub Release gets the assets.** No release artifact is hand-built or
+hand-uploaded. The workflow (`.github/workflows/release.yml`) compiles
+`prompt-explore-server` for five targets — linux x86_64/ARM64 (musl, fully
+static), macOS x86_64/ARM64, windows x86_64 — packages each, and attaches
+the archives to the release for that tag. End users grab the bin directly;
+no Rust toolchain required.
+
+**To cut a release:**
+
+```bash
+# 1. main is green, working tree clean.
+cargo test
+git status   # clean
+
+# 2. Bump the version. It lives once, in the workspace manifest.
+#    Cargo.toml:  [workspace.package]  version = "0.1.1"
+
+# 3. Commit, tag that commit, push both.
+git commit -am "Bump version to 0.1.1"
+git tag v0.1.1
+git push origin main
+git push origin v0.1.1
+```
+
+Pushing the tag triggers the workflow. Watch the Actions tab; once all five
+build jobs pass, the release job attaches the archives to the `v0.1.1`
+release (notes are auto-generated from commits/PRs since the last tag).
+
+**For a first release or any risky cut, ship it as a prerelease.** In the
+release UI check "Set as a pre-release", verify the binaries download and
+run on each platform, then uncheck it and set it as Latest. A bad build then
+never becomes someone's first impression, and you avoid delete-and-retry.
+
+**Releases are not permanent.** You can delete a release (its page +
+attached assets) and delete/recreate the tag to re-cut, or edit a release
+to swap individual bad assets without nuking the whole thing.
+
+**Dry-run a matrix or workflow change without publishing.** The workflow
+has a `workflow_dispatch` trigger: Actions tab → "release" → Run workflow.
+It builds every target and exposes them as workflow artifacts, but skips
+the publish step (which runs only on a real `v*` tag). Verify a new target
+or an edit there before committing to a tag.
+
+**No secrets are involved.** The publish step uses GitHub's auto-injected
+`GITHUB_TOKEN` with `contents: write`; the build is a pure `cargo build`,
+so no provider API keys are needed at build time (those are runtime
+concerns for whoever runs the binary).
+
+**Every third-party action in the workflow is pinned to an immutable commit
+SHA** (the ref it came from is a trailing comment), so a compromised upstream
+tag cannot change what runs in CI. Bumping a pinned SHA is a deliberate edit
+— never swap a SHA back for a moving `@vN` ref.
+
 ## Dogfooding rule
 
 **Whenever you optimize a prompt, use the opportunity for dogfooding.**
