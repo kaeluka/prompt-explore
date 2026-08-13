@@ -51,10 +51,11 @@ struct AppState {
     /// so repeated listing doesn't hammer the providers.
     models_client: prompt_explore::llm::GenaiClient,
     models_cache: Mutex<Option<(Instant, ModelsResponse)>>,
-    /// Bearer token required on `/api/*` routes when set
-    /// (PROMPT_EXPLORE_API_TOKEN). `None`/empty = open mode (no auth).
-    /// Stored raw; compared constant-time.
-    api_token: Option<String>,
+    /// SHA-256 digest of the bearer token required on `/api/*` routes when
+    /// set (PROMPT_EXPLORE_API_TOKEN). `None` = open mode (no auth). We
+    /// store the digest, not the raw token, and compare digests constant-
+    /// time (both 32 bytes, so `ct_eq` never length-short-circuits).
+    api_token: Option<[u8; 32]>,
 }
 
 struct Job {
@@ -391,6 +392,9 @@ fn print_help() {
     println!("                           (except the OpenAPI spec) requires an");
     println!("                           `Authorization: Bearer <token>` header.");
     println!("                           Empty or unset = open mode (no auth).");
+    println!("    PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC");
+    println!("                           Set to 1 to allow a non-loopback bind over plain HTTP");
+    println!("                           (the bearer token and all traces travel in cleartext).");
 }
 
 #[tokio::main]
@@ -427,7 +431,8 @@ async fn main() {
     };
     let api_token = std::env::var("PROMPT_EXPLORE_API_TOKEN")
         .ok()
-        .filter(|t| !t.is_empty());
+        .filter(|t| !t.is_empty())
+        .map(|t| sha256(t.as_bytes()));
     let token_set = api_token.is_some();
 
     let state = Arc::new(AppState {
@@ -463,6 +468,22 @@ async fn main() {
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let public_bind = addr.starts_with("0.0.0.0") || addr.starts_with("::");
+    // TLS-or-refuse: beyond loopback, plain HTTP would carry the bearer token
+    // and every trace in cleartext. TLS serving isn't implemented, so a
+    // non-loopback bind is refused unless the operator explicitly opts into
+    // the exposure.
+    let allow_insecure_public = std::env::var("PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if public_bind && !allow_insecure_public {
+        eprintln!(
+            "refusing to start: {addr} is a non-loopback bind, which would serve \
+             the API (bearer token and all traces) in cleartext to the network. \
+             Bind loopback instead (the default, 127.0.0.1:8080), or set \
+             PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC=1 to accept the exposure."
+        );
+        std::process::exit(1);
+    }
     if public_bind && !token_set {
         eprintln!(
             "WARNING: listening on {addr} with no PROMPT_EXPLORE_API_TOKEN set — \
@@ -563,7 +584,7 @@ async fn require_auth(
     req: Request,
     next: Next,
 ) -> Response {
-    let Some(expected) = state.api_token.as_deref() else {
+    let Some(expected) = state.api_token.as_ref() else {
         return next.run(req).await;
     };
     let path = req.uri().path();
@@ -575,7 +596,7 @@ async fn require_auth(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let ok = provided.is_some_and(|p| constant_time_eq(p.as_bytes(), expected.as_bytes()));
+    let ok = provided.is_some_and(|p| constant_time_eq(&sha256(p.as_bytes()), expected));
     if ok {
         next.run(req).await
     } else {
@@ -594,10 +615,22 @@ async fn require_auth(
     }
 }
 
-/// Constant-time byte comparison for the bearer token, so the auth check
-/// does not leak the token via early-exit timing.
+/// Constant-time byte comparison (no early exit). Both operands are 32-byte
+/// SHA-256 digests, so their lengths always match and `ct_eq` never takes the
+/// length-mismatch short-circuit.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     bool::from(a.ct_eq(b))
+}
+
+/// SHA-256 of the provided bytes, so tokens are compared as fixed-length
+/// digests rather than raw bytes (comparing raw bytes of differing lengths
+/// would short-circuit in `ct_eq` and leak the token length via timing).
+fn sha256(input: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(input);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_ref());
+    out
 }
 
 /// Minimal hardening headers on every response. The CSP allows the web UI's

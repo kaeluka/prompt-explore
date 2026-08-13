@@ -23,12 +23,14 @@ This entire repo is a vibe coded server (only the README is mostly written hand-
 ### Authentication (optional)
 
 By default the server binds to `127.0.0.1:8080` (loopback-only, reachable only
-from this machine) and runs with no auth. To reach it from other machines set
-`PROMPT_EXPLORE_ADDR=0.0.0.0:8080` — and if you do, set `PROMPT_EXPLORE_API_TOKEN`
-too: `POST /api/investigations` spends your provider credits. When a token is
-set, every `/api/*` route (except the OpenAPI spec) requires an
-`Authorization: Bearer <token>` header. The web UI prompts for the token and
-stores it in localStorage.
+from this machine) and runs with no auth. A non-loopback bind
+(`PROMPT_EXPLORE_ADDR=0.0.0.0:8080`) is refused unless you set
+`PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC=1`, because over plain HTTP the bearer
+token and all traces travel in cleartext. If you do expose it, set
+`PROMPT_EXPLORE_API_TOKEN` too: `POST /api/investigations` spends your provider
+credits. When a token is set, every `/api/*` route (except the OpenAPI spec)
+requires an `Authorization: Bearer <token>` header. The web UI prompts for the
+token and stores it in localStorage.
 
 ## Supported APIs
 
@@ -95,6 +97,9 @@ ENVIRONMENT:
                            (except the OpenAPI spec) requires an
                            `Authorization: Bearer <token>` header.
                            Empty or unset = open mode (no auth).
+    PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC
+                           Set to 1 to allow a non-loopback bind over plain HTTP
+                           (the bearer token and all traces travel in cleartext).
 ```
 
 ### 2. Setup with your coding agent
