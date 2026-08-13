@@ -44,8 +44,7 @@ tar -xzf prompt-explore-server-<your-target>.tar.gz   # .zip on windows
 ```
 
 Prebuilt targets: linux x86_64/ARM64 (musl — fully static, runs on any
-Linux), macOS ARM64 (Apple Silicon), windows x86_64. Intel-Mac users,
-build from source (Option B).
+Linux), macOS x86_64/ARM64, windows x86_64.
 
 **Option B — build from source** (needs a Rust toolchain):
 
@@ -58,7 +57,7 @@ Whichever path you take, `--help` prints usage and the environment variables:
 
 ```
 $ prompt-explore-server --help
-prompt-explore-server 0.1.0
+prompt-explore-server 0.1.1
 
 Property-based testing for agent behavior. HTTP API + web UI.
 

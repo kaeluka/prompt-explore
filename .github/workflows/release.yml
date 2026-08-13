@@ -53,10 +53,13 @@ jobs:
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             archive: tar.gz
-          # NOTE: macOS Intel (x86_64-apple-darwin) is intentionally NOT
-          # shipped — macos-13 (Intel) runners are deprecated and effectively
-          # unavailable. Intel-Mac users build from source (see README). Add
-          # it back later by cross-compiling on macos-14 if needed.
+          # macOS Intel. Cross-compiled on an Apple-Silicon (macos-14) runner:
+          # macos-13 (Intel) runners are deprecated/unavailable, but Apple's
+          # toolchain (clang + ld64) builds x86_64 from ARM natively, so the
+          # rust-toolchain `targets:` step + `--target` are all that's needed.
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            archive: tar.gz
           # macOS Apple Silicon.
           - target: aarch64-apple-darwin
             runner: macos-14
