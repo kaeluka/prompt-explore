@@ -331,6 +331,7 @@ fn print_help() {
     println!("OPTIONS:");
     println!("    --dump-openapi    Print the OpenAPI spec as JSON and exit");
     println!("    -h, --help        Print this help message and exit");
+    println!("    -v, --version     Print version and exit");
     println!();
     println!("ENVIRONMENT:");
     println!("    PROMPT_EXPLORE_PROVIDER  Which provider runs the LLM calls (default: zai).");
@@ -352,6 +353,11 @@ async fn main() {
 
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print_help();
+        return;
+    }
+
+    if args.iter().any(|a| a == "-v" || a == "--version") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return;
     }
 

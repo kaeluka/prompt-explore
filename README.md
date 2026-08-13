@@ -31,11 +31,33 @@ This entire repo is a vibe coded server without auth (only the README is mostly 
 
 ## How to try this out
 
-### 1. Build
+### 1. Get the server binary
+
+**Option A — download a release (recommended; no Rust toolchain needed).**
+Grab the archive for your platform from the
+[Releases page](https://github.com/kaeluka/prompt-explore/releases), extract
+it, and run it directly:
+
+```
+tar -xzf prompt-explore-server-<your-target>.tar.gz   # .zip on windows
+./prompt-explore-server --version
+```
+
+Prebuilt targets: linux x86_64/ARM64 (musl — fully static, runs on any
+Linux), macOS ARM64 (Apple Silicon), windows x86_64. Intel-Mac users,
+build from source (Option B).
+
+**Option B — build from source** (needs a Rust toolchain):
 
 ```
 $ cargo build --release
-$ target/release/prompt-explore-server --help
+$ target/release/prompt-explore-server --version
+```
+
+Whichever path you take, `--help` prints usage and the environment variables:
+
+```
+$ prompt-explore-server --help
 prompt-explore-server 0.1.0
 
 Property-based testing for agent behavior. HTTP API + web UI.
@@ -46,6 +68,7 @@ USAGE:
 OPTIONS:
     --dump-openapi    Print the OpenAPI spec as JSON and exit
     -h, --help        Print this help message and exit
+    -v, --version     Print version and exit
 
 ENVIRONMENT:
     PROMPT_EXPLORE_PROVIDER  Which provider runs the LLM calls (default: zai).

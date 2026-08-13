@@ -53,10 +53,10 @@ jobs:
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             archive: tar.gz
-          # macOS Intel.
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            archive: tar.gz
+          # NOTE: macOS Intel (x86_64-apple-darwin) is intentionally NOT
+          # shipped — macos-13 (Intel) runners are deprecated and effectively
+          # unavailable. Intel-Mac users build from source (see README). Add
+          # it back later by cross-compiling on macos-14 if needed.
           # macOS Apple Silicon.
           - target: aarch64-apple-darwin
             runner: macos-14
