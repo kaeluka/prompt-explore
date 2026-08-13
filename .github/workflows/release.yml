@@ -15,6 +15,10 @@
 # job below. The build is a pure `cargo build` — no provider API keys are
 # needed at build time (those are runtime concerns for whoever runs the
 # binary).
+#
+# Supply-chain hardening: every third-party action is pinned to an
+# immutable commit SHA (the ref it was resolved from is kept as a trailing
+# comment). Bumps are deliberate, never automatic via a moving tag.
 
 name: release
 
@@ -62,10 +66,10 @@ jobs:
             runner: windows-latest
             archive: zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -74,7 +78,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry & target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.target }}
 
@@ -96,7 +100,7 @@ jobs:
             -DestinationPath "prompt-explore-server-${{ matrix.target }}.zip"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: prompt-explore-server-${{ matrix.target }}
           path: prompt-explore-server-${{ matrix.target }}.*
@@ -113,13 +117,13 @@ jobs:
       contents: write
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: assets
           merge-multiple: true
 
       - name: Attach binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: assets/*
           fail_on_unmatched_files: true
