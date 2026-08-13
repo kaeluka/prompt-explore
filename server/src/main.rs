@@ -386,7 +386,7 @@ fn print_help() {
     println!("                           region: VERTEX_LOCATION (default: global).");
     println!("    BASETEN_API_KEY      API key for baseten (OpenAI-compatible).");
     println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/).");
-    println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).");
+    println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 127.0.0.1:8080, loopback-only).");
     println!("    PROMPT_EXPLORE_API_TOKEN  Optional bearer token. When set, every /api/* route");
     println!("                           (except the OpenAPI spec) requires an");
     println!("                           `Authorization: Bearer <token>` header.");
@@ -461,7 +461,7 @@ async fn main() {
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .with_state(state);
 
-    let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let public_bind = addr.starts_with("0.0.0.0") || addr.starts_with("::");
     if public_bind && !token_set {
         eprintln!(

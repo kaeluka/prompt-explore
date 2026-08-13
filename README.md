@@ -22,11 +22,13 @@ This entire repo is a vibe coded server (only the README is mostly written hand-
 
 ### Authentication (optional)
 
-By default the server is open (no auth) and binds to `0.0.0.0:8080`, so it is
-reachable on your LAN. `POST /api/investigations` spends your provider credits,
-so protect it: set `PROMPT_EXPLORE_API_TOKEN`, and every `/api/*` route (except
-the OpenAPI spec) requires an `Authorization: Bearer <token>` header. The web UI
-prompts for the token and stores it in localStorage.
+By default the server binds to `127.0.0.1:8080` (loopback-only, reachable only
+from this machine) and runs with no auth. To reach it from other machines set
+`PROMPT_EXPLORE_ADDR=0.0.0.0:8080` — and if you do, set `PROMPT_EXPLORE_API_TOKEN`
+too: `POST /api/investigations` spends your provider credits. When a token is
+set, every `/api/*` route (except the OpenAPI spec) requires an
+`Authorization: Bearer <token>` header. The web UI prompts for the token and
+stores it in localStorage.
 
 ## Supported APIs
 
@@ -88,7 +90,7 @@ ENVIRONMENT:
                            region: VERTEX_LOCATION (default: global).
     BASETEN_API_KEY      API key for baseten (OpenAI-compatible).
     BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/).
-    PROMPT_EXPLORE_ADDR    Bind address (default: 0.0.0.0:8080, LAN-reachable).
+    PROMPT_EXPLORE_ADDR    Bind address (default: 127.0.0.1:8080, loopback-only).
     PROMPT_EXPLORE_API_TOKEN  Optional bearer token. When set, every /api/* route
                            (except the OpenAPI spec) requires an
                            `Authorization: Bearer <token>` header.
