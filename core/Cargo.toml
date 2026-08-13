@@ -2,6 +2,7 @@
 name = "prompt-explore"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Property-based testing for agent behavior: state a behavioral question, get reproducible witness traces and unverified fix proposals."
 
 [dependencies]
