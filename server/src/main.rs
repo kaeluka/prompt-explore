@@ -623,17 +623,21 @@ async fn security_headers(req: Request, next: Next) -> Response {
     responses((status = 200, description = "Web UI (HTML)", content_type = "text/html"))
 )]
 async fn index() -> impl axum::response::IntoResponse {
+    // Inject the crate version into the page header (single source of
+    // truth: env!("CARGO_PKG_VERSION")); the HTML carries a `__VERSION__`
+    // placeholder that is replaced here.
+    let html = INDEX_HTML.replace("__VERSION__", env!("CARGO_PKG_VERSION"));
     // During development the UI changes often; in release builds the
     // embedded page is versioned with the binary, so normal caching
     // semantics are fine.
     if cfg!(debug_assertions) {
         (
             [(axum::http::header::CACHE_CONTROL, "no-cache")],
-            Html(INDEX_HTML),
+            Html(html),
         )
             .into_response()
     } else {
-        Html(INDEX_HTML).into_response()
+        Html(html).into_response()
     }
 }
 

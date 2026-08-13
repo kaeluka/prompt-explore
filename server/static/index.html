@@ -307,7 +307,7 @@ function App() {
 
   return html`
     <header>
-      <h1>prompt-explore</h1>
+      <h1>prompt-explore <span class="mono" style="font-size:0.72rem;color:var(--text-dim)">v__VERSION__</span></h1>
       <span class="sub">job overview</span>
       <span class="auto">
         <label class="meta"><input type="checkbox" checked=${auto} onClick=${() => setAuto(!auto)} /> auto-refresh</label>
