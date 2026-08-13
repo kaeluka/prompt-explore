@@ -1,0 +1,126 @@
+# Build `prompt-explore-server` for every target platform and publish the
+# binaries to the GitHub Release for the tag that triggered this run.
+#
+# End users "grab the bin directly": they open the release page, download
+# the asset for their platform, extract, and run. No Rust toolchain, no
+# installer script.
+#
+# Trigger: push a tag matching `v*`, e.g. `git tag v0.1.0 && git push --tags`.
+# A manual run via the Actions tab (`workflow_dispatch`) exercises the full
+# build matrix WITHOUT publishing — useful for verifying a new target or a
+# workflow change before cutting a real release.
+#
+# No secrets required: `softprops/action-gh-release` uses the automatically
+# provided `GITHUB_TOKEN`, and `contents: write` is granted to the release
+# job below. The build is a pure `cargo build` — no provider API keys are
+# needed at build time (those are runtime concerns for whoever runs the
+# binary).
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Default read-only. The release job escalates to contents: write.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86-64, fully static (runs on any glibc/musl Linux).
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            archive: tar.gz
+          # Linux ARM64, fully static. `ubuntu-24.04-arm` is a free GitHub
+          # ARM runner for PUBLIC repos; if this repo is ever made private,
+          # switch to `ubuntu-24.04` and cross-compile the ARM target instead.
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+          # macOS Intel.
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+          # macOS Apple Silicon.
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            archive: tar.gz
+          # Windows x86-64.
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain (Linux only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p prompt-explore-server --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../prompt-explore-server-${{ matrix.target }}.tar.gz prompt-explore-server
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "target/${{ matrix.target }}/release/prompt-explore-server.exe" `
+            -DestinationPath "prompt-explore-server-${{ matrix.target }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prompt-explore-server-${{ matrix.target }}
+          path: prompt-explore-server-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish when triggered by a real version tag. A workflow_dispatch
+    # run builds everything but skips this step.
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Attach binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
