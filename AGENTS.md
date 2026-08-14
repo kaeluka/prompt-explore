@@ -303,6 +303,25 @@ conclusion. Paste the real openapi.json into the world (or its
 relevant slices) and pin the rendered responses to it, so simulated
 API behavior matches the spec under test.
 
+**Verified technique (spec-in-world, A/B, glm-5.2):** same three
+bash-grading probes, two worlds — one with the simulator answering
+`curl` from imagination, one embedding the real openapi.json with
+"the spec is authoritative for every rendered response" pinned.
+
+- Without the spec: PATCH grades blocked by invented `409`/`405`
+  read-only errors (0/3 recorded); the job view rendered with an
+  off-schema attempt shape that broke the agent's jq, costing it
+  steps to debug the simulator's fiction.
+- With the spec: PATCH succeeded and echoed the documented response
+  (grades persisted, re-GET confirmed); the view was spec-shaped so
+  jq navigated it on the first try; and when the sim still garbled
+  one `ls`, the agent caught it, discarded it, re-derived from raw
+  JSON, and flagged the discard in its answer.
+
+The embedded spec upgrades the simulated API from plausible-fiction
+to contract — the probe then measures the agent, not the sim's
+inventions.
+
 Example precedent: tightening the (now-removed) judge prompt to require that
 a behavior *actually occurred* was validated by re-running the
 destructive-action investigation — the false positive vanished and a real
