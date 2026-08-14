@@ -25,6 +25,69 @@
         }
       }
     },
+    "/api/frontier": {
+      "post": {
+        "tags": [],
+        "summary": "Compute the Pareto frontier over a caller-chosen set of\ninvestigations and axes. This is the read side of multi-dimensional\nprompt optimization: you run prompt variants (each an investigation),\ngrade the soft axes you care about (PATCH /api/investigations/{id}),\nand then ask which variants are NOT dominated — on any mix of your\ngraded axes (tone_of_voice, …) and the harness's measured ones\n(put_/sim_ tokens & cost, steps_per_trace statistics).",
+        "description": "Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a\nv0 rendering constraint — send `format=json` for N axes). Axis\ndirection is declared HERE, per request (`\"better\": \"lower\" |\n\"higher\"`), never stored. The harness records your judgment and does\narithmetic; it never interprets a grade.\n\nEvery fixable problem (missing grade, unpriced cost axis, running\njob, unknown id, duplicate id, bad label/color, direction conflict\nwith a reserved axis, …) comes back in ONE 422 body with typed\nreasons, each detail naming the fix — including the exact PATCH to\nmake for a missing grade.",
+        "operationId": "frontier",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`json` (default) or `svg`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Investigation ids (bare strings or {id, label?, color?} — labels `^[A-Za-z0-9_-]{1,64}$`, colors `#rrggbb`) plus axes (name + better). Ids must be unique; exactly 2 axes for format=svg.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body or unknown ?format"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "description": "Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
     "/api/investigations": {
       "get": {
         "tags": [],
@@ -177,6 +240,67 @@
             "api_token": []
           }
         ]
+      },
+      "patch": {
+        "tags": [],
+        "summary": "Record caller judgment on an investigation: numeric grades on\ncaller-chosen axes (\"tone_of_voice\": 0.8, \"self_containedness\": 0.5,\n…). This is how you tag an investigation for multi-dimensional\nprompt optimization: the grades are YOUR judgment — the harness\nstores them and never interprets them — and POST /api/frontier\nplots/compares them later, alongside the measured axes (tokens,\ncost, steps) the harness records anyway.",
+        "description": "Merge semantics per axis: a number sets/overwrites, `null` deletes.\nThe response echoes the FULL updated grades map. Axis names must\nmatch `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved\nmeasured axis (put_/sim_input_tokens, put_/sim_output_tokens,\nput_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_\n{avg,min,max,stdev}) — those are harness-computed and cannot be\ngraded. Any scale is fine (0..1, 1..5, raw counts): dominance only\nneeds comparability across points, and direction is declared per\nrequest at frontier time, not here.\n\nGrading is allowed in any job state (live-tagging while the run\nunfolds is fine) — but POST /api/frontier only accepts `done` jobs\nas points.",
+        "operationId": "patch_investigation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job id returned by POST /api/investigations",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Axis name → number (set), or axis name → null (delete).",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GradesPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated grades (full map echoed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradesView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradesPatchError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown job id"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
       }
     },
     "/api/models": {
@@ -253,6 +377,14 @@
           }
         }
       },
+      "BetterDirection": {
+        "type": "string",
+        "description": "Whether lower or higher values are better on an axis. Supplied by\nthe caller per request for graded axes; baked in for reserved ones.\nDominance normalizes internally (negating lower-is-better values),\nso \"higher score = better\" uniformly.",
+        "enum": [
+          "lower",
+          "higher"
+        ]
+      },
       "Budget": {
         "type": "object",
         "required": [
@@ -273,6 +405,265 @@
             "format": "int64",
             "description": "Optional per-trace token cap (input+output, summed across turns).",
             "minimum": 0
+          }
+        }
+      },
+      "FrontierAxis": {
+        "type": "object",
+        "description": "One axis of the frontier plot, with the caller's direction.",
+        "required": [
+          "name",
+          "better"
+        ],
+        "properties": {
+          "better": {
+            "$ref": "#/components/schemas/BetterDirection",
+            "description": "Whether lower or higher values are better on this axis. For\ngraded axes this is YOUR call (encode direction in your own\nscale, e.g. grade \"repeatability\" high-good rather than\n\"variance\" low-good); for reserved axes it must match the\nmeasured direction."
+          },
+          "name": {
+            "type": "string",
+            "description": "A graded axis name (you PATCHed it) or a reserved measured axis\n(harness-computed). Reserved names and their baked-in\ndirections: put_/sim_input_tokens (lower), put_/sim_output_tokens\n(lower), put_/sim_cache_read_tokens (higher — cached input is\ncheaper input), put_/sim_cost_usd (lower), sim_cost_usd (lower),\nsteps_per_trace_avg/_min/_max/_stdev (lower). Requesting a\nreserved axis with a contradicting `better` is rejected."
+          }
+        }
+      },
+      "FrontierError": {
+        "type": "object",
+        "required": [
+          "error",
+          "problems"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrontierProblem"
+            }
+          }
+        }
+      },
+      "FrontierInvestigation": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "color": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "An investigation referenced by the frontier request: a bare id, or\nan object carrying an optional plot label and color."
+      },
+      "FrontierPoint": {
+        "type": "object",
+        "description": "One point of the frontier result.",
+        "required": [
+          "investigation",
+          "label",
+          "color",
+          "values",
+          "on_frontier",
+          "dominated_by"
+        ],
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "dominated_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Investigations that dominate this point (empty when on the\nfrontier). Tells an optimizer exactly what to compare against."
+          },
+          "investigation": {
+            "type": "string",
+            "description": "The investigation uuid (uuids, not labels, are the stable key —\nlabels are not unique by design)."
+          },
+          "label": {
+            "type": "string"
+          },
+          "on_frontier": {
+            "type": "boolean",
+            "description": "True when no other point dominates this one. Ties dominate\nnothing: equal points are both on the frontier."
+          },
+          "values": {
+            "type": "object",
+            "description": "Resolved value per axis name.",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "FrontierProblem": {
+        "type": "object",
+        "description": "One fixable problem in a frontier request. Every `detail` names the\nfix — including, for missing grades, the exact PATCH to make.",
+        "required": [
+          "reason",
+          "detail"
+        ],
+        "properties": {
+          "axis": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "investigation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "FrontierRequest": {
+        "type": "object",
+        "required": [
+          "investigations",
+          "axes"
+        ],
+        "properties": {
+          "axes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrontierAxis"
+            },
+            "description": "The axes to compute dominance over. `format=svg` requires\nEXACTLY 2 (a v0 rendering constraint — the dominance math is\nN-dimensional); `format=json` accepts any count ≥ 1."
+          },
+          "investigations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrontierInvestigation"
+            },
+            "description": "The investigations to plot (each must be a `done` job with a\nvalue for every axis). Bare id strings or `{id, label?, color?}`\nobjects. Ids must be UNIQUE — duplicates are rejected. Labels:\n`^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label =\nthe PUT's id (deduplicated) else the uuid prefix; color = a\ndeterministic palette by position."
+          }
+        }
+      },
+      "FrontierResponse": {
+        "type": "object",
+        "required": [
+          "points"
+        ],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrontierPoint"
+            }
+          }
+        }
+      },
+      "GradeProblem": {
+        "type": "object",
+        "description": "One fixable problem in a grades PATCH. The `detail` names the fix.",
+        "required": [
+          "axis",
+          "reason",
+          "detail"
+        ],
+        "properties": {
+          "axis": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "`bad_axis_name` | `reserved_axis_name` | `non_finite_value`"
+          }
+        }
+      },
+      "GradesPatch": {
+        "type": "object",
+        "description": "Caller judgment recorded on an investigation: axis name → number.\nMerge semantics per axis: a number sets/overwrites, `null` deletes.",
+        "required": [
+          "grades"
+        ],
+        "properties": {
+          "grades": {
+            "type": "object",
+            "description": "Axis name → value. Use JSON `null` to DELETE an axis. Axis\nnames must match `^[a-z][a-z0-9_]{0,63}$` and must not collide\nwith a reserved measured axis (see the frontier docs).",
+            "additionalProperties": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "GradesPatchError": {
+        "type": "object",
+        "required": [
+          "error",
+          "problems"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GradeProblem"
+            }
+          }
+        }
+      },
+      "GradesView": {
+        "type": "object",
+        "description": "The echo response: the full, updated grades map.",
+        "required": [
+          "grades"
+        ],
+        "properties": {
+          "grades": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -418,6 +809,7 @@
           "model",
           "sim_model",
           "workspace_files",
+          "grades",
           "put",
           "scenarios",
           "progress"
@@ -428,6 +820,17 @@
               "string",
               "null"
             ]
+          },
+          "grades": {
+            "type": "object",
+            "description": "Caller-graded axes on this investigation (PATCHed via\nPATCH /api/investigations/{id}). Free-form names, caller-chosen\nscales (0..1, 1..5, anything); consumed by POST /api/frontier\nas judged axes alongside the reserved measured ones. The\nharness stores them and never interprets them.",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "id": {
             "type": "string",

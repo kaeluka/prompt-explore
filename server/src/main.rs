@@ -15,20 +15,24 @@ use std::time::{Duration, Instant};
 use axum::{
     Router,
     body::to_bytes,
-    extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Request, State},
+    extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Query, Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use uuid::Uuid;
 
+use prompt_explore::frontier::{
+    self, FrontierError, FrontierFormat, FrontierRequest, FrontierResponse, GradesPatch,
+    GradesPatchError, GradesView, InvestigationSnapshot, SnapshotStatus,
+};
 use prompt_explore::generate::{Investigator, LlmRole};
 use prompt_explore::llm::{
-    catalog_pricing_map, cost_usd, list_all_map, ProviderClient, ProviderModels, UsageByRole,
-    UsageTracker,
+    ProviderClient, ProviderModels, UsageByRole, UsageTracker, catalog_pricing_map, cost_usd,
+    list_all_map,
 };
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
@@ -90,6 +94,11 @@ struct Job {
     /// uploaded). Surfaced so a reader knows whether the simulator had a
     /// materialized world to consult, or answered purely from narrative.
     workspace_files: usize,
+    /// Caller-graded axes on this job: axis name → number, PATCHed via
+    /// PATCH /api/investigations/{id}. Read by POST /api/frontier.
+    /// Never interpreted by the harness — grades are the caller's
+    /// judgment, recorded.
+    grades: BTreeMap<String, f64>,
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
@@ -220,6 +229,12 @@ struct JobView {
     /// in-memory filesystem the SIMULATOR consults via read/write/list_dir/
     /// grep — it is NOT the PUT's tools. See the endpoint description.
     workspace_files: usize,
+    /// Caller-graded axes on this investigation (PATCHed via
+    /// PATCH /api/investigations/{id}). Free-form names, caller-chosen
+    /// scales (0..1, 1..5, anything); consumed by POST /api/frontier
+    /// as judged axes alongside the reserved measured ones. The
+    /// harness stores them and never interprets them.
+    grades: BTreeMap<String, f64>,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative = ground truth, etc.).
@@ -332,7 +347,7 @@ struct JobSummary {
                        web UI prompts for the token and stores it in localStorage."
     ),
     modifiers(&SecurityAddon),
-    paths(index, list_investigations, create_investigation, get_investigation, list_models)
+    paths(index, list_investigations, create_investigation, get_investigation, patch_investigation, frontier, list_models)
 )]
 struct ApiDoc;
 
@@ -378,15 +393,21 @@ fn print_help() {
     println!();
     println!("ENVIRONMENT:");
     println!("    PROMPT_EXPLORE_PROVIDER  Which provider runs the LLM calls (default: zai).");
-    println!("                           zai | zai_standard | openrouter | bedrock | baseten | gemini");
+    println!(
+        "                           zai | zai_standard | openrouter | bedrock | baseten | gemini"
+    );
     println!("    ZAI_API_KEY            API key for zai / zai_standard (coding-plan default).");
     println!("    OPENROUTER_API_KEY     API key for openrouter.");
     println!("    bedrock uses the default AWS credential chain (aws sso login, profiles, IMDS).");
-    println!("    gemini uses GCP Application Default Credentials (gcloud auth application-default");
+    println!(
+        "    gemini uses GCP Application Default Credentials (gcloud auth application-default"
+    );
     println!("                           login). Project: VERTEX_PROJECT_ID or gcloud config;");
     println!("                           region: VERTEX_LOCATION (default: global).");
     println!("    BASETEN_API_KEY      API key for baseten (OpenAI-compatible).");
-    println!("    BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/).");
+    println!(
+        "    BASETEN_ENDPOINT     Baseten endpoint (default: https://inference.baseten.co/v1/)."
+    );
     println!("    PROMPT_EXPLORE_ADDR    Bind address (default: 127.0.0.1:8080, loopback-only).");
     println!("    PROMPT_EXPLORE_API_TOKEN  Optional bearer token. When set, every /api/* route");
     println!("                           (except the OpenAPI spec) requires an");
@@ -395,6 +416,37 @@ fn print_help() {
     println!("    PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC");
     println!("                           Set to 1 to allow a non-loopback bind over plain HTTP");
     println!("                           (the bearer token and all traces travel in cleartext).");
+}
+
+/// The full application router. Factored out of `main` so tests (and
+/// anything else embedding the server) get the EXACT production stack —
+/// routing, auth, body limits, middleware — not a parallel one.
+fn build_app(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/openapi.json", get(openapi_json))
+        .route("/vendor/preact.mjs", get(vendor_preact))
+        .route("/vendor/hooks.mjs", get(vendor_hooks))
+        .route("/vendor/htm.mjs", get(vendor_htm))
+        .route(
+            "/api/investigations",
+            get(list_investigations)
+                .post(create_investigation)
+                .route_layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/api/investigations/{id}",
+            get(get_investigation).patch(patch_investigation),
+        )
+        .route("/api/frontier", post(frontier))
+        .route("/api/models", get(list_models))
+        .route("/api/openapi.json", get(openapi_json))
+        // Middleware order (axum applies the last layer outermost, i.e. first):
+        // require_auth gates /api/*, then security headers, then spec discovery.
+        .layer(middleware::from_fn(spec_discovery))
+        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        .with_state(state)
 }
 
 #[tokio::main]
@@ -427,7 +479,9 @@ async fn main() {
         "bedrock" => ProviderClient::bedrock(),
         "baseten" => ProviderClient::baseten(),
         "gemini" => ProviderClient::gemini(),
-        other => panic!("unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock | baseten | gemini)"),
+        other => panic!(
+            "unknown PROMPT_EXPLORE_PROVIDER '{other}' (zai | zai_standard | openrouter | bedrock | baseten | gemini)"
+        ),
     };
     let api_token = std::env::var("PROMPT_EXPLORE_API_TOKEN")
         .ok()
@@ -444,27 +498,7 @@ async fn main() {
         api_token,
     });
 
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/openapi.json", get(openapi_json))
-        .route("/vendor/preact.mjs", get(vendor_preact))
-        .route("/vendor/hooks.mjs", get(vendor_hooks))
-        .route("/vendor/htm.mjs", get(vendor_htm))
-        .route(
-            "/api/investigations",
-            get(list_investigations)
-                .post(create_investigation)
-                .route_layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
-        )
-        .route("/api/investigations/{id}", get(get_investigation))
-        .route("/api/models", get(list_models))
-        .route("/api/openapi.json", get(openapi_json))
-        // Middleware order (axum applies the last layer outermost, i.e. first):
-        // require_auth gates /api/*, then security headers, then spec discovery.
-        .layer(middleware::from_fn(spec_discovery))
-        .layer(middleware::from_fn(security_headers))
-        .layer(middleware::from_fn_with_state(state.clone(), require_auth))
-        .with_state(state);
+    let app = build_app(state);
 
     let addr = std::env::var("PROMPT_EXPLORE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let public_bind = addr.starts_with("0.0.0.0") || addr.starts_with("::");
@@ -537,9 +571,7 @@ struct ModelsResponse {
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
-async fn list_models(
-    State(state): State<Arc<AppState>>,
-) -> Json<ModelsResponse> {
+async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
     Json(models_cached(&state).await)
 }
 
@@ -579,11 +611,7 @@ async fn spec_discovery(req: Request, next: Next) -> Response {
 /// Bearer-token gate for `/api/*` routes. No-op when the server runs open
 /// (no PROMPT_EXPLORE_API_TOKEN). The OpenAPI spec stays public for
 /// discovery; everything else under `/api/` requires a valid token.
-async fn require_auth(
-    State(state): State<Arc<AppState>>,
-    req: Request,
-    next: Next,
-) -> Response {
+async fn require_auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let Some(expected) = state.api_token.as_ref() else {
         return next.run(req).await;
     };
@@ -643,9 +671,15 @@ async fn security_headers(req: Request, next: Next) -> Response {
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"),
     );
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     res
 }
 
@@ -747,10 +781,7 @@ async fn index() -> impl axum::response::IntoResponse {
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
-async fn create_investigation(
-    State(state): State<Arc<AppState>>,
-    req: Request,
-) -> Response {
+async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let content_type = req
         .headers()
         .get(header::CONTENT_TYPE)
@@ -777,7 +808,9 @@ async fn create_investigation(
             Err(e) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": format!("could not read request body: {e}") })),
+                    Json(
+                        serde_json::json!({ "error": format!("could not read request body: {e}") }),
+                    ),
                 )
                     .into_response();
             }
@@ -826,10 +859,9 @@ async fn parse_multipart_request(
                     .bytes()
                     .await
                     .map_err(|e| format!("could not read 'request' part: {e}"))?;
-                let r: InvestigateRequest =
-                    serde_json::from_slice(&bytes).map_err(|e| {
-                        format!("the 'request' part is not valid InvestigateRequest JSON: {e}")
-                    })?;
+                let r: InvestigateRequest = serde_json::from_slice(&bytes).map_err(|e| {
+                    format!("the 'request' part is not valid InvestigateRequest JSON: {e}")
+                })?;
                 request = Some(r);
             }
             "workspace" => {
@@ -888,6 +920,7 @@ fn spawn_investigation(
             model: put_model.clone(),
             sim_model: sim_model.clone(),
             workspace_files,
+            grades: BTreeMap::new(),
         },
     );
 
@@ -904,8 +937,14 @@ fn spawn_investigation(
         let put_model_cost = put_model.clone();
         let sim_model_cost = sim_model.clone();
         let investigator = Investigator {
-            runner_put: LlmRole { client: put_tracker.clone(), model: put_model.clone() },
-            runner_sim: LlmRole { client: sim_tracker.clone(), model: sim_model },
+            runner_put: LlmRole {
+                client: put_tracker.clone(),
+                model: put_model.clone(),
+            },
+            runner_sim: LlmRole {
+                client: sim_tracker.clone(),
+                model: sim_model,
+            },
             workspace_seed,
         };
 
@@ -942,13 +981,26 @@ fn spawn_investigation(
         let pricing = catalog_pricing_map(&models_cached(&state2).await.providers);
         let mut put_usage = put_tracker.totals();
         let mut sim_usage = sim_tracker.totals();
-        put_usage.cost_usd = pricing
-            .get(&put_model_cost)
-            .and_then(|p| cost_usd(put_usage.input_tokens, put_usage.cache_read_tokens, put_usage.output_tokens, p));
-        sim_usage.cost_usd = pricing
-            .get(&sim_model_cost)
-            .and_then(|p| cost_usd(sim_usage.input_tokens, sim_usage.cache_read_tokens, sim_usage.output_tokens, p));
-        let usage = UsageByRole { put: put_usage, sim: sim_usage };
+        put_usage.cost_usd = pricing.get(&put_model_cost).and_then(|p| {
+            cost_usd(
+                put_usage.input_tokens,
+                put_usage.cache_read_tokens,
+                put_usage.output_tokens,
+                p,
+            )
+        });
+        sim_usage.cost_usd = pricing.get(&sim_model_cost).and_then(|p| {
+            cost_usd(
+                sim_usage.input_tokens,
+                sim_usage.cache_read_tokens,
+                sim_usage.output_tokens,
+                p,
+            )
+        });
+        let usage = UsageByRole {
+            put: put_usage,
+            sim: sim_usage,
+        };
 
         let mut jobs = state2.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id2) {
@@ -1030,6 +1082,7 @@ async fn get_investigation(
         model: job.model.clone(),
         sim_model: job.sim_model.clone(),
         workspace_files: job.workspace_files,
+        grades: job.grades.clone(),
         put: job.put.clone(),
         scenarios: job.scenarios.clone(),
         progress: progress_snapshot,
@@ -1038,24 +1091,605 @@ async fn get_investigation(
     }))
 }
 
+/// Record caller judgment on an investigation: numeric grades on
+/// caller-chosen axes ("tone_of_voice": 0.8, "self_containedness": 0.5,
+/// …). This is how you tag an investigation for multi-dimensional
+/// prompt optimization: the grades are YOUR judgment — the harness
+/// stores them and never interprets them — and POST /api/frontier
+/// plots/compares them later, alongside the measured axes (tokens,
+/// cost, steps) the harness records anyway.
+///
+/// Merge semantics per axis: a number sets/overwrites, `null` deletes.
+/// The response echoes the FULL updated grades map. Axis names must
+/// match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved
+/// measured axis (put_/sim_input_tokens, put_/sim_output_tokens,
+/// put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_
+/// {avg,min,max,stdev}) — those are harness-computed and cannot be
+/// graded. Any scale is fine (0..1, 1..5, raw counts): dominance only
+/// needs comparability across points, and direction is declared per
+/// request at frontier time, not here.
+///
+/// Grading is allowed in any job state (live-tagging while the run
+/// unfolds is fine) — but POST /api/frontier only accepts `done` jobs
+/// as points.
+#[utoipa::path(
+    patch,
+    path = "/api/investigations/{id}",
+    params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
+    request_body(content = GradesPatch, description = "Axis name → number (set), or axis name → null (delete)."),
+    security(("api_token" = [])),
+    responses(
+        (status = 200, description = "Updated grades (full map echoed)", body = GradesView),
+        (status = 400, description = "Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix", body = GradesPatchError),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Unknown job id")
+    )
+)]
+async fn patch_investigation(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Result<Json<GradesPatch>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let patch = match body {
+        Ok(Json(p)) => p,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("body is not valid grades JSON: {e}")
+                })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(problems) = prompt_explore::frontier::validate_grades_patch(&patch) {
+        return (StatusCode::BAD_REQUEST, Json(problems)).into_response();
+    }
+    let mut jobs = state.jobs.lock().unwrap();
+    let Some(job) = jobs.get_mut(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("no investigation '{id}' in this server's memory — ids come from POST /api/investigations and are lost on restart")
+            })),
+        )
+            .into_response();
+    };
+    for (axis, value) in patch.grades {
+        match value {
+            Some(v) => {
+                job.grades.insert(axis, v);
+            }
+            None => {
+                job.grades.remove(&axis);
+            }
+        }
+    }
+    (
+        StatusCode::OK,
+        Json(GradesView {
+            grades: job.grades.clone(),
+        }),
+    )
+        .into_response()
+}
+
+/// Assemble the harness-side facts the frontier needs from one job.
+/// Thin: pure data plumbing, all logic lives in core::frontier.
+fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
+    let result = job.result.as_ref();
+    InvestigationSnapshot {
+        id: id.to_string(),
+        status: match job.status {
+            JobStatus::Running => SnapshotStatus::Running,
+            JobStatus::Done => SnapshotStatus::Done,
+            JobStatus::Failed => SnapshotStatus::Failed,
+        },
+        put_id: Some(job.put.id.clone()).filter(|p| !p.is_empty()),
+        grades: job.grades.clone(),
+        usage: result.map(|r| r.usage),
+        put_model: Some(job.model.clone()),
+        sim_model: Some(job.sim_model.clone()),
+        // A "step" is one tool call OR the final completion — the same
+        // unit max_steps_per_trace budgets. Completed attempts only.
+        steps_per_trace: result
+            .map(|r| r.attempts.iter().map(|a| a.steps.len() as u64).collect())
+            .unwrap_or_default(),
+    }
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+struct FrontierQuery {
+    /// `json` (default): points with on_frontier/dominated_by for
+    /// programmatic optimization. `svg`: a 2-axis scatter plot with the
+    /// frontier staircase (up-and-right is always better, whichever
+    /// directions the axes have).
+    #[serde(default)]
+    format: Option<String>,
+}
+
+/// Compute the Pareto frontier over a caller-chosen set of
+/// investigations and axes. This is the read side of multi-dimensional
+/// prompt optimization: you run prompt variants (each an investigation),
+/// grade the soft axes you care about (PATCH /api/investigations/{id}),
+/// and then ask which variants are NOT dominated — on any mix of your
+/// graded axes (tone_of_voice, …) and the harness's measured ones
+/// (put_/sim_ tokens & cost, steps_per_trace statistics).
+///
+/// Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a
+/// v0 rendering constraint — send `format=json` for N axes). Axis
+/// direction is declared HERE, per request (`"better": "lower" |
+/// "higher"`), never stored. The harness records your judgment and does
+/// arithmetic; it never interprets a grade.
+///
+/// Every fixable problem (missing grade, unpriced cost axis, running
+/// job, unknown id, duplicate id, bad label/color, direction conflict
+/// with a reserved axis, …) comes back in ONE 422 body with typed
+/// reasons, each detail naming the fix — including the exact PATCH to
+/// make for a missing grade.
+#[utoipa::path(
+    post,
+    path = "/api/frontier",
+    params(("format" = Option<String>, Query, description = "`json` (default) or `svg`")),
+    request_body(content = FrontierRequest, description = "Investigation ids (bare strings or {id, label?, color?} — labels `^[A-Za-z0-9_-]{1,64}$`, colors `#rrggbb`) plus axes (name + better). Ids must be unique; exactly 2 axes for format=svg."),
+    security(("api_token" = [])),
+    responses(
+        (status = 200, description = "Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.", body = FrontierResponse),
+        (status = 400, description = "Malformed body or unknown ?format"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 422, description = "Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes", body = FrontierError)
+    )
+)]
+async fn frontier(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<FrontierQuery>,
+    body: Result<Json<FrontierRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let format = match q.format.as_deref() {
+        None | Some("json") => FrontierFormat::Json,
+        Some("svg") => FrontierFormat::Svg,
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("unknown format '{other}' — use ?format=json or ?format=svg")
+                })),
+            )
+                .into_response();
+        }
+    };
+    let req = match body {
+        Ok(Json(r)) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("body is not valid frontier request JSON: {e}")
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Snapshot every referenced job under one lock, then compute
+    // outside the lock (compute is pure and can be slow-ish for big
+    // point sets; never hold the store lock through it).
+    let snapshots: BTreeMap<String, InvestigationSnapshot> = {
+        let jobs = state.jobs.lock().unwrap();
+        req.investigations
+            .iter()
+            .map(|inv| inv.id().to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|id| jobs.get(&id).map(|j| (id.clone(), snapshot_of(&id, j))))
+            .collect()
+    };
+
+    match frontier::compute(&req, &snapshots, format) {
+        Err(problems) => (StatusCode::UNPROCESSABLE_ENTITY, Json(problems)).into_response(),
+        Ok(FrontierResponse { points }) => match format {
+            FrontierFormat::Json => {
+                (StatusCode::OK, Json(FrontierResponse { points })).into_response()
+            }
+            FrontierFormat::Svg => {
+                // Unwrap safety: compute already validated exactly-2
+                // axes for the svg format.
+                let (x, y) = (&req.axes[0], &req.axes[1]);
+                let svg = frontier::svg::render(
+                    &points,
+                    &frontier::svg::PlotAxis::new(&x.name, x.better),
+                    &frontier::svg::PlotAxis::new(&y.name, y.better),
+                );
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "image/svg+xml")],
+                    svg,
+                )
+                    .into_response()
+            }
+        },
+    }
+}
+
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const VENDOR_PREACT: &str = include_str!("../static/vendor/preact.mjs");
 const VENDOR_HOOKS: &str = include_str!("../static/vendor/hooks.mjs");
 const VENDOR_HTM: &str = include_str!("../static/vendor/htm.mjs");
 
 async fn vendor_preact() -> impl axum::response::IntoResponse {
-    ([("content-type", "text/javascript;charset=utf-8")], VENDOR_PREACT)
+    (
+        [("content-type", "text/javascript;charset=utf-8")],
+        VENDOR_PREACT,
+    )
 }
 async fn vendor_hooks() -> impl axum::response::IntoResponse {
-    ([("content-type", "text/javascript;charset=utf-8")], VENDOR_HOOKS)
+    (
+        [("content-type", "text/javascript;charset=utf-8")],
+        VENDOR_HOOKS,
+    )
 }
 async fn vendor_htm() -> impl axum::response::IntoResponse {
-    ([("content-type", "text/javascript;charset=utf-8")], VENDOR_HTM)
+    (
+        [("content-type", "text/javascript;charset=utf-8")],
+        VENDOR_HTM,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::INDEX_HTML;
+    use super::*;
+    use crate::INDEX_HTML;
+    use axum::http::Request as HttpRequest;
+    use tower::ServiceExt; // oneshot against the REAL router
+
+    /// A state with no LLM client: enough for the grading/frontier
+    /// surface (which is LLM-independent by design).
+    fn test_state() -> Arc<AppState> {
+        Arc::new(AppState {
+            client: None,
+            jobs: Mutex::new(HashMap::new()),
+            default_provider: "zai".into(),
+            models_client: prompt_explore::llm::GenaiClient::builder().build(),
+            models_cache: Mutex::new(None),
+            api_token: None,
+        })
+    }
+
+    fn put(id: &str) -> PromptUnderTest {
+        PromptUnderTest {
+            id: id.into(),
+            template: "You cancel orders.".into(),
+            tools: vec![],
+            design_goals: "Never cancel without an explicit user request.".into(),
+        }
+    }
+
+    /// Seed a DONE job whose attempts have `steps_len` steps each and
+    /// whose PUT model burned `out` output tokens.
+    fn seed_done_job(
+        state: &Arc<AppState>,
+        id: &str,
+        put_id: &str,
+        out: u64,
+        steps_len: Vec<usize>,
+    ) {
+        let attempts: Vec<AttemptView> = steps_len
+            .iter()
+            .map(|n| AttemptView {
+                scenario: Scenario {
+                    world: "demo world".into(),
+                    input_domain: HashMap::new(),
+                    user_message: Some("yes".into()),
+                    simulator_notes: String::new(),
+                },
+                steps: vec![
+                    TraceStep {
+                        model_output: String::new(),
+                        tool_call: None,
+                        tool_response: None,
+                        world_state_after: None,
+                        workspace_ops: vec![],
+                    };
+                    *n
+                ],
+                final_world_state: HashMap::new(),
+                tool_calls: 0,
+                resolved_inputs: HashMap::new(),
+            })
+            .collect();
+        let usage = UsageByRole {
+            put: prompt_explore::llm::UsageTotals {
+                input_tokens: 1000,
+                output_tokens: out,
+                ..Default::default()
+            },
+            sim: Default::default(),
+        };
+        let n_attempts = attempts.len();
+        state.jobs.lock().unwrap().insert(
+            id.to_string(),
+            Job {
+                status: JobStatus::Done,
+                result: Some(InvestigateResponse {
+                    result: RunResult {
+                        status: prompt_explore::model::output::RunStatus::Completed,
+                        scenarios_tried: n_attempts as u32,
+                        failures: vec![],
+                        final_state: None,
+                    },
+                    scenarios_run: n_attempts,
+                    attempts,
+                    usage,
+                }),
+                error: None,
+                progress: Arc::new(Mutex::new(RunProgress::default())),
+                started_at: 0,
+                question: None,
+                put: put(put_id),
+                grades: BTreeMap::new(),
+                scenarios: vec![],
+                model: "zai_coding::glm-5.2".into(),
+                sim_model: "zai_coding::glm-5.2".into(),
+                workspace_files: 0,
+            },
+        );
+    }
+
+    async fn patch_grades(app: &Router, id: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/investigations/{id}"))
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let code = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            code,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    async fn post_frontier(app: &Router, query: &str, body: &str) -> (StatusCode, String, String) {
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri(format!("/api/frontier{query}"))
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let code = res.status();
+        let ct = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = String::from_utf8(
+            axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        (code, ct, body)
+    }
+
+    #[tokio::test]
+    async fn patch_grades_merges_deletes_and_echoes() {
+        let state = test_state();
+        seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
+        let app = build_app(state);
+
+        // Set two axes.
+        let (code, v) = patch_grades(
+            &app,
+            "job-1",
+            r#"{"grades": {"tone_of_voice": 0.8, "clarity": 0.6}}"#,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["grades"]["tone_of_voice"], 0.8);
+        assert_eq!(v["grades"]["clarity"], 0.6);
+
+        // Overwrite one, delete the other; echo shows the merged map.
+        let (code, v) = patch_grades(
+            &app,
+            "job-1",
+            r#"{"grades": {"clarity": 0.9, "tone_of_voice": null}}"#,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["grades"], serde_json::json!({"clarity": 0.9}));
+
+        // Grades are visible on the job view (the UI reads this).
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::get("/api/investigations/job-1")
+                    .body(String::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["grades"]["clarity"], 0.9);
+    }
+
+    #[tokio::test]
+    async fn patch_grades_rejects_reserved_and_bad_names() {
+        let state = test_state();
+        seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
+        let app = build_app(state);
+
+        let (code, v) = patch_grades(&app, "job-1", r#"{"grades": {"put_cost_usd": 1.0}}"#).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(v["problems"][0]["reason"], "reserved_axis_name");
+
+        let (code, v) = patch_grades(&app, "job-1", r#"{"grades": {"Bad Name": 1.0}}"#).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(v["problems"][0]["reason"], "bad_axis_name");
+
+        let (code, v) = patch_grades(&app, "no-such-job", r#"{"grades": {"x": 1.0}}"#).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        assert!(v["error"].as_str().unwrap().contains("lost on restart"));
+    }
+
+    #[tokio::test]
+    async fn frontier_json_and_svg_round_trip() {
+        let state = test_state();
+        seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2, 4]);
+        seed_done_job(&state, "v2", "cancel-bot", 2300, vec![2, 4]);
+        seed_done_job(&state, "v3", "cancel-bot", 3100, vec![3, 3]); // dominated by v2
+        let app = build_app(state.clone());
+        patch_grades(&app, "v1", r#"{"grades": {"tone_of_voice": 0.4}}"#).await;
+        patch_grades(&app, "v2", r#"{"grades": {"tone_of_voice": 0.85}}"#).await;
+        patch_grades(&app, "v3", r#"{"grades": {"tone_of_voice": 0.75}}"#).await;
+
+        let req_body = r#"{
+            "investigations": ["v1", "v2", {"id": "v3", "label": "v3-verbose"}],
+            "axes": [
+                {"name": "put_output_tokens", "better": "lower"},
+                {"name": "tone_of_voice", "better": "higher"}
+            ]
+        }"#;
+        let (code, ct, body) = post_frontier(&app, "?format=json", req_body).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(ct.starts_with("application/json"));
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let points: Vec<_> = v["points"].as_array().unwrap().clone();
+        let find = |label: &str| -> serde_json::Value {
+            points
+                .iter()
+                .find(|p| p["label"] == label)
+                .unwrap_or_else(|| panic!("no point labeled {label} in {points:?}"))
+                .clone()
+        };
+        // Mixed directions: v1 cheapest tokens (frontier despite low
+        // tone), v2 best tone (frontier), v3 dominated by v2 on both.
+        assert_eq!(find("cancel-bot")["on_frontier"], true);
+        assert_eq!(find("cancel-bot#2")["on_frontier"], true);
+        assert_eq!(find("v3-verbose")["on_frontier"], false);
+        assert_eq!(
+            find("v3-verbose")["dominated_by"],
+            serde_json::json!(["v2"])
+        );
+        // Only the REQUESTED axes appear in values.
+        assert!(
+            find("cancel-bot")["values"]
+                .get("steps_per_trace_avg")
+                .is_none()
+        );
+
+        let (code, ct, body) = post_frontier(&app, "?format=svg", req_body).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(ct.starts_with("image/svg+xml"), "ct={ct}");
+        assert!(body.starts_with("<svg "));
+        assert!(body.contains("v3-verbose"));
+    }
+
+    #[tokio::test]
+    async fn frontier_typed_problems_over_http() {
+        let state = test_state();
+        seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2]);
+        state.jobs.lock().unwrap().insert(
+            "still-running".into(),
+            Job {
+                status: JobStatus::Running,
+                result: None,
+                error: None,
+                progress: Arc::new(Mutex::new(RunProgress::default())),
+                started_at: 0,
+                question: None,
+                put: put("cancel-bot"),
+                grades: BTreeMap::new(),
+                scenarios: vec![],
+                model: "zai_coding::glm-5.2".into(),
+                sim_model: "zai_coding::glm-5.2".into(),
+                workspace_files: 0,
+            },
+        );
+        let app = build_app(state);
+
+        let body = r#"{
+            "investigations": ["still-running", "ghost", "v1", "v1"],
+            "axes": [
+                {"name": "put_cost_usd", "better": "lower"},
+                {"name": "tone_of_voice", "better": "higher"}
+            ]
+        }"#;
+        let (code, _ct, body) = post_frontier(&app, "", body).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"], "frontier_request_invalid");
+        let reasons: Vec<&str> = v["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["reason"].as_str().unwrap())
+            .collect();
+        // put_cost_usd is unpriced on v1 (axis_absent) and v1 has no
+        // tone grade (no_grade); the duplicated id reports ONE problem
+        // (duplicate), not its axis problems twice.
+        let mut sorted = reasons.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            vec![
+                "axis_absent",
+                "duplicate_investigation",
+                "job_running",
+                "no_grade",
+                "unknown_investigation"
+            ]
+        );
+        // The no_grade detail names the exact PATCH (fix-instruction
+        // contract, verifiable over HTTP).
+        let no_grade = v["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["reason"] == "no_grade")
+            .unwrap()
+            .clone();
+        assert!(
+            no_grade["detail"]
+                .as_str()
+                .unwrap()
+                .contains("PATCH /api/investigations/v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn frontier_rejects_svg_with_non_two_axes() {
+        let state = test_state();
+        seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2]);
+        let app = build_app(state);
+        let (code, _ct, body) = post_frontier(
+            &app,
+            "?format=svg",
+            r#"{"investigations": ["v1"], "axes": [{"name": "put_output_tokens", "better": "lower"}]}"#, // 1 axis
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body.contains("axis_arity"));
+    }
 
     #[test]
     fn openapi_spec_is_discoverable_from_root_body() {

@@ -14,6 +14,29 @@ Serve the web UI.
 |---|---|
 | `200` | Web UI (HTML) |
 
+### `POST /api/frontier`
+
+Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a v0 rendering constraint — send `format=json` for N axes). Axis direction is declared HERE, per request (`"better": "lower" \| "higher"`), never stored. The harness records your judgment and does arithmetic; it never interprets a grade.  Every fixable problem (missing grade, unpriced cost axis, running job, unknown id, duplicate id, bad label/color, direction conflict with a reserved axis, …) comes back in ONE 422 body with typed reasons, each detail naming the fix — including the exact PATCH to make for a missing grade.
+
+| Parameter | In | Type | Description |
+|---|---|---|---|
+| `format` | query | string | `json` (default) or `svg` |
+
+Body: [`FrontierRequest`](#frontierrequest)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | The axes to compute dominance over. `format=svg` requires EXACTLY 2 (a v0 rendering constraint — the dominance math is N-dimensional); `format=json` accepts any count ≥ 1. |
+| `investigations` | [`FrontierInvestigation`](#frontierinvestigation)[] | yes | The investigations to plot (each must be a `done` job with a value for every axis). Bare id strings or `{id, label?, color?}` objects. Ids must be UNIQUE — duplicates are rejected. Labels: `^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label = the PUT's id (deduplicated) else the uuid prefix; color = a deterministic palette by position. |
+
+
+| Status | Response |
+|---|---|
+| `200` | Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.: [`FrontierResponse`](#frontierresponse) |
+| `400` | Malformed body or unknown ?format |
+| `401` | Missing or invalid bearer token |
+| `422` | Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes: [`FrontierError`](#frontiererror) |
+
 ### `GET /api/investigations`
 
 List all jobs (for the dashboard). Running jobs first, then by recency. Returns summaries only — poll a job's id for full progress.
@@ -58,6 +81,28 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `401` | Missing or invalid bearer token |
 | `404` | Unknown job id |
 
+### `PATCH /api/investigations/{id}`
+
+Merge semantics per axis: a number sets/overwrites, `null` deletes. The response echoes the FULL updated grades map. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (put_/sim_input_tokens, put_/sim_output_tokens, put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_ {avg,min,max,stdev}) — those are harness-computed and cannot be graded. Any scale is fine (0..1, 1..5, raw counts): dominance only needs comparability across points, and direction is declared per request at frontier time, not here.  Grading is allowed in any job state (live-tagging while the run unfolds is fine) — but POST /api/frontier only accepts `done` jobs as points.
+
+| Parameter | In | Type | Description |
+|---|---|---|---|
+| `id` | path | string | Job id returned by POST /api/investigations |
+
+Body: [`GradesPatch`](#gradespatch)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number?&gt; | yes | Axis name → value. Use JSON `null` to DELETE an axis. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (see the frontier docs). |
+
+
+| Status | Response |
+|---|---|
+| `200` | Updated grades (full map echoed): [`GradesView`](#gradesview) |
+| `400` | Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix: [`GradesPatchError`](#gradespatcherror) |
+| `401` | Missing or invalid bearer token |
+| `404` | Unknown job id |
+
 ### `GET /api/models`
 
 | Status | Response |
@@ -77,12 +122,120 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
 | `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
 
+### `BetterDirection`
+
+Whether lower or higher values are better on an axis. Supplied by the caller per request for graded axes; baked in for reserved ones. Dominance normalizes internally (negating lower-is-better values), so "higher score = better" uniformly.
+
+Values: `lower`, `higher`
+
 ### `Budget`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `max_steps_per_trace` | integer | yes | Max steps per trace. A STEP is one tool call OR one final completion (the turn with no tool call that ends the trace). A completion that requests several tool calls counts as several steps. The main cost dial for tool-loop PUTs. |
 | `max_tokens` | integer? | no | Optional per-trace token cap (input+output, summed across turns). |
+
+### `FrontierAxis`
+
+One axis of the frontier plot, with the caller's direction.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `better` | [`BetterDirection`](#betterdirection) | yes | Whether lower or higher values are better on this axis. For graded axes this is YOUR call (encode direction in your own scale, e.g. grade "repeatability" high-good rather than "variance" low-good); for reserved axes it must match the measured direction. |
+| `name` | string | yes | A graded axis name (you PATCHed it) or a reserved measured axis (harness-computed). Reserved names and their baked-in directions: put_/sim_input_tokens (lower), put_/sim_output_tokens (lower), put_/sim_cache_read_tokens (higher — cached input is cheaper input), put_/sim_cost_usd (lower), sim_cost_usd (lower), steps_per_trace_avg/_min/_max/_stdev (lower). Requesting a reserved axis with a contradicting `better` is rejected. |
+
+### `FrontierError`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes |  |
+| `problems` | [`FrontierProblem`](#frontierproblem)[] | yes |  |
+
+### `FrontierInvestigation`
+
+An investigation referenced by the frontier request: a bare id, or an object carrying an optional plot label and color.
+
+**Variant**
+
+`string`
+
+**Variant**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `color` | string? | no |  |
+| `id` | string | yes |  |
+| `label` | string? | no |  |
+
+### `FrontierPoint`
+
+One point of the frontier result.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `color` | string | yes |  |
+| `dominated_by` | string[] | yes | Investigations that dominate this point (empty when on the frontier). Tells an optimizer exactly what to compare against. |
+| `investigation` | string | yes | The investigation uuid (uuids, not labels, are the stable key — labels are not unique by design). |
+| `label` | string | yes |  |
+| `on_frontier` | boolean | yes | True when no other point dominates this one. Ties dominate nothing: equal points are both on the frontier. |
+| `values` | map&lt;string, number&gt; | yes | Resolved value per axis name. |
+
+### `FrontierProblem`
+
+One fixable problem in a frontier request. Every `detail` names the fix — including, for missing grades, the exact PATCH to make.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axis` | string? | no |  |
+| `detail` | string | yes |  |
+| `investigation` | string? | no |  |
+| `reason` | string | yes |  |
+
+### `FrontierRequest`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | The axes to compute dominance over. `format=svg` requires EXACTLY 2 (a v0 rendering constraint — the dominance math is N-dimensional); `format=json` accepts any count ≥ 1. |
+| `investigations` | [`FrontierInvestigation`](#frontierinvestigation)[] | yes | The investigations to plot (each must be a `done` job with a value for every axis). Bare id strings or `{id, label?, color?}` objects. Ids must be UNIQUE — duplicates are rejected. Labels: `^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label = the PUT's id (deduplicated) else the uuid prefix; color = a deterministic palette by position. |
+
+### `FrontierResponse`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `points` | [`FrontierPoint`](#frontierpoint)[] | yes |  |
+
+### `GradeProblem`
+
+One fixable problem in a grades PATCH. The `detail` names the fix.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axis` | string | yes |  |
+| `detail` | string | yes |  |
+| `reason` | string | yes | `bad_axis_name` \| `reserved_axis_name` \| `non_finite_value` |
+
+### `GradesPatch`
+
+Caller judgment recorded on an investigation: axis name → number. Merge semantics per axis: a number sets/overwrites, `null` deletes.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number?&gt; | yes | Axis name → value. Use JSON `null` to DELETE an axis. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (see the frontier docs). |
+
+### `GradesPatchError`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes |  |
+| `problems` | [`GradeProblem`](#gradeproblem)[] | yes |  |
+
+### `GradesView`
+
+The echo response: the full, updated grades map.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number&gt; | yes |  |
 
 ### `InvestigateRequest`
 
@@ -136,6 +289,7 @@ Values: `running`, `done`, `failed`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string? | no |  |
+| `grades` | map&lt;string, number&gt; | yes | Caller-graded axes on this investigation (PATCHed via PATCH /api/investigations/{id}). Free-form names, caller-chosen scales (0..1, 1..5, anything); consumed by POST /api/frontier as judged axes alongside the reserved measured ones. The harness stores them and never interprets them. |
 | `id` | string | yes | The job's id (same value as the `{id}` path segment and the id in `JobSummary`). Echoed in the body so a consumer holding only this representation knows which job it is — without it, a dashboard that reconciles a list of views by key has nothing stable to key on and silently falls back to positional matching (which leaks per-item UI state such as an unfolded conversation to whatever job sorts into that slot next). |
 | `model` | string | yes | The resolved model name that ran the prompt under test (the `model` from the request, or the server default). Echoed RESOLVED so a reader knows exactly what produced the traces — including the default, which the request leaves implicit. |
 | `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in (see RunPhase: scenarios). This is the observable status of the job's LLM work. Mirrors `progress.phase`. |

@@ -559,8 +559,15 @@ pub fn compute(
     // Resolve values. Status problems are per-investigation (the root
     // cause); value problems are per (investigation, axis).
     let mut rows: Vec<(&InvestigationSnapshot, Vec<f64>, String, String)> = Vec::new();
+    let mut resolved_ids: Vec<&str> = Vec::new();
     for (idx, inv) in req.investigations.iter().enumerate() {
         let id = inv.id();
+        // A repeated id is already flagged as duplicate_investigation
+        // above; resolving it again would double-report its problems.
+        if resolved_ids.contains(&id) {
+            continue;
+        }
+        resolved_ids.push(id);
         let Some(snap) = snapshots.get(id) else {
             problems.push(FrontierProblem {
                 investigation: Some(id.to_string()),
