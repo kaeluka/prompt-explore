@@ -279,6 +279,30 @@ description, or example in the spec:
   result. Probe answers that invent or miss affordances are spec bugs:
   fix the spec's words, not the prober's model.
 
+**Framing probes takes iteration — the framing IS the experiment.** A
+probe that asks "how would you grade traces?" gets plans; plans are
+cheap and every model aces them. The signal came only when the probe
+was framed as: "you are a coding agent with bash access; you triggered
+an investigation to <goal>; it is done; GET /api/investigations/$id
+returns ~100kb — grade it on <axis>." Then the temptation is real: the
+shell is one keystroke away, the data is too big to read, and the
+probe measures what the agent actually does (curl|jq the structure?
+grep for keywords? read the traces?) rather than what it says it
+would do. Expect to iterate on framing several times before the probe
+actually probes; when the answer stops being a plan and starts being
+behavior, the framing is right.
+
+**When the probe world simulates tool access to the API itself, give
+the WORLD the real spec.** A scenario whose PUT has a bash tool and
+whose user message points at `127.0.0.1:8080` makes the simulator
+answer `curl /api/investigations/{id}` from imagination — and it will
+invent plausible-but-wrong API behavior (observed: a fictional
+`409 job_read_only` on PATCH, a `grades` map with string values the
+real schema forbids). Those inventions then confound the probe's
+conclusion. Paste the real openapi.json into the world (or its
+relevant slices) and pin the rendered responses to it, so simulated
+API behavior matches the spec under test.
+
 Example precedent: tightening the (now-removed) judge prompt to require that
 a behavior *actually occurred* was validated by re-running the
 destructive-action investigation — the false positive vanished and a real
