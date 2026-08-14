@@ -7,6 +7,7 @@
 //! read the traces and decide what (if anything) to fix. The question is
 //! advisory framing, not an oracle. There is no in-harness verdict.
 
+pub mod frontier;
 pub mod generate;
 pub mod llm;
 pub mod model;
