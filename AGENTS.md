@@ -196,6 +196,14 @@ no Rust toolchain required.
 
 **To cut a release:**
 
+**REQUIRED: clarify the version before bumping.** When asked to cut a
+release, do NOT choose the version number yourself — ask the operator
+which bump they want (patch / minor / major, or an explicit number) and
+confirm before committing. Version bumps encode intent (breaking vs
+additive vs fix) and that judgment belongs to the operator, not the
+agent. Only proceed unilaterally if the operator already named the
+version in the request.
+
 ```bash
 # 1. main is green, working tree clean.
 cargo test
@@ -203,6 +211,7 @@ git status   # clean
 
 # 2. Bump the version. It lives once, in the workspace manifest.
 #    Cargo.toml:  [workspace.package]  version = "0.1.1"
+#    (after the operator has confirmed WHICH bump)
 
 # 3. Commit, tag that commit, push both.
 git commit -am "Bump version to 0.1.1"
