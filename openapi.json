@@ -1131,7 +1131,7 @@
           },
           "world": {
             "type": "string",
-            "description": "The world specification — ground truth the simulator renders tool\nresponses from and the caller checks claims against. A SPECIFICATION\n(prose), not instantiated data. See the API description's DESIGN\nINTENT. Cover inventory, facts (incl. negatives), completeness,\nand rendering rules."
+            "description": "The world specification — ground truth the simulator renders tool\nresponses from and the caller checks claims against. A SPECIFICATION\n(prose), not instantiated data. See the API description's DESIGN\nINTENT. Cover inventory, facts (incl. negatives), completeness,\nand rendering rules.\n\nIf the tools expose a REAL system with authoritative documentation\n(an OpenAPI spec, a man page, a CLI's --help), EMBED that\ndocumentation in the world verbatim and pin the rendering rules to\nit: \"the embedded spec is authoritative for every rendered\nresponse.\" Without it the simulator invents plausible-but-wrong\nbehavior for the documented surface (wrong error codes, invented\nfields, impossible operations) — verified by A/B: simulated API\ncalls invented 409 read-only errors and off-schema bodies until the\nreal spec was embedded, after which responses matched the contract.\nThe same applies to any authoritative doc: embed it, then pin\nrendering to it."
           }
         }
       },

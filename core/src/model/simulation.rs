@@ -178,6 +178,18 @@ pub struct Scenario {
     /// (prose), not instantiated data. See the API description's DESIGN
     /// INTENT. Cover inventory, facts (incl. negatives), completeness,
     /// and rendering rules.
+    ///
+    /// If the tools expose a REAL system with authoritative documentation
+    /// (an OpenAPI spec, a man page, a CLI's --help), EMBED that
+    /// documentation in the world verbatim and pin the rendering rules to
+    /// it: "the embedded spec is authoritative for every rendered
+    /// response." Without it the simulator invents plausible-but-wrong
+    /// behavior for the documented surface (wrong error codes, invented
+    /// fields, impossible operations) — verified by A/B: simulated API
+    /// calls invented 409 read-only errors and off-schema bodies until the
+    /// real spec was embedded, after which responses matched the contract.
+    /// The same applies to any authoritative doc: embed it, then pin
+    /// rendering to it.
     pub world: String,
     /// Per-`{{variable}}` input-domain descriptions: the value space,
     /// semantics, and preconditions/trust contracts. Each KEY must match
