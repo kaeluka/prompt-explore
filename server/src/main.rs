@@ -388,6 +388,11 @@ fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("    --dump-openapi    Print the OpenAPI spec as JSON and exit");
+    println!("    --demo-frontier   Run the grades + Pareto-frontier demo against a live");
+    println!("                      loopback server (seeded with a representative 4-variant");
+    println!("                      campaign; no provider keys needed — grading and the");
+    println!("                      frontier are LLM-independent), print the HTTP transcript,");
+    println!("                      and exit");
     println!("    -h, --help        Print this help message and exit");
     println!("    -v, --version     Print version and exit");
     println!();
@@ -449,6 +454,99 @@ fn build_app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// A DONE job fabricated for tests and the `--demo-frontier` mode:
+/// `steps_per_trace` attempts of the given step counts, and a PUT that
+/// burned `out_tokens` output tokens. Realistic shapes, made-up numbers
+/// (clearly a fixture — no LLM was billed).
+#[allow(dead_code)]
+fn fabricate_done_job(
+    job_id: &str,
+    put_id: &str,
+    template: &str,
+    out_tokens: u64,
+    steps_per_trace: &[usize],
+) -> (String, Job) {
+    let attempts: Vec<AttemptView> = steps_per_trace
+        .iter()
+        .map(|n| AttemptView {
+            scenario: Scenario {
+                world: "Demo world: order O-1 exists and belongs to the user. Facts: \
+                        the user has NOT asked to cancel anything."
+                    .into(),
+                input_domain: HashMap::new(),
+                user_message: Some("yes".into()),
+                simulator_notes: String::new(),
+            },
+            steps: vec![
+                TraceStep {
+                    model_output: "Order O-1 is confirmed cancelled.".into(),
+                    tool_call: None,
+                    tool_response: None,
+                    world_state_after: None,
+                    workspace_ops: vec![],
+                };
+                *n
+            ],
+            final_world_state: HashMap::new(),
+            tool_calls: 0,
+            resolved_inputs: HashMap::new(),
+        })
+        .collect();
+    let usage = UsageByRole {
+        put: prompt_explore::llm::UsageTotals {
+            input_tokens: 4200,
+            output_tokens: out_tokens,
+            ..Default::default()
+        },
+        sim: prompt_explore::llm::UsageTotals {
+            input_tokens: 9800,
+            output_tokens: 1600,
+            ..Default::default()
+        },
+    };
+    let n = attempts.len();
+    (
+        job_id.to_string(),
+        Job {
+            status: JobStatus::Done,
+            result: Some(InvestigateResponse {
+                result: RunResult {
+                    status: prompt_explore::model::output::RunStatus::Completed,
+                    scenarios_tried: n as u32,
+                    failures: vec![],
+                    final_state: None,
+                },
+                scenarios_run: n,
+                attempts,
+                usage,
+            }),
+            error: None,
+            progress: Arc::new(Mutex::new(RunProgress::default())),
+            started_at: 0,
+            question: Some("How do tone instructions trade off against cost?".into()),
+            put: PromptUnderTest {
+                id: put_id.into(),
+                template: template.into(),
+                tools: vec![],
+                design_goals: "Cancel orders only on explicit user request.".into(),
+            },
+            grades: BTreeMap::new(),
+            scenarios: vec![],
+            model: "zai_coding::glm-5.2".into(),
+            sim_model: "zai_coding::glm-5.2".into(),
+            workspace_files: 0,
+        },
+    )
+}
+
+/// `--demo-frontier`: seed a representative optimization campaign, serve
+/// it on loopback, and drive the full grades → frontier flow over real
+/// HTTP, printing a curl-style transcript. The fixtures are fabricated
+/// (no provider keys needed): the grading + frontier surface is
+/// LLM-independent by design — the caller judges, the harness records
+/// and computes.
+mod demo;
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -468,6 +566,11 @@ async fn main() {
             "{}",
             ApiDoc::openapi().to_pretty_json().expect("spec serializes")
         );
+        return;
+    }
+
+    if args.iter().any(|a| a == "--demo-frontier") {
+        demo::run().await;
         return;
     }
 
@@ -1373,66 +1476,8 @@ mod tests {
         out: u64,
         steps_len: Vec<usize>,
     ) {
-        let attempts: Vec<AttemptView> = steps_len
-            .iter()
-            .map(|n| AttemptView {
-                scenario: Scenario {
-                    world: "demo world".into(),
-                    input_domain: HashMap::new(),
-                    user_message: Some("yes".into()),
-                    simulator_notes: String::new(),
-                },
-                steps: vec![
-                    TraceStep {
-                        model_output: String::new(),
-                        tool_call: None,
-                        tool_response: None,
-                        world_state_after: None,
-                        workspace_ops: vec![],
-                    };
-                    *n
-                ],
-                final_world_state: HashMap::new(),
-                tool_calls: 0,
-                resolved_inputs: HashMap::new(),
-            })
-            .collect();
-        let usage = UsageByRole {
-            put: prompt_explore::llm::UsageTotals {
-                input_tokens: 1000,
-                output_tokens: out,
-                ..Default::default()
-            },
-            sim: Default::default(),
-        };
-        let n_attempts = attempts.len();
-        state.jobs.lock().unwrap().insert(
-            id.to_string(),
-            Job {
-                status: JobStatus::Done,
-                result: Some(InvestigateResponse {
-                    result: RunResult {
-                        status: prompt_explore::model::output::RunStatus::Completed,
-                        scenarios_tried: n_attempts as u32,
-                        failures: vec![],
-                        final_state: None,
-                    },
-                    scenarios_run: n_attempts,
-                    attempts,
-                    usage,
-                }),
-                error: None,
-                progress: Arc::new(Mutex::new(RunProgress::default())),
-                started_at: 0,
-                question: None,
-                put: put(put_id),
-                grades: BTreeMap::new(),
-                scenarios: vec![],
-                model: "zai_coding::glm-5.2".into(),
-                sim_model: "zai_coding::glm-5.2".into(),
-                workspace_files: 0,
-            },
-        );
+        let (id, job) = fabricate_done_job(id, put_id, "demo template", out, &steps_len);
+        state.jobs.lock().unwrap().insert(id, job);
     }
 
     async fn patch_grades(app: &Router, id: &str, body: &str) -> (StatusCode, serde_json::Value) {

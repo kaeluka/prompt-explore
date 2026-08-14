@@ -72,6 +72,26 @@
   .utag.ws { background: rgba(46,170,160,0.14); color: #7fd9cf; border: 1px solid rgba(46,170,160,0.4); }
   .wsops { margin: 0.15rem 0 0.15rem 1.4rem; border-left: 2px solid rgba(46,170,160,0.4); padding-left: 0.5rem; }
   .wsop { margin: 0.2rem 0; }
+  /* Grades editor + frontier panel */
+  input[type=text], input[type=number], select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.22rem 0.5rem; font-size: 0.8rem; font-family: var(--mono); }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .grow { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .grade-row { display: flex; gap: 0.4rem; align-items: center; margin: 0.22rem 0; }
+  .grade-row .name { font-family: var(--mono); font-size: 0.78rem; color: var(--text); min-width: 11em; }
+  .grade-row input { width: 7em; }
+  .del { color: var(--text-dim); cursor: pointer; border: none; background: none; padding: 0 0.2rem; font-size: 0.9rem; }
+  .del:hover { color: var(--red); }
+  .axis-grid { display: grid; grid-template-columns: 1fr auto auto; gap: 0.4rem 0.6rem; align-items: center; }
+  .frontier-err { border-left: 2px solid var(--red); padding-left: 0.6rem; margin: 0.4rem 0; }
+  .frontier-err .reason { font-family: var(--mono); font-size: 0.74rem; color: var(--red); }
+  .ptable { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-top: 0.5rem; }
+  .ptable th, .ptable td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border); }
+  .ptable .dom { color: var(--text-dim); }
+  .ptable .nd { color: var(--green); font-weight: 700; }
+  .frontier-svg { margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
+  .frontier-svg svg { display: block; }
 </style>
 </head>
 <body>
@@ -230,7 +250,154 @@ function ResultLine({ j }) {
     </div>`;
 }
 
-function JobCard({ j }) {
+// ---------------------------------------------------------------------
+// Grades (caller judgment, recorded via PATCH) + Pareto frontier
+// ---------------------------------------------------------------------
+// Reserved measured axes: harness-computed, direction baked in. The
+// name → direction pairs mirror core::frontier::RESERVED_AXES.
+const RESERVED_AXES = [
+  ['put_input_tokens','lower'], ['put_output_tokens','lower'], ['put_cache_read_tokens','higher'],
+  ['put_cost_usd','lower'], ['sim_input_tokens','lower'], ['sim_output_tokens','lower'],
+  ['sim_cache_read_tokens','higher'], ['sim_cost_usd','lower'],
+  ['steps_per_trace_avg','lower'], ['steps_per_trace_min','lower'],
+  ['steps_per_trace_max','lower'], ['steps_per_trace_stdev','lower'],
+];
+const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null])[1];
+
+// Editable grades on one job. Sends the full desired map (numbers to
+// set, null to delete — merge semantics on the server); the 2.5s poll
+// refreshes j.grades right after.
+function GradesPanel({ j, token }) {
+  const [rows, setRows] = useState(() => Object.entries(j.grades || {}).map(([k, v]) => ({ k, v: String(v) })));
+  const [nk, setNk] = useState(''); const [nv, setNv] = useState('');
+  const [msg, setMsg] = useState(null);
+  const set = (i, f) => setRows(rows.map((r, x) => x === i ? { ...r, ...f } : r));
+  const save = async () => {
+    const grades = {};
+    for (const r of rows.concat(nk ? [{ k: nk, v: nv }] : [])) {
+      if (!r.k) continue;
+      if (r.v === '' || r.v === null) { grades[r.k] = null; }
+      else {
+        const f = Number(r.v);
+        if (!Number.isFinite(f)) { setMsg({ err: `${r.k}: not a number` }); return; }
+        grades[r.k] = f;
+      }
+    }
+    setMsg(null);
+    const r = await fetch(API(j.id), { method: 'PATCH', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify({ grades }) });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) setMsg({ ok: 'saved' });
+    else setMsg({ err: (body.problems || []).map(p => p.detail).join(' · ') || body.error || r.status });
+  };
+  return html`
+    <details style="margin-top:0.4rem">
+      <summary class="meta">grades ${rows.length ? `· ${rows.length} axis${rows.length===1?'':'es'}` : ''} <span style="opacity:0.7">(caller judgment — PATCHed, then used by the frontier)</span></summary>
+      <div style="margin:0.4rem 0 0.2rem">
+        ${rows.map((r, i) => html`
+          <div class="grade-row" key=${r.k}>
+            <span class="name">${r.k}</span>
+            <input type="text" value=${r.v} onInput=${e => set(i, { v: e.target.value })} />
+            <button class="del" title="delete this axis" onClick=${() => setRows(rows.filter((_, x) => x !== i))}>✕</button>
+          </div>`)}
+        <div class="grade-row">
+          <input type="text" placeholder="new_axis_name" value=${nk} onInput=${e => setNk(e.target.value)} style="min-width:11em" />
+          <input type="text" placeholder="value" value=${nv} onInput=${e => setNv(e.target.value)} />
+          <button class="del" title="add" onClick=${() => { if (nk) { setRows(rows.concat([{ k: nk, v: nv }])); setNk(''); setNv(''); } }}>＋</button>
+        </div>
+        <div class="grow" style="margin-top:0.35rem">
+          <button onClick=${save}>save grades</button>
+          ${msg?.ok ? html`<span class="meta" style="color:var(--green)">✓ ${msg.ok}</span>` : null}
+          ${msg?.err ? html`<span class="note">${msg.err}</span>` : null}
+        </div>
+      </div>
+    </details>`;
+}
+
+// The frontier panel: pick done investigations + 2 axes (reserved
+// measured or graded), get the SVG plot and the dominance table.
+function FrontierPanel({ jobs, token }) {
+  const eligible = (jobs || []).filter(j => j.status === 'done');
+  const [sel, setSel] = useState({});
+  const [xAx, setXAx] = useState('put_output_tokens');
+  const [yAx, setYAx] = useState('');
+  const [dirs, setDirs] = useState({});   // graded axis name → 'lower'|'higher'
+  const [plot, setPlot] = useState(null); // { svg, table }
+  const [err, setErr] = useState(null);
+  const gradedNames = [...new Set(eligible.flatMap(j => Object.keys(j.grades || {})))];
+  const options = RESERVED_AXES.map(([n]) => n).concat(gradedNames.filter(n => !reservedDir(n)));
+  // Effective axis names, derived at render time so defaults adapt as
+  // jobs arrive and get graded (state only stores explicit choices).
+  const xName = xAx || 'put_output_tokens';
+  const yName = yAx || gradedNames.find(n => !reservedDir(n)) || 'steps_per_trace_avg';
+  const dirOf = n => reservedDir(n) || dirs[n] || 'higher';
+  const setDir = (n, d) => setDirs({ ...dirs, [n]: d });
+  const chosen = eligible.filter(j => sel[j.id]);
+
+  const run = async () => {
+    setErr(null); setPlot(null);
+    const body = {
+      investigations: chosen.map(j => j.id),
+      axes: [
+        { name: xName, better: dirOf(xName) },
+        { name: yName, better: dirOf(yName) },
+      ],
+    };
+    const [svgR, jsonR] = await Promise.all([
+      fetch('/api/frontier?format=svg', { method: 'POST', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      fetch('/api/frontier?format=json', { method: 'POST', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+    ]);
+    if (!svgR.ok || !jsonR.ok) {
+      const b = await jsonR.json().catch(() => ({}));
+      setErr(b.problems || [{ reason: b.error || 'error', detail: `HTTP ${jsonR.status}` }]);
+      return;
+    }
+    setPlot({ svg: await svgR.text(), table: (await jsonR.json()).points });
+  };
+
+  const axisPicker = (label, name, set) => html`
+    <div class="axis-grid">
+      <span class="meta">${label}</span>
+      <select value=${name} onChange=${e => set(e.target.value)}>
+        ${options.map(o => html`<option value=${o} key=${o}>${o}${reservedDir(o) ? '' : ' (graded)'}</option>`)}
+      </select>
+      ${reservedDir(name)
+        ? html`<span class="meta" title="reserved measured axis — direction is baked in">${reservedDir(name)} is better 🔒</span>`
+        : html`<select value=${dirOf(name)} onChange=${e => setDir(name, e.target.value)} title="your call: direction is declared per request, never stored">
+            <option value="higher">higher is better</option>
+            <option value="lower">lower is better</option>
+          </select>`}
+    </div>`;
+
+  return html`
+    <div class="card">
+      <h2>📈 Pareto frontier <span class="meta" style="font-weight:400">— which variants nobody dominates</span></h2>
+      ${eligible.length < 2 ? html`<div class="meta" style="margin:0.4rem 0">Needs ≥ 2 done investigations to compare.${jobs && jobs.length ? ' Grade finished ones and plot them here as more finish.' : ''}</div>` : html`
+        <div style="margin:0.45rem 0">
+          ${eligible.map(j => html`
+            <label class="meta" style="margin-right:1rem;white-space:nowrap;cursor:pointer">
+              <input type="checkbox" checked=${!!sel[j.id]} onClick=${() => setSel({ ...sel, [j.id]: !sel[j.id] })} />
+              ${(j.put && j.put.id) || j.id.slice(0,8)}
+            </label>`)}
+        </div>
+        <div style="margin:0.45rem 0">${axisPicker('x axis', xName, setXAx)}${axisPicker('y axis', yName, setYAx)}</div>
+        <div class="grow"><button onClick=${run} disabled=${chosen.length < 1}>plot</button>
+          <span class="meta" style="opacity:0.75">up &amp; right is better, whichever directions you pick</span></div>`}
+      ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}${p.investigation ? ` · ${String(p.investigation).slice(0,8)}` : ''}${p.axis ? ` · ${p.axis}` : ''}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
+      ${plot ? html`
+        <div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>
+        <table class="ptable">
+          <thead><tr><th>point</th><th>on frontier</th><th>dominated by</th></tr></thead>
+          <tbody>${plot.table.map(p => html`
+            <tr key=${p.investigation}>
+              <td class="mono">${p.label}</td>
+              <td>${p.on_frontier ? html`<span class="nd">yes</span>` : html`<span class="dom">no</span>`}</td>
+              <td class="dom mono">${(p.dominated_by || []).map(d => (plot.table.find(q => q.investigation === d) || { label: d }).label).join(', ') || '—'}</td>
+            </tr>`)}</tbody>
+        </table>` : null}
+    </div>`;
+}
+
+function JobCard({ j, token }) {
   const inputById = {}; (j.scenarios || []).forEach(s => { inputById[s.id] = s; });
   const progs = (j.progress && j.progress.scenarios) || [];
   return html`
@@ -248,6 +415,7 @@ function JobCard({ j }) {
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.question ? html`<span><b>question:</b> ${j.question}</span>` : html`<span class="meta" style="opacity:0.7">(no question — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />
+      <${GradesPanel} j=${j} token=${token} />
       <${ResultLine} j=${j} />
       <div class="scens" style="margin-top:0.5rem">
         ${progs.map(p => html`<${ScenarioPanel} key=${p.scenario_id} prog=${p} input=${inputById[p.scenario_id]} />`)}
@@ -325,11 +493,12 @@ function App() {
         </div>
         ${authError ? html`<div class="note" style="margin-top:0.4rem">That token was rejected — check it and try again.</div>` : null}
       </div>` : null}
+    ${authRequired ? null : jobs === null ? null : html`<${FrontierPanel} jobs=${jobs} token=${token} />`}
     <div id="jobs">
       ${authRequired ? null
        : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} />`)}
+       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} />`)}
     </div>
     <footer class="meta" style="margin-top:2rem;text-align:center">
       API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>
