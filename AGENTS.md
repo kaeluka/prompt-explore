@@ -142,6 +142,11 @@ Cargo workspace:
   There is no judge module — the caller is the judge.
 - `server/` — thin axum wrapper (HTTP + web UI). **No business logic here.**
   Job-based API (`POST /api/investigations` → poll `GET /api/investigations/:id`).
+  The job store is **in memory** — jobs (and any caller-supplied annotations on
+  them) are lost on restart. This is a conscious limitation, chosen to keep
+  development fast and deployment trivially easy (single binary, no DB). Do not
+  add a persistence layer casually; if durability becomes a requirement, it
+  should be a deliberate design decision with its own scope — not a drive-by.
 
 ## Conventions
 
