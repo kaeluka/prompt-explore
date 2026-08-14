@@ -92,6 +92,10 @@
   .ptable .nd { color: var(--green); font-weight: 700; }
   .frontier-svg { margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
   .frontier-svg svg { display: block; }
+  /* Long failure texts (e.g. full provider error bodies) are clipped to one
+     line-length; the "…" / "⌃" marker toggles the rest. */
+  .clip-toggle { color: var(--accent); cursor: pointer; user-select: none; font-weight: 700; padding: 0 0.1rem; }
+  .clip-toggle:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -129,6 +133,16 @@ const roleLine = (label, u, cls) => u ? html`<div class="meta usage-line"><span 
 const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({scenarios:'simulating scenarios'})[p] || p;
+
+// Failure texts (e.g. "simulator call failed: …" plus the whole provider
+// body) can run several screens long. Clip to the first `limit` chars and
+// make the marker itself the toggle: click "…" to expand, "⌃" to collapse.
+function ClipText({ text, limit = 150 }) {
+  const [open, setOpen] = useState(false);
+  const s = text == null ? '' : String(text);
+  if (s.length <= limit) return html`<span>${s}</span>`;
+  return html`<span>${open ? s : s.slice(0, limit)}<span class="clip-toggle" onClick=${() => setOpen(!open)} title=${open ? 'collapse' : 'expand full error'}>${open ? ' ⌃' : '…'}</span></span>`;
+}
 
 function ScenBadge({ s }) {
   const st = s.state || {}, kind = st.kind || 'running';
@@ -200,7 +214,7 @@ function ScenarioPanel({ prog, input }) {
         <${ScenBadge} s=${prog} />
         <span class="meta">${(prog.steps||[]).length} turn(s)</span>
       </div>
-      ${kind === 'failed' ? html`<div class="note" style="margin:0.3rem 0">${st.error}</div>` : null}
+      ${kind === 'failed' ? html`<div class="note" style="margin:0.3rem 0"><${ClipText} text=${st.error} /></div>` : null}
       ${input ? html`
         <details>
           <summary>scenario spec (world)</summary>
@@ -246,7 +260,7 @@ function ResultLine({ j }) {
       <span class="badge ${rr.status}">${rr.status}</span>
       <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} trace(s)${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
       ${r.usage ? html`<div style="margin-top:0.2rem">${roleLine('put', r.usage.put, 'put')}${roleLine('sim', r.usage.sim, 'sim')}</div>` : null}
-      ${rr.failures && rr.failures.length ? html`<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map(f => html`<div class="step"><b>${(f.scenario&&f.scenario.user_message)||'(no user message)'}</b> (${f.stage}): ${f.error}</div>`)}</div></details>` : null}
+      ${rr.failures && rr.failures.length ? html`<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map((f, i) => html`<div class="step" key=${i}><b>${(f.scenario&&f.scenario.user_message)||'(no user message)'}</b> (${f.stage}): <${ClipText} text=${f.error} /></div>`)}</div></details>` : null}
     </div>`;
 }
 
