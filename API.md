@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional behavioral question. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. The question is advisory framing — it states what the caller is worried about and is surfaced with the result to guide reading the traces — not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.  THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the "simulation workspace" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. "use the write tool to record any generated source code"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: "these are ALL the files; anything else is not found"; partial: "these are SOME files; simulate the rest"). Each trace step records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 5 MB compressed, ≤ 50 MB decompressed; zip-slip entries are rejected.   AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.
+Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional free-form `reason` justifying the run. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.  THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the "simulation workspace" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. "use the write tool to record any generated source code"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: "these are ALL the files; anything else is not found"; partial: "these are SOME files; simulate the rest"). Each trace step records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 5 MB compressed, ≤ 50 MB decompressed; zip-slip entries are rejected.   AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.
 
 Version: `0.1.2` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -13,6 +13,29 @@ Serve the web UI.
 | Status | Response |
 |---|---|
 | `200` | Web UI (HTML) |
+
+### `POST /api/frontier`
+
+Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a v0 rendering constraint — send `format=json` for N axes). Axis direction is declared HERE, per request (`"better": "lower" \| "higher"`), never stored. The harness records your judgment and does arithmetic; it never interprets a grade — including which graded values are "good enough" or what an axis should measure. Those are caller-domain questions, answered when you PATCH grades from the traces.  Every fixable problem (missing grade, unpriced cost axis, running job, unknown id, duplicate id, bad label/color, direction conflict with a reserved axis, …) comes back in ONE 422 body with typed reasons, each detail naming the fix — including the exact PATCH to make for a missing grade.
+
+| Parameter | In | Type | Description |
+|---|---|---|---|
+| `format` | query | string | `json` (default) or `svg` |
+
+Body: [`FrontierRequest`](#frontierrequest)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | The axes to compute dominance over. `format=svg` requires EXACTLY 2 (a v0 rendering constraint — the dominance math is N-dimensional); `format=json` accepts any count ≥ 1. |
+| `investigations` | [`FrontierInvestigation`](#frontierinvestigation)[] | yes | The investigations to plot (each must be a `done` job with a value for every axis). Bare id strings or `{id, label?, color?}` objects. Ids must be UNIQUE — duplicates are rejected. Labels: `^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label = the PUT's id (deduplicated) else the uuid prefix; color = a deterministic palette by position. |
+
+
+| Status | Response |
+|---|---|
+| `200` | Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.: [`FrontierResponse`](#frontierresponse) |
+| `400` | Malformed body or unknown ?format |
+| `401` | Missing or invalid bearer token |
+| `422` | Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes: [`FrontierError`](#frontiererror) |
 
 ### `GET /api/investigations`
 
@@ -58,6 +81,28 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `401` | Missing or invalid bearer token |
 | `404` | Unknown job id |
 
+### `PATCH /api/investigations/{id}`
+
+Grade by READING the traces with your full goal in mind. The reason grading is the caller's job (not the harness's, not a script's) is that you hold goal-context that does not compress into words: mechanical stand-ins (regexes over summaries, extractors) approximate judgment and drift badly. Use scripts to FIND the moments worth judging — never to decide. Prefer axes that VARY across your variants: an axis every investigation scores the same on cannot separate anything on a frontier; saturating axes usually mean the scenarios are too easy, not that the variants tie.  Merge semantics per axis: a number sets/overwrites, `null` deletes. The response echoes the FULL updated grades map. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (put_/sim_input_tokens, put_/sim_output_tokens, put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_ {avg,min,max,stdev}) — those are harness-computed and cannot be graded. Any scale is fine (0..1, 1..5, raw counts): dominance only needs comparability across points, and direction is declared per request at frontier time, not here.  Grading is allowed in any job state (live-tagging while the run unfolds is fine) — but POST /api/frontier only accepts `done` jobs as points.
+
+| Parameter | In | Type | Description |
+|---|---|---|---|
+| `id` | path | string | Job id returned by POST /api/investigations |
+
+Body: [`GradesPatch`](#gradespatch)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number?&gt; | yes | Axis name → value. Use JSON `null` to DELETE an axis. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (see the frontier docs). |
+
+
+| Status | Response |
+|---|---|
+| `200` | Updated grades (full map echoed): [`GradesView`](#gradesview) |
+| `400` | Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix: [`GradesPatchError`](#gradespatcherror) |
+| `401` | Missing or invalid bearer token |
+| `404` | Unknown job id |
+
 ### `GET /api/models`
 
 | Status | Response |
@@ -77,12 +122,120 @@ Poll an investigation job. `progress` is always present (live steps while runnin
 | `steps` | [`TraceStep`](#tracestep)[] | yes | Structured steps, rendered as HTML by the UI. |
 | `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
 
+### `BetterDirection`
+
+Whether lower or higher values are better on an axis. Supplied by the caller per request for graded axes; baked in for reserved ones. Dominance normalizes internally (negating lower-is-better values), so "higher score = better" uniformly.
+
+Values: `lower`, `higher`
+
 ### `Budget`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `max_steps_per_trace` | integer | yes | Max steps per trace. A STEP is one tool call OR one final completion (the turn with no tool call that ends the trace). A completion that requests several tool calls counts as several steps. The main cost dial for tool-loop PUTs. |
 | `max_tokens` | integer? | no | Optional per-trace token cap (input+output, summed across turns). |
+
+### `FrontierAxis`
+
+One axis of the frontier plot, with the caller's direction.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `better` | [`BetterDirection`](#betterdirection) | yes | Whether lower or higher values are better on this axis. For graded axes this is YOUR call (encode direction in your own scale, e.g. grade "repeatability" high-good rather than "variance" low-good); for reserved axes it must match the measured direction. |
+| `name` | string | yes | A graded axis name (you PATCHed it) or a reserved measured axis (harness-computed). Reserved names and their baked-in directions: put_/sim_input_tokens (lower), put_/sim_output_tokens (lower), put_/sim_cache_read_tokens (higher — cached input is cheaper input), put_/sim_cost_usd (lower), sim_cost_usd (lower), steps_per_trace_avg/_min/_max/_stdev (lower). Requesting a reserved axis with a contradicting `better` is rejected. |
+
+### `FrontierError`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes |  |
+| `problems` | [`FrontierProblem`](#frontierproblem)[] | yes |  |
+
+### `FrontierInvestigation`
+
+An investigation referenced by the frontier request: a bare id, or an object carrying an optional plot label and color.
+
+**Variant**
+
+`string`
+
+**Variant**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `color` | string? | no |  |
+| `id` | string | yes |  |
+| `label` | string? | no |  |
+
+### `FrontierPoint`
+
+One point of the frontier result.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `color` | string | yes |  |
+| `dominated_by` | string[] | yes | Investigations that dominate this point (empty when on the frontier). Tells an optimizer exactly what to compare against. |
+| `investigation` | string | yes | The investigation uuid (uuids, not labels, are the stable key — labels are not unique by design). |
+| `label` | string | yes |  |
+| `on_frontier` | boolean | yes | True when no other point dominates this one. Ties dominate nothing: equal points are both on the frontier. |
+| `values` | map&lt;string, number&gt; | yes | Resolved value per axis name. |
+
+### `FrontierProblem`
+
+One fixable problem in a frontier request. Every `detail` names the fix — including, for missing grades, the exact PATCH to make.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axis` | string? | no |  |
+| `detail` | string | yes |  |
+| `investigation` | string? | no |  |
+| `reason` | string | yes |  |
+
+### `FrontierRequest`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | The axes to compute dominance over. `format=svg` requires EXACTLY 2 (a v0 rendering constraint — the dominance math is N-dimensional); `format=json` accepts any count ≥ 1. |
+| `investigations` | [`FrontierInvestigation`](#frontierinvestigation)[] | yes | The investigations to plot (each must be a `done` job with a value for every axis). Bare id strings or `{id, label?, color?}` objects. Ids must be UNIQUE — duplicates are rejected. Labels: `^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label = the PUT's id (deduplicated) else the uuid prefix; color = a deterministic palette by position. |
+
+### `FrontierResponse`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `points` | [`FrontierPoint`](#frontierpoint)[] | yes |  |
+
+### `GradeProblem`
+
+One fixable problem in a grades PATCH. The `detail` names the fix.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axis` | string | yes |  |
+| `detail` | string | yes |  |
+| `reason` | string | yes | `bad_axis_name` \| `reserved_axis_name` \| `non_finite_value` |
+
+### `GradesPatch`
+
+Caller judgment recorded on an investigation: axis name → number. Merge semantics per axis: a number sets/overwrites, `null` deletes.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number?&gt; | yes | Axis name → value. Use JSON `null` to DELETE an axis. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (see the frontier docs). |
+
+### `GradesPatchError`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes |  |
+| `problems` | [`GradeProblem`](#gradeproblem)[] | yes |  |
+
+### `GradesView`
+
+The echo response: the full, updated grades map.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number&gt; | yes |  |
 
 ### `InvestigateRequest`
 
@@ -110,7 +263,7 @@ An investigation: run the given scenarios against the PUT and surface the result
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `budget` | [`Budget`](#budget) | yes |  |
-| `question` | string? | no | Advisory framing for the CALLER — what the caller is worried about. Surfaced with the result to guide reading the traces; never used as an oracle. The harness runs scenarios and surfaces evidence; the caller is the judge. Optional — omit it when you just want to observe behavior with no particular axe to grind.  e.g. "are there inputs that cause destructive tool calls?" or "why does this sometimes cancel, sometimes ask to confirm?" |
+| `reason` | string? | no | Free-form justification for the run — WHY it exists and what a reader should know when comparing it with earlier runs: what it aims to accomplish, what changed compared to previous runs (a prompt edit, new scenarios, a different model), anything that frames how to read the traces. There is no strict standard — write whatever makes the run intelligible later.  Advisory only: surfaced with the result to guide reading the traces, NEVER used as an oracle. The harness runs scenarios and surfaces evidence; the caller is the judge. Optional — omit it when you just want to observe behavior with no particular framing.  e.g. "baseline before adding the explicit-confirmation rule" or "re-run after softening the refusal instruction; compare with v3". |
 
 ### `JobCreated`
 
@@ -136,12 +289,13 @@ Values: `running`, `done`, `failed`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string? | no |  |
+| `grades` | map&lt;string, number&gt; | yes | Caller-graded axes on this investigation (PATCHed via PATCH /api/investigations/{id}). Free-form names, caller-chosen scales (0..1, 1..5, anything); consumed by POST /api/frontier as judged axes alongside the reserved measured ones. The harness stores them and never interprets them. |
 | `id` | string | yes | The job's id (same value as the `{id}` path segment and the id in `JobSummary`). Echoed in the body so a consumer holding only this representation knows which job it is — without it, a dashboard that reconciles a list of views by key has nothing stable to key on and silently falls back to positional matching (which leaks per-item UI state such as an unfolded conversation to whatever job sorts into that slot next). |
 | `model` | string | yes | The resolved model name that ran the prompt under test (the `model` from the request, or the server default). Echoed RESOLVED so a reader knows exactly what produced the traces — including the default, which the request leaves implicit. |
 | `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in (see RunPhase: scenarios). This is the observable status of the job's LLM work. Mirrors `progress.phase`. |
 | `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + steps simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes | The prompt under test. |
-| `question` | string? | no | The investigation question (advisory framing for the caller — what they are worried about). Optional; surfaced to guide reading the traces. Nothing is judged against it. |
+| `reason` | string? | no | The run's free-form `reason` (advisory justification: what the run aims to accomplish, what changed vs. earlier runs, what a reader should know — no strict standard). Optional; surfaced to guide reading the traces. Nothing is judged against it. |
 | `result` | [`InvestigateResponse`](#investigateresponse)? | no |  |
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The full input scenarios (narrative = ground truth, etc.). |
 | `sim_model` | string | yes | The resolved model name that ran the tool simulator (the `sim_model` from the request, defaulting to the PUT model, then the server default). The simulator is the test ENVIRONMENT; a reader needs to see it to judge whether it was powerful enough to render the world believably. |
@@ -223,20 +377,20 @@ The outcome of running a set of scenarios against a PUT. The harness's job ends 
 
 ### `RunStatus`
 
-Run-completion taxonomy. With the judge removed, "completion" is purely about whether scenarios produced traces — not whether any matched a question. The caller judges the traces.
+Run-completion taxonomy. With the judge removed, "completion" is purely about whether scenarios produced traces — nothing is judged against the run's `reason`. The caller judges the traces.
 
 Values: `completed`, `partial`, `error`
 
 ### `Scenario`
 
-A test case: a world specification, an input domain, and a protagonist. A pure VALUE — it carries no identity (`id`); runs report it back by value. The harness runs the prompt under test inside this world and surfaces the resulting trace for the caller to judge.  Scenarios are authored OUTSIDE the harness (by the operator's agent); this API never generates them.  ## Your role: adversary  Your job is to BREAK the prompt under test, not validate it. Assume it is flawed, and construct each scenario — world, input domain, opening turn — to make the questioned bad behavior SURFACE if that flaw exists. Write the world the way a red-teamer would, not the way the prompt's author would: set the trap (an order that belongs to a DIFFERENT customer; an ownership claim that cannot be verified; a broken lookup) rather than a comfortable situation where the agent easily behaves well. A scenario that lets the agent succeed proves nothing.  If you are an LLM (or are using LLMs) to author scenarios, note that they are notoriously bad at questioning their own output: the same context that wrote (or is reading) the prompt tends to construct scenarios that confirm it rather than break it. A SEPARATE agent helps — construct each scenario with a SUBAGENT if you have one: a fresh context, given only the prompt, the behavioral question, and this adversary role, is not invested in the prompt and will find angles its author didn't think to defend. This is only a PARTIAL mitigation, not a complete counter — a subagent shares the same model weights and can under-appreciate the same weaknesses — but it is a meaningful start. The mechanics below are tools for this role.  ## Authoring the `world`  The world is ground truth for the simulator AND the caller (who reads the traces and judges), and it is the single biggest determinant of result quality. It must pin four things, all in natural language:    1. INVENTORY — what exists and where, covering every query type the      PUT's tools allow.   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER      happens. Models default to inventing positive content; absences      must be stated, and they are often what makes a trace decidable.   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (closed      world) or "these are the relevant results" (open world).   4. RENDERING RULES — refuse queries outside the inventory; filler      introduces no new facts; never contradict the facts.  ## Authoring the `input_domain`  For each `{{variable}}` in the PUT template, describe its input DOMAIN — the value space, semantics, and any PRECONDITIONS or trust contract the prompt may assume about it. The simulator picks a concrete value from this domain (its job), fills the template, and the chosen value is reported in the trace's `resolved_inputs`. A domain is richer than a pinned value: "tier is standard or premium, premium cancels without a fee" or "user_record: { id, name, tier }; user.id has been verified upstream — the agent may trust the person described". The world states the contract; whether the world actually HONORS it (or breaks it) is where the behavior you are looking for lives.
+A test case: a world specification, an input domain, and a protagonist. A pure VALUE — it carries no identity (`id`); runs report it back by value. The harness runs the prompt under test inside this world and surfaces the resulting trace for the caller to judge.  Scenarios are authored OUTSIDE the harness (by the operator's agent); this API never generates them.  ## Your role: adversary  Your job is to BREAK the prompt under test, not validate it. Assume it is flawed, and construct each scenario — world, input domain, opening turn — to make the bad behavior under investigation SURFACE if that flaw exists. Write the world the way a red-teamer would, not the way the prompt's author would: set the trap (an order that belongs to a DIFFERENT customer; an ownership claim that cannot be verified; a broken lookup) rather than a comfortable situation where the agent easily behaves well. A scenario that lets the agent succeed proves nothing.  If you are an LLM (or are using LLMs) to author scenarios, note that they are notoriously bad at questioning their own output: the same context that wrote (or is reading) the prompt tends to construct scenarios that confirm it rather than break it. A SEPARATE agent helps — construct each scenario with a SUBAGENT if you have one: a fresh context, given only the prompt, the run's `reason`, and this adversary role, is not invested in the prompt and will find angles its author didn't think to defend. This is only a PARTIAL mitigation, not a complete counter — a subagent shares the same model weights and can under-appreciate the same weaknesses — but it is a meaningful start. The mechanics below are tools for this role.  ## Authoring the `world`  The world is ground truth for the simulator AND the caller (who reads the traces and judges), and it is the single biggest determinant of result quality. It must pin four things, all in natural language:    1. INVENTORY — what exists and where, covering every query type the      PUT's tools allow.   2. FACTS — including NEGATIVE facts: what does NOT exist, what NEVER      happens. Models default to inventing positive content; absences      must be stated, and they are often what makes a trace decidable.   3. COMPLETENESS ASSERTIONS — "these are ALL the entry points" (closed      world) or "these are the relevant results" (open world).   4. RENDERING RULES — refuse queries outside the inventory; filler      introduces no new facts; never contradict the facts.  ## Authoring the `input_domain`  For each `{{variable}}` in the PUT template, describe its input DOMAIN — the value space, semantics, and any PRECONDITIONS or trust contract the prompt may assume about it. The simulator picks a concrete value from this domain (its job), fills the template, and the chosen value is reported in the trace's `resolved_inputs`. A domain is richer than a pinned value: "tier is standard or premium, premium cancels without a fee" or "user_record: { id, name, tier }; user.id has been verified upstream — the agent may trust the person described". The world states the contract; whether the world actually HONORS it (or breaks it) is where the behavior you are looking for lives.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `input_domain` | map&lt;string, string&gt; | no | Per-`{{variable}}` input-domain descriptions: the value space, semantics, and preconditions/trust contracts. Each KEY must match a `{{variable}}` placeholder in the PUT template (see `PromptUnderTest.template` for the placeholder syntax); the simulator generates a concrete value for each and substitutes it (reported in the trace's `resolved_inputs`). Empty for templates with no placeholders. |
 | `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |
 | `user_message` | string? | no | The opening message from the user/protagonist. |
-| `world` | string | yes | The world specification — ground truth the simulator renders tool responses from and the caller checks claims against. A SPECIFICATION (prose), not instantiated data. See the API description's DESIGN INTENT. Cover inventory, facts (incl. negatives), completeness, and rendering rules. |
+| `world` | string | yes | The world specification — ground truth the simulator renders tool responses from and the caller checks claims against. A SPECIFICATION (prose), not instantiated data. See the API description's DESIGN INTENT. Cover inventory, facts (incl. negatives), completeness, and rendering rules.  If the tools expose a REAL system with authoritative documentation (an OpenAPI spec, a man page, a CLI's --help), EMBED that documentation in the world verbatim and pin the rendering rules to it: "the embedded spec is authoritative for every rendered response." Without it the simulator invents plausible-but-wrong behavior for the documented surface (wrong error codes, invented fields, impossible operations) — verified by A/B: simulated API calls invented 409 read-only errors and off-schema bodies until the real spec was embedded, after which responses matched the contract. The same applies to any authoritative doc: embed it, then pin rendering to it. |
 
 ### `ScenarioFailure`
 

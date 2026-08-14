@@ -61,16 +61,23 @@ pub enum SideEffect {
 /// caller reads the traces and judges.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Investigation {
-    /// Advisory framing for the CALLER — what the caller is worried
-    /// about. Surfaced with the result to guide reading the traces;
-    /// never used as an oracle. The harness runs scenarios and surfaces
-    /// evidence; the caller is the judge. Optional — omit it when you
-    /// just want to observe behavior with no particular axe to grind.
+    /// Free-form justification for the run — WHY it exists and what a
+    /// reader should know when comparing it with earlier runs: what it
+    /// aims to accomplish, what changed compared to previous runs (a
+    /// prompt edit, new scenarios, a different model), anything that
+    /// frames how to read the traces. There is no strict standard —
+    /// write whatever makes the run intelligible later.
     ///
-    /// e.g. "are there inputs that cause destructive tool calls?" or
-    /// "why does this sometimes cancel, sometimes ask to confirm?"
+    /// Advisory only: surfaced with the result to guide reading the
+    /// traces, NEVER used as an oracle. The harness runs scenarios and
+    /// surfaces evidence; the caller is the judge. Optional — omit it
+    /// when you just want to observe behavior with no particular
+    /// framing.
+    ///
+    /// e.g. "baseline before adding the explicit-confirmation rule" or
+    /// "re-run after softening the refusal instruction; compare with v3".
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub question: Option<String>,
+    pub reason: Option<String>,
     pub budget: Budget,
 }
 

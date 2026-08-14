@@ -236,17 +236,19 @@ impl LlmClient for ProviderClient {
             options = options.with_max_tokens(m);
         }
 
-        // Retry transient 429 rate limits (e.g. z.ai code 1302 "Rate limit
-        // reached for requests") with exponential backoff + jitter. A
-        // QUOTA-window 429 (e.g. z.ai code 1308 "Usage limit reached for
-        // 5 hour") is NOT retried — backoff won't help, so fail fast.
-        // Providers don't surface a usable Retry-After here (the body has
-        // no duration and genai flattens response headers into the error
-        // string), so we backoff ourselves.
-        const MAX_ATTEMPTS: u32 = 5;
-        let mut attempt: u32 = 0;
+        // Retry transient 429 rate limits (z.ai code 1302 "Rate limit
+        // reached for requests", OpenRouter's upstream shared-pool 429
+        // "temporarily rate-limited upstream. Please retry shortly") with a
+        // linear backoff: 5s, 10s, 15s, 20s, … up to 10 retries (~4.5 min
+        // worst case). A QUOTA-window 429 (z.ai code 1308 "Usage limit
+        // reached for 5 hour", OpenAI "You exceeded your current quota")
+        // is NOT retried — backoff won't help, so fail fast. Providers
+        // don't surface a usable Retry-After here (the body has no duration
+        // and genai flattens response headers into the error string), so we
+        // back off ourselves.
+        const MAX_RETRIES: u32 = 10;
+        let mut retries: u32 = 0;
         loop {
-            attempt += 1;
             match self
                 .client
                 .exec_chat(&req.model, chat_req.clone(), Some(&options))
@@ -255,9 +257,10 @@ impl LlmClient for ProviderClient {
                 Ok(resp) => return Ok(convert_response(resp)),
                 Err(e) => {
                     let msg = e.to_string();
-                    if attempt < MAX_ATTEMPTS && is_transient_429(&msg) {
-                        let backoff = backoff_with_jitter(attempt);
+                    if retries < MAX_RETRIES && is_retryable_429(&msg) {
+                        let backoff = jittered(retry_delay(retries + 1));
                         tokio::time::sleep(backoff).await;
+                        retries += 1;
                         continue;
                     }
                     return Err(LlmError::Provider(msg));
@@ -267,37 +270,115 @@ impl LlmClient for ProviderClient {
     }
 }
 
-/// A 429 that's worth retrying: a transient per-request rate limit, NOT a
-/// long quota window. Detected from genai's flattened error string (which
-/// includes the HTTP status and the response body).
-fn is_transient_429(err: &str) -> bool {
+/// A 429 that's worth retrying: a transient per-request or shared-pool
+/// rate limit, NOT a long quota window or a billing limit. Detected from
+/// genai's flattened error string (which includes the HTTP status and the
+/// response body).
+fn is_retryable_429(err: &str) -> bool {
     if !err.contains("429") {
         return false;
     }
-    // Quota-window signals — backoff won't help, so don't retry.
-    let quota = [
-        "usage limit",
-        "5 hour",
-        "quota",
-        "exceeded your current quota",
-        "insufficient_quota",
-    ];
-    !quota.iter().any(|q| err.to_lowercase().contains(q))
+    let lower = err.to_lowercase();
+    // OpenRouter's upstream shared-pool 429 carries the provider error code
+    // `insufficient_quota` — which otherwise reads as a billing limit — but
+    // its body explicitly says "temporarily rate-limited upstream. Please
+    // retry shortly". That one is transient: retry it.
+    if lower.contains("please retry shortly")
+        || lower.contains("temporarily rate-limited upstream")
+    {
+        return true;
+    }
+    // Quota-window / billing signals — backoff won't help, so don't retry.
+    // ("quota" also covers `insufficient_quota` absent a retry hint, e.g.
+    // OpenAI's "You exceeded your current quota, please check your plan and
+    // billing details".)
+    let hard_quota = ["usage limit", "5 hour", "quota"];
+    !hard_quota.iter().any(|q| lower.contains(q))
 }
 
-/// Exponential backoff (0.5, 1, 2, 4, …s) plus up to ~40% jitter so that
-/// N concurrent retries (e.g. a 10-scenario run hitting a rate limit at
-/// once) don't all fire on the same tick and re-trigger it.
-fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
-    let base_ms: u64 = 500_u64.checked_shl(attempt.saturating_sub(1)).unwrap_or(8_000);
-    let cap_ms = base_ms.min(8_000);
-    // Poor-man's jitter from wall-clock nanos (no rand dep): 0..=40% of cap.
+/// Linear backoff for retry n: 5s, 10s, 15s, 20s, … (5s × n).
+fn retry_delay(retry: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(5 * u64::from(retry))
+}
+
+/// Up to ~10% jitter on top of the base delay, so N concurrent retries
+/// (e.g. a 10-scenario run hitting a rate limit at once) don't all fire on
+/// the same tick and re-trigger it. Poor-man's jitter from wall-clock
+/// nanos (no rand dep).
+fn jittered(base: std::time::Duration) -> std::time::Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() as u64)
         .unwrap_or(0);
-    let jitter_ms = cap_ms * (nanos % 5) / 10; // 0, 10, 20, 30, or 40%
-    std::time::Duration::from_millis(cap_ms + jitter_ms)
+    let jitter_ms = base.as_millis() as u64 * (nanos % 11) / 100; // 0..=10%
+    base + std::time::Duration::from_millis(jitter_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The exact OpenRouter upstream shared-pool 429 seen in production:
+    // tagged `insufficient_quota` but explicitly retryable.
+    const OPENROUTER_SHARED_POOL_429: &str = "Web call failed for model \
+        'open_router::qwen/qwen3.7-flash (adapter: OpenRouter)'. Cause: \
+        Request failed with status code '429 Too Many Requests'. Response \
+        body: {\"error\":{\"message\":\"Provider returned error\",\"code\":429,
+        \"metadata\":{\"raw\":\"qwen/qwen3.7-flash is temporarily \
+        rate-limited upstream. Please retry shortly, or add your own key to \
+        accumulate your rate limits: https://openrouter.ai/settings/integrations
+        \",\"provider_name\":\"Alibaba\",\"is_byok\":false,
+        \"provider_error_code\":\"insufficient_quota\",
+        \"limit_source\":\"upstream_provider_shared_pool\",
+        \"remedy_hint\":\"Retry shortly, add your own provider key \
+        (https://openrouter.ai/settings/integrations), or route to another \
+        provider with provider routing: https://openrouter.ai/docs/features/provider-routing\"}}}";
+
+    #[test]
+    fn openrouter_shared_pool_429_is_retryable() {
+        assert!(is_retryable_429(OPENROUTER_SHARED_POOL_429));
+    }
+
+    #[test]
+    fn plain_rate_limit_429_is_retryable() {
+        // z.ai code 1302 — transient per-request rate limit.
+        let err = "Web call failed. Cause: statusCode=429, body: {\"error\":{\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}}";
+        assert!(is_retryable_429(err));
+    }
+
+    #[test]
+    fn quota_window_429_is_not_retryable() {
+        // z.ai code 1308 — 5-hour usage window; backoff won't cross it.
+        let err = "Web call failed. Cause: statusCode=429, body: {\"error\":{\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour window, please top up\"}}";
+        assert!(!is_retryable_429(err));
+    }
+
+    #[test]
+    fn billing_quota_429_is_not_retryable() {
+        // OpenAI billing limit — `insufficient_quota` without a retry hint.
+        let err = "Web call failed. Cause: statusCode=429, body: {\"error\":{\"message\":\"You exceeded your current quota, please check your plan and billing details\",\"type\":\"insufficient_quota\"}}";
+        assert!(!is_retryable_429(err));
+    }
+
+    #[test]
+    fn non_429_errors_are_not_retried() {
+        assert!(!is_retryable_429(
+            "Web call failed. Cause: statusCode=500, body: internal error"
+        ));
+        assert!(!is_retryable_429("connection reset by peer"));
+    }
+
+    #[test]
+    fn backoff_is_linear_five_second_steps() {
+        assert_eq!(retry_delay(1), std::time::Duration::from_secs(5));
+        assert_eq!(retry_delay(2), std::time::Duration::from_secs(10));
+        assert_eq!(retry_delay(3), std::time::Duration::from_secs(15));
+        assert_eq!(retry_delay(10), std::time::Duration::from_secs(50));
+        // Jitter only ever adds, never subtracts.
+        for n in 1..=10u32 {
+            assert!(jittered(retry_delay(n)) >= retry_delay(n));
+        }
+    }
 }
 
 fn convert_response(resp: GChatResponse) -> ChatResponse {

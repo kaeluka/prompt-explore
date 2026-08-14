@@ -60,7 +60,7 @@ impl Investigator {
     /// Run exactly the given scenarios against the PUT. All of them —
     /// an explicit list is a contract. If `progress` is given, it's
     /// populated live (steps as simulated, states as tasks finish) for
-    /// polling/UI. The investigation's `question` is advisory framing
+    /// polling/UI. The investigation's `reason` is advisory framing
     /// for the caller; nothing here is judged against it.
     pub async fn investigate(
         &self,

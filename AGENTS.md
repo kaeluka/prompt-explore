@@ -9,9 +9,10 @@ supplies scenarios (author-supplied world narratives) and a prompt under
 test (PUT); the tool runs every scenario inside its simulated world and
 returns the complete evidence — the world, the input domain, the resolved
 inputs, and the full trace of steps. **The caller is the judge:** there
-is no in-harness verdict. The user may also state a behavioral question
-about the PUT, but it is advisory framing — it states what the caller is
-worried about and is surfaced with the result to guide reading the traces
+is no in-harness verdict. The user may also state a free-form `reason`
+for the run (what it aims to accomplish, what changed compared to runs
+before, what a reader should know — no strict standard), but it is
+advisory framing — surfaced with the result to guide reading the traces
 — not an oracle. Traces are informative even when nothing is obviously
 wrong. The user owns everything after the run — the tool is the loop body
 of an interactive optimization loop, the user is the loop.
@@ -142,6 +143,11 @@ Cargo workspace:
   There is no judge module — the caller is the judge.
 - `server/` — thin axum wrapper (HTTP + web UI). **No business logic here.**
   Job-based API (`POST /api/investigations` → poll `GET /api/investigations/:id`).
+  The job store is **in memory** — jobs (and any caller-supplied annotations on
+  them) are lost on restart. This is a conscious limitation, chosen to keep
+  development fast and deployment trivially easy (single binary, no DB). Do not
+  add a persistence layer casually; if durability becomes a requirement, it
+  should be a deliberate design decision with its own scope — not a drive-by.
 
 ## Conventions
 
@@ -150,7 +156,7 @@ Cargo workspace:
   scripted responses — keep tests deterministic, no network.
 - **The caller is the judge.** The harness runs scenarios and surfaces traces
   (world, input domain, resolved inputs, full steps); it produces no verdict.
-  Nothing is judged against the (optional) `question` — it is advisory framing
+  Nothing is judged against the (optional) `reason` — it is advisory framing
   for whoever reads the traces. `design_goals` on the PUT are documentation
   the caller reads, not something enforced during a run.
 - Negative results are first-class: surface what was tried (scenarios, traces,
@@ -253,8 +259,73 @@ change any of them:
 3. **Record the finding.** Mention the dogfood result in the commit message
    (what was investigated, what the outcome was).
 
+**The `openapi.json` spec is a prompt too — it is in scope.** An agent
+caller's ONLY documentation is the spec; to that reader it literally IS
+the system prompt. So when you change any endpoint description, schema
+description, or example in the spec:
+
+- **Probe it like a prompt.** Feed the spec verbatim to an LLM as the
+  manual ("this is your only documentation") and ask realistic caller
+  questions — "I want to find out whether X ever happens; walk me
+  through your calls", "this just happened: <state or error>; what do
+  you do next?" Read the answers for stumbles: wrong endpoint sequences,
+  invented affordances, missed affordances, or "the spec does not say"
+  where it should.
+- **Before/after, same probes.** Re-run the same probe set after the
+  edit and compare. The goal is the same as for any prompt: the
+  caller-model's planned behavior (the requests it would send) gets
+  closer to correct.
+- **Record the finding** in the commit message like any other dogfood
+  result. Probe answers that invent or miss affordances are spec bugs:
+  fix the spec's words, not the prober's model.
+
+**Framing probes takes iteration — the framing IS the experiment.** A
+probe that asks "how would you grade traces?" gets plans; plans are
+cheap and every model aces them. The signal came only when the probe
+was framed as: "you are a coding agent with bash access; you triggered
+an investigation to <goal>; it is done; GET /api/investigations/$id
+returns ~100kb — grade it on <axis>." Then the temptation is real: the
+shell is one keystroke away, the data is too big to read, and the
+probe measures what the agent actually does (curl|jq the structure?
+grep for keywords? read the traces?) rather than what it says it
+would do. Expect to iterate on framing several times before the probe
+actually probes; when the answer stops being a plan and starts being
+behavior, the framing is right.
+
+**When the probe world simulates tool access to the API itself, give
+the WORLD the real spec.** A scenario whose PUT has a bash tool and
+whose user message points at `127.0.0.1:8080` makes the simulator
+answer `curl /api/investigations/{id}` from imagination — and it will
+invent plausible-but-wrong API behavior (observed: a fictional
+`409 job_read_only` on PATCH, a `grades` map with string values the
+real schema forbids). Those inventions then confound the probe's
+conclusion. Paste the real openapi.json into the world (or its
+relevant slices) and pin the rendered responses to it, so simulated
+API behavior matches the spec under test.
+
+**Verified technique (spec-in-world, A/B, glm-5.2):** same three
+bash-grading probes, two worlds — one with the simulator answering
+`curl` from imagination, one embedding the real openapi.json with
+"the spec is authoritative for every rendered response" pinned.
+
+- Without the spec: PATCH grades blocked by invented `409`/`405`
+  read-only errors (0/3 recorded); the job view rendered with an
+  off-schema attempt shape that broke the agent's jq, costing it
+  steps to debug the simulator's fiction.
+- With the spec: PATCH succeeded and echoed the documented response
+  (grades persisted, re-GET confirmed); the view was spec-shaped so
+  jq navigated it on the first try; and when the sim still garbled
+  one `ls`, the agent caught it, discarded it, re-derived from raw
+  JSON, and flagged the discard in its answer.
+
+The embedded spec upgrades the simulated API from plausible-fiction
+to contract — the probe then measures the agent, not the sim's
+inventions.
+
 Example precedent: tightening the (now-removed) judge prompt to require that
 a behavior *actually occurred* was validated by re-running the
 destructive-action investigation — the false positive vanished and a real
 witness was found instead. The same loop now applies to the simulator: when
-you change how the world is rendered, re-run and read the traces.
+you change how the world is rendered, re-run and read the traces. And to the
+spec: probe answers that invent or miss affordances mean the spec's words
+(not the prober's model) need fixing.

@@ -43,8 +43,8 @@ pub struct ScenarioFailure {
 }
 
 /// Run-completion taxonomy. With the judge removed, "completion" is
-/// purely about whether scenarios produced traces — not whether any
-/// matched a question. The caller judges the traces.
+/// purely about whether scenarios produced traces — nothing is judged
+/// against the run's `reason`. The caller judges the traces.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
