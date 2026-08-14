@@ -70,11 +70,12 @@ struct Job {
     progress: Arc<std::sync::Mutex<RunProgress>>,
     /// Wall-clock start, epoch millis.
     started_at: u64,
-    /// The investigation question (advisory framing for the caller —
-    /// what they are worried about). Shown so a reader can read the
-    /// unfolding trace with that concern in mind. Nothing is judged
-    /// against it.
-    question: Option<String>,
+    /// The run's free-form `reason` (advisory justification: what the
+    /// run aims to accomplish, what changed vs. earlier runs, what a
+    /// reader should know — no strict standard). Shown so a reader can
+    /// read the unfolding traces with that framing in mind. Nothing is
+    /// judged against it.
+    reason: Option<String>,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative, world_state, simulator_notes),
@@ -209,10 +210,11 @@ struct JobView {
     /// Mirrors `progress.phase`.
     phase: prompt_explore::model::simulation::RunPhase,
     started_at: u64,
-    /// The investigation question (advisory framing for the caller —
-    /// what they are worried about). Optional; surfaced to guide reading
-    /// the traces. Nothing is judged against it.
-    question: Option<String>,
+    /// The run's free-form `reason` (advisory justification: what the
+    /// run aims to accomplish, what changed vs. earlier runs, what a
+    /// reader should know — no strict standard). Optional; surfaced to
+    /// guide reading the traces. Nothing is judged against it.
+    reason: Option<String>,
     /// The resolved model name that ran the prompt under test (the `model`
     /// from the request, or the server default). Echoed RESOLVED so a
     /// reader knows exactly what produced the traces — including the
@@ -267,14 +269,15 @@ struct JobSummary {
         description = "Property-based testing for agent behavior. You AUTHOR scenarios \
                        (test cases: a world, an input domain, and a protagonist — see the \
                        Scenario schema) and submit them with a prompt under test (PUT) and an \
-                       optional behavioral question. Every scenario is run: the simulator picks \
+                       optional free-form `reason` justifying the run. Every scenario is run: the simulator picks \
                        concrete inputs from the input domain, renders the world's tools, and the \
                        PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every \
                        scenario — the world, the input domain, the resolved inputs, and the full \
                        trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
-                       The question is advisory framing — it states what the caller is worried \
-                       about and is surfaced with the result to guide reading the traces — not \
-                       an oracle. Traces are informative even when nothing is obviously wrong; \
+                       The `reason` justifies the run — what it aims to accomplish, what \
+                       changed compared to previous runs, what a reader should know (there \
+                       is no strict standard) — and is surfaced with the result to guide \
+                       reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; \
                        the deliverable is the set of traces, and the caller reads them and \
                        decides what (if anything) to fix. The API is job-based: POST returns \
                        a job id immediately; poll GET /api/investigations/{id} for the result.
@@ -523,7 +526,7 @@ fn fabricate_done_job(
             error: None,
             progress: Arc::new(Mutex::new(RunProgress::default())),
             started_at: 0,
-            question: Some("How do tone instructions trade off against cost?".into()),
+            reason: Some("Tone-instruction sweep: comparing politeness vs. cost on the same scenarios.".into()),
             put: PromptUnderTest {
                 id: put_id.into(),
                 template: template.into(),
@@ -851,7 +854,7 @@ async fn index() -> impl axum::response::IntoResponse {
                 summary = "A tool-less PUT, one scenario, no model overrides",
                 value = json!({
                     "investigation": {
-                        "question": "Does the agent ever confirm a destructive action the user never actually asked for?",
+                        "reason": "After tightening the confirmation rule: does the agent still confirm a destructive action the user never actually asked for?",
                         "budget": { "max_steps_per_trace": 6, "max_tokens": null }
                     },
                     "put": {
@@ -1017,7 +1020,7 @@ fn spawn_investigation(
             error: None,
             progress: progress.clone(),
             started_at,
-            question: req.investigation.question.clone(),
+            reason: req.investigation.reason.clone(),
             put: req.put.clone(),
             scenarios: req.scenarios.clone(),
             model: put_model.clone(),
@@ -1181,7 +1184,7 @@ async fn get_investigation(
         status: job.status,
         phase,
         started_at: job.started_at,
-        question: job.question.clone(),
+        reason: job.reason.clone(),
         model: job.model.clone(),
         sim_model: job.sim_model.clone(),
         workspace_files: job.workspace_files,
@@ -1661,7 +1664,7 @@ mod tests {
                 error: None,
                 progress: Arc::new(Mutex::new(RunProgress::default())),
                 started_at: 0,
-                question: None,
+                reason: None,
                 put: put("cancel-bot"),
                 grades: BTreeMap::new(),
                 scenarios: vec![],

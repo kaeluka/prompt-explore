@@ -381,7 +381,7 @@ function FrontierPanel({ jobs, token }) {
         </div>
         <div style="margin:0.45rem 0">${axisPicker('x axis', xName, setXAx)}${axisPicker('y axis', yName, setYAx)}</div>
         <div class="grow"><button onClick=${run} disabled=${chosen.length < 1}>plot</button>
-          <span class="meta" style="opacity:0.75">up &amp; right is better, whichever directions you pick</span></div>`}
+          <span class="meta" style="opacity:0.75">up & right is better, whichever directions you pick</span></div>`}
       ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}${p.investigation ? ` · ${String(p.investigation).slice(0,8)}` : ''}${p.axis ? ` · ${p.axis}` : ''}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
       ${plot ? html`
         <div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>
@@ -413,7 +413,7 @@ function JobCard({ j, token }) {
           ${j.workspace_files ? html`<span class="utag ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
         </span>` : null}
       </h2>
-      <div class="meta" style="margin:0.4rem 0">${j.question ? html`<span><b>question:</b> ${j.question}</span>` : html`<span class="meta" style="opacity:0.7">(no question — observing behavior; the caller is the judge)</span>`}</div>
+      <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />
       <${GradesPanel} j=${j} token=${token} />
       <${ResultLine} j=${j} />

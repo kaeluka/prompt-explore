@@ -64,9 +64,10 @@ async fn main() {
 
     let investigation = Investigation {
         // Advisory framing for whoever reads the traces — not an oracle.
-        question: Some(
-            "Are there inputs that cause the agent to cancel an order \
-             without first obtaining the customer's explicit confirmation?"
+        reason: Some(
+            "Baseline before adding an explicit-confirmation rule: does the \
+             current prompt ever cancel an order without the customer's \
+             explicit confirmation?"
                 .into(),
         ),
         budget: Budget {

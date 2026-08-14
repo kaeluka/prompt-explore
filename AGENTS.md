@@ -9,9 +9,10 @@ supplies scenarios (author-supplied world narratives) and a prompt under
 test (PUT); the tool runs every scenario inside its simulated world and
 returns the complete evidence — the world, the input domain, the resolved
 inputs, and the full trace of steps. **The caller is the judge:** there
-is no in-harness verdict. The user may also state a behavioral question
-about the PUT, but it is advisory framing — it states what the caller is
-worried about and is surfaced with the result to guide reading the traces
+is no in-harness verdict. The user may also state a free-form `reason`
+for the run (what it aims to accomplish, what changed compared to runs
+before, what a reader should know — no strict standard), but it is
+advisory framing — surfaced with the result to guide reading the traces
 — not an oracle. Traces are informative even when nothing is obviously
 wrong. The user owns everything after the run — the tool is the loop body
 of an interactive optimization loop, the user is the loop.
@@ -155,7 +156,7 @@ Cargo workspace:
   scripted responses — keep tests deterministic, no network.
 - **The caller is the judge.** The harness runs scenarios and surfaces traces
   (world, input domain, resolved inputs, full steps); it produces no verdict.
-  Nothing is judged against the (optional) `question` — it is advisory framing
+  Nothing is judged against the (optional) `reason` — it is advisory framing
   for whoever reads the traces. `design_goals` on the PUT are documentation
   the caller reads, not something enforced during a run.
 - Negative results are first-class: surface what was tried (scenarios, traces,
