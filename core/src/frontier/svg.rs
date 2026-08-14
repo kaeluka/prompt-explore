@@ -213,9 +213,11 @@ pub fn render(points: &[FrontierPoint], x: &PlotAxis, y: &PlotAxis) -> String {
         esc(&x.name),
         x.better.as_str()
     ));
+    // Y-axis title runs rotated up the left margin (clear of the tick
+    // labels, which end at L-8, and of the main title at top-left).
+    let y_mid = (T + (H - B)) / 2.0;
     s.push_str(&format!(
-        r#"<text x="{L}" y="{}" font-size="12" fill="{TICK_COLOR}">{} &#8212; {} is better &#8593;</text>"#,
-        T - 8.0,
+        r#"<text transform="translate(16 {y_mid:.1}) rotate(-90)" font-size="12" fill="{TICK_COLOR}" text-anchor="middle">{} &#8212; {} is better &#8593;</text>"#,
         esc(&y.name),
         y.better.as_str()
     ));
@@ -262,8 +264,11 @@ pub fn render(points: &[FrontierPoint], x: &PlotAxis, y: &PlotAxis) -> String {
                 esc(&p.color)
             ));
         } else {
+            // Dominated: same colour, drawn as a hollow ring — visible
+            // identity without competing with the filled frontier dots.
             s.push_str(&format!(
-                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="4.5" fill="#56606f" fill-opacity="0.55"/>"##
+                r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="4.5" fill="none" stroke="{}" stroke-width="1.8"/>"#,
+                esc(&p.color)
             ));
         }
         // Flip the label to the left when it would overflow the right
@@ -279,9 +284,11 @@ pub fn render(points: &[FrontierPoint], x: &PlotAxis, y: &PlotAxis) -> String {
         } else {
             DIM_LABEL_COLOR
         };
+        // Near the top edge an above-point label would collide with the
+        // corner hint / title row, so drop it below the point instead.
+        let ly = if cy - 20.0 < T + 8.0 { cy + 20.0 } else { cy - 9.0 };
         s.push_str(&format!(
-            r#"<text x="{lx:.1}" y="{:.1}" font-size="11" fill="{fill}" text-anchor="{anchor}">{}</text>"#,
-            cy - 9.0,
+            r#"<text x="{lx:.1}" y="{ly:.1}" font-size="11" fill="{fill}" text-anchor="{anchor}">{}</text>"#,
             esc(&p.label)
         ));
     }

@@ -1205,6 +1205,16 @@ async fn get_investigation(
 /// plots/compares them later, alongside the measured axes (tokens,
 /// cost, steps) the harness records anyway.
 ///
+/// Grade by READING the traces with your full goal in mind. The reason
+/// grading is the caller's job (not the harness's, not a script's) is
+/// that you hold goal-context that does not compress into words:
+/// mechanical stand-ins (regexes over summaries, extractors) approximate
+/// judgment and drift badly. Use scripts to FIND the moments worth
+/// judging — never to decide. Prefer axes that VARY across your
+/// variants: an axis every investigation scores the same on cannot
+/// separate anything on a frontier; saturating axes usually mean the
+/// scenarios are too easy, not that the variants tie.
+///
 /// Merge semantics per axis: a number sets/overwrites, `null` deletes.
 /// The response echoes the FULL updated grades map. Axis names must
 /// match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved
@@ -1326,7 +1336,10 @@ struct FrontierQuery {
 /// v0 rendering constraint — send `format=json` for N axes). Axis
 /// direction is declared HERE, per request (`"better": "lower" |
 /// "higher"`), never stored. The harness records your judgment and does
-/// arithmetic; it never interprets a grade.
+/// arithmetic; it never interprets a grade — including which graded
+/// values are "good enough" or what an axis should measure. Those are
+/// caller-domain questions, answered when you PATCH grades from the
+/// traces.
 ///
 /// Every fixable problem (missing grade, unpriced cost axis, running
 /// job, unknown id, duplicate id, bad label/color, direction conflict
