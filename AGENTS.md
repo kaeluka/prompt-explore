@@ -259,8 +259,30 @@ change any of them:
 3. **Record the finding.** Mention the dogfood result in the commit message
    (what was investigated, what the outcome was).
 
+**The `openapi.json` spec is a prompt too — it is in scope.** An agent
+caller's ONLY documentation is the spec; to that reader it literally IS
+the system prompt. So when you change any endpoint description, schema
+description, or example in the spec:
+
+- **Probe it like a prompt.** Feed the spec verbatim to an LLM as the
+  manual ("this is your only documentation") and ask realistic caller
+  questions — "I want to find out whether X ever happens; walk me
+  through your calls", "this just happened: <state or error>; what do
+  you do next?" Read the answers for stumbles: wrong endpoint sequences,
+  invented affordances, missed affordances, or "the spec does not say"
+  where it should.
+- **Before/after, same probes.** Re-run the same probe set after the
+  edit and compare. The goal is the same as for any prompt: the
+  caller-model's planned behavior (the requests it would send) gets
+  closer to correct.
+- **Record the finding** in the commit message like any other dogfood
+  result. Probe answers that invent or miss affordances are spec bugs:
+  fix the spec's words, not the prober's model.
+
 Example precedent: tightening the (now-removed) judge prompt to require that
 a behavior *actually occurred* was validated by re-running the
 destructive-action investigation — the false positive vanished and a real
 witness was found instead. The same loop now applies to the simulator: when
-you change how the world is rendered, re-run and read the traces.
+you change how the world is rendered, re-run and read the traces. And to the
+spec: probe answers that invent or miss affordances mean the spec's words
+(not the prober's model) need fixing.
