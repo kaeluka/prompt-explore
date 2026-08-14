@@ -77,9 +77,11 @@ PATCH /api/investigations/{id}
 
 - Merge per axis; `null` deletes; response echoes the full updated map.
 - Axis names: `^[a-z][a-z0-9_]{0,63}$` (allow-pattern, not deny-list).
-- Values: finite JSON numbers. NaN/Infinity are not expressible in JSON,
-  but exponents like `1e999` parse to infinity — rejected with a 400
-  that names the axis.
+- Values: finite JSON numbers. NaN/Infinity are not JSON, and
+  out-of-range exponents like `1e999` are rejected by the JSON parser
+  itself ("number out of range"); the is-finite check in
+  `validate_grades_patch` remains as defense for programmatic
+  construction of a `GradesPatch` (the struct is public).
 - A reserved axis name in a PATCH is a 400 naming the collision and the
   reserved direction.
 - Grading is allowed on any job status (live-tagging while running is
