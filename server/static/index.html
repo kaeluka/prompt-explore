@@ -58,6 +58,9 @@
   .bubble .role { font-size: 0.66rem; color: var(--text-dim); margin-bottom: 0.18rem; letter-spacing: 0.04em; }
   .bubble .body { white-space: pre-wrap; word-break: break-word; }
   .bubble .body.tool { font-family: var(--mono); font-size: 0.76rem; }
+  /* Thinking (visible reasoning) renders italic + dimmed so it reads as
+     the model's inner voice, distinct from spoken output. */
+  .bubble .body.think { font-style: italic; color: var(--text-dim); }
   .note { color: var(--amber); font-size: 0.82rem; }
   button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 0.3rem 0.7rem; cursor: pointer; font-size: 0.8rem; }
@@ -152,8 +155,22 @@ function ScenBadge({ s }) {
   return null;
 }
 
-function Bubble({ side, role, body, tool }) {
-  return html`<div class=${`bubble ${side}`}><div class="role">${role}</div><div class=${`body${tool ? ' tool':''}`}>${body}</div></div>`;
+function Bubble({ side, role, body, tool, think }) {
+  return html`<div class=${`bubble ${side}`}><div class="role">${role}</div><div class=${`body${tool ? ' tool':''}${think ? ' think':''}`}>${body}</div></div>`;
+}
+
+// A thinking bubble: collapsible when long (reasoning can run screens),
+// italic always. Same chat side as its owner's other bubbles.
+function Thinking({ side, role, text }) {
+  const [open, setOpen] = useState(false);
+  const LIMIT = 300;
+  const s = String(text);
+  const long = s.length > LIMIT;
+  const shown = open || !long ? s : s.slice(0, LIMIT);
+  return html`<div class=${`bubble ${side}`}>
+    <div class="role">${role} · thinking${long ? html` <span class="clip-toggle" style="cursor:pointer" onClick=${() => setOpen(!open)} title=${open ? 'collapse' : 'expand full thinking'}>${open ? '⌃' : '…'}</span>` : null}</div>
+    <div class="body think">${shown}</div>
+  </div>`;
 }
 
 function Chat({ s }) {
@@ -175,6 +192,8 @@ function Chat({ s }) {
   }
   if (s.user_message && s.user_message.trim()) out.push(html`<${Bubble} key="u" side="sim" role="USER" body=${s.user_message} />`);
   (s.steps || []).forEach((st, i) => {
+    if (st.thinking && st.thinking.trim())
+      out.push(html`<${Thinking} key=${'pt'+i} side="put" role="PUT" text=${st.thinking} />`);
     if (st.model_output && st.model_output.trim())
       out.push(html`<${Bubble} key=${'o'+i} side="put" role="PUT" body=${st.model_output} />`);
     if (st.tool_call) {
@@ -185,6 +204,8 @@ function Chat({ s }) {
     if (st.workspace_ops && st.workspace_ops.length) {
       out.push(html`<${WsOps} key=${'w'+i} ops=${st.workspace_ops} />`);
     }
+    if (st.sim_thinking && st.sim_thinking.trim())
+      out.push(html`<${Thinking} key=${'st'+i} side="sim" role="SIM" text=${st.sim_thinking} />`);
     if (st.tool_response != null) {
       const t = typeof st.tool_response === 'string' ? st.tool_response : JSON.stringify(st.tool_response, null, 2);
       out.push(html`<${Bubble} key=${'r'+i} side="sim" role="SIM" body=${t} />`);

@@ -171,6 +171,13 @@ impl RunProgress {
 /// upstream — the agent may trust the person described". The world states
 /// the contract; whether the world actually HONORS it (or breaks it) is
 /// where the behavior you are looking for lives.
+///
+/// Variables are for what VARIES per scenario. If a passage is the same
+/// in every scenario, it is not a variable: it is part of the prompt
+/// under test and belongs verbatim in the template. (Writing a complete
+/// literal as the domain description tends to make the simulator copy it
+/// — but it may still paraphrase or drop it; that failure mode is
+/// invisible unless you diff `resolved_inputs` against what you sent.)
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
     /// The world specification — ground truth the simulator renders tool
@@ -196,8 +203,10 @@ pub struct Scenario {
     /// a `{{variable}}` placeholder in the PUT template (see
     /// `PromptUnderTest.template` for the placeholder syntax); the
     /// simulator generates a concrete value for each and substitutes it
-    /// (reported in the trace's `resolved_inputs`). Empty for templates
-    /// with no placeholders.
+    /// (reported in the trace's `resolved_inputs`). Only use placeholders
+    /// for inputs that should VARY across scenarios — constant text under
+    /// test belongs verbatim in the template, where the simulator cannot
+    /// paraphrase or drop it. Empty for templates with no placeholders.
     #[serde(default)]
     pub input_domain: HashMap<String, String>,
     /// The opening message from the user/protagonist.
@@ -213,11 +222,24 @@ pub struct TraceStep {
     /// The model's text output for this turn (empty on non-first tool
     /// calls within one completion).
     pub model_output: String,
+    /// The PUT model's visible reasoning ("thinking") for this
+    /// completion, when the provider reports it. Transparency only —
+    /// it is never fed back into the conversation. Present on the
+    /// first step produced by a completion (same rule as
+    /// `model_output`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
     /// The tool the model asked to call, if any. A completion that
     /// requests N tool calls becomes N steps.
     pub tool_call: Option<ToolCall>,
     /// The simulated tool response.
     pub tool_response: Option<Value>,
+    /// The SIMULATOR model's visible reasoning while rendering this
+    /// step's tool response (its whole inner drive: lookups and final
+    /// answer). Transparency only; `None` when the simulator model
+    /// reports no reasoning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_thinking: Option<String>,
     /// Present on write-tool steps: world state after the patch applied.
     pub world_state_after: Option<HashMap<String, Value>>,
     /// Workspace operations the SIMULATOR performed while rendering this

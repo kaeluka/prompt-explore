@@ -32,6 +32,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
     let put_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
+                thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "c1".into(),
                 name: "get_code".into(),
@@ -41,6 +42,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         },
         ChatResponse {
             content: Some("here is the code".into()),
+                thinking: None,
             tool_calls: vec![],
             usage: None,
         },
@@ -50,6 +52,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
     let sim_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
+                thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "w1".into(),
                 name: "read".into(),
@@ -59,6 +62,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         },
         ChatResponse {
             content: Some(r#"{"response": "fn main() {}"}"#.into()),
+                thinking: None,
             tool_calls: vec![],
             usage: None,
         },
@@ -125,6 +129,7 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
     let put_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
+                thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "c1".into(),
                 name: "ping".into(),
@@ -134,12 +139,14 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
         },
         ChatResponse {
             content: Some("ok".into()),
+                thinking: None,
             tool_calls: vec![],
             usage: None,
         },
     ]);
     let sim_model = MockLlmClient::scripted(vec![ChatResponse {
         content: Some(r#"{"response": "pong"}"#.into()),
+            thinking: None,
         tool_calls: vec![],
         usage: None,
     }]);

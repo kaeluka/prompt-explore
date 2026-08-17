@@ -483,8 +483,10 @@ fn fabricate_done_job(
             steps: vec![
                 TraceStep {
                     model_output: "Order O-1 is confirmed cancelled.".into(),
+                    thinking: None,
                     tool_call: None,
                     tool_response: None,
+                    sim_thinking: None,
                     world_state_after: None,
                     workspace_ops: vec![],
                 };

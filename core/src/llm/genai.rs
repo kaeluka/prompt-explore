@@ -235,6 +235,10 @@ impl LlmClient for ProviderClient {
         if let Some(m) = req.max_tokens {
             options = options.with_max_tokens(m);
         }
+        // Extract `<think>...</think>` blocks into the response's reasoning
+        // content for providers that emit them inline instead of as a
+        // separate field, so thinking is captured uniformly.
+        options.normalize_reasoning_content = Some(true);
 
         // Retry transient 429 rate limits (z.ai code 1302 "Rate limit
         // reached for requests", OpenRouter's upstream shared-pool 429
@@ -393,6 +397,12 @@ fn convert_response(resp: GChatResponse) -> ChatResponse {
         })
         .collect();
 
+    // Reasoning lives as a sibling field on genai's response (the
+    // OpenAI-family adapters put `/message/reasoning` there), but some
+    // adapters may carry it as content parts — take whichever is set.
+    let thinking = resp
+        .reasoning_content
+        .or_else(|| resp.content.joined_reasoning_content());
     let content = resp.content.into_first_text();
 
     let usage = {
@@ -412,6 +422,7 @@ fn convert_response(resp: GChatResponse) -> ChatResponse {
 
     ChatResponse {
         content,
+        thinking,
         tool_calls,
         usage,
     }

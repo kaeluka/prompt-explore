@@ -53,6 +53,11 @@ pub struct ToolCallRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub content: Option<String>,
+    /// The model's visible reasoning ("thinking") for this completion,
+    /// when the provider reports it. Surfaced in traces for transparency;
+    /// never fed back into the conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
     pub tool_calls: Vec<ToolCallRequest>,
     pub usage: Option<Usage>,
 }

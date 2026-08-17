@@ -114,8 +114,10 @@ impl Runner {
             if response.tool_calls.is_empty() {
                 steps.push(TraceStep {
                     model_output: response.content.clone().unwrap_or_default(),
+                    thinking: response.thinking.clone(),
                     tool_call: None,
                     tool_response: None,
+                    sim_thinking: None,
                     world_state_after: None,
                     workspace_ops: Vec::new(),
                 });
@@ -130,7 +132,7 @@ impl Runner {
             // A response may carry several tool calls; each becomes its
             // own step so the trace reads as a linear story.
             for (i, tc) in response.tool_calls.iter().enumerate() {
-                let (tool_response, state_after, workspace_ops) = self
+                let (tool_response, state_after, workspace_ops, sim_thinking) = self
                     .handle_tool_call(
                         put, tc, &mut world_state, &mut messages, &mut sim,
                     )
@@ -142,12 +144,20 @@ impl Runner {
                     } else {
                         String::new()
                     },
+                    // Same rule as `model_output`: the first step of a
+                    // multi-tool completion carries the turn's thinking.
+                    thinking: if i == 0 {
+                        response.thinking.clone()
+                    } else {
+                        None
+                    },
                     tool_call: Some(ToolCall {
                         name: tc.name.clone(),
                         args: serde_json::from_str(&tc.arguments)
                             .unwrap_or(Value::String(tc.arguments.clone())),
                     }),
                     tool_response: Some(tool_response.clone()),
+                    sim_thinking,
                     world_state_after: state_after.clone(),
                     workspace_ops,
                 });
@@ -180,9 +190,10 @@ impl Runner {
         world_state: &mut Map<String, Value>,
         messages: &mut Vec<Message>,
         sim: &mut SimSession,
-    ) -> Result<(Value, Option<std::collections::HashMap<String, Value>>, Vec<crate::model::simulation::WorkspaceOp>), RunnerError> {
+    ) -> Result<(Value, Option<std::collections::HashMap<String, Value>>, Vec<crate::model::simulation::WorkspaceOp>, Option<String>), RunnerError> {
         let tool = put.tools.iter().find(|t| t.name == tc.name);
         let mut workspace_ops = Vec::new();
+        let mut sim_thinking = None;
 
         let outcome: Value = match tool {
             None => Value::String(format!("error: unknown tool '{}'", tc.name)),
@@ -205,6 +216,7 @@ impl Runner {
                         apply_patch(world_state, patch);
                     }
                     workspace_ops = sim_outcome.workspace_ops;
+                    sim_thinking = sim_outcome.thinking;
                     sim_outcome.response
                 }
             },
@@ -221,7 +233,7 @@ impl Runner {
             }
             _ => None,
         };
-        Ok((outcome, state_after, workspace_ops))
+        Ok((outcome, state_after, workspace_ops, sim_thinking))
     }
 }
 

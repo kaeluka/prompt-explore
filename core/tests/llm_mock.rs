@@ -20,6 +20,7 @@ async fn mock_replays_script_and_records_requests() {
     let mock = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
+                thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "call_1".into(),
                 name: "order_status".into(),
@@ -29,6 +30,7 @@ async fn mock_replays_script_and_records_requests() {
         },
         ChatResponse {
             content: Some("Your order is on its way.".into()),
+                thinking: None,
             tool_calls: vec![],
             usage: Some(Usage {
                 input_tokens: 10,

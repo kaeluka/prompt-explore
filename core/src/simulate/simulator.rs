@@ -59,6 +59,9 @@ pub struct SimOutcome {
     /// response (transparency: lets the caller see whether the answer was
     /// grounded in the filesystem or invented).
     pub workspace_ops: Vec<WorkspaceOp>,
+    /// The simulator model's visible reasoning while producing this
+    /// response (all inner-drive turns concatenated). Transparency only.
+    pub thinking: Option<String>,
 }
 
 /// One simulator conversation for one trace; owns the chat history and
@@ -72,6 +75,9 @@ pub struct SimSession {
     /// Workspace ops accumulated since the last drain (used to attach
     /// them to the trace step they served).
     workspace_ops: Vec<WorkspaceOp>,
+    /// The simulator model's reasoning turns accumulated since the last
+    /// drain, same lifetime rule as `workspace_ops`.
+    thinking: Vec<String>,
 }
 
 impl ToolSimulator {
@@ -101,6 +107,7 @@ impl ToolSimulator {
             messages: vec![Message::System { content: system }],
             workspace: self.workspace_seed.clone(),
             workspace_ops: Vec::new(),
+            thinking: Vec::new(),
         }
     }
 }
@@ -181,13 +188,19 @@ impl SimSession {
                 "{\"response\": <the tool's return value>, \"state_patch\": <write calls only>}",
             )
             .await?;
-        // Drain the workspace ops accumulated for THIS response (plus any
-        // left over from resolve, which had no step to attach to).
+        // Drain the workspace ops and simulator thinking accumulated for
+        // THIS response (plus any left over from resolve, which had no step
+        // to attach to).
         let workspace_ops = std::mem::take(&mut self.workspace_ops);
+        let thinking = {
+            let parts = std::mem::take(&mut self.thinking);
+            (!parts.is_empty()).then(|| parts.join("\n\n"))
+        };
         Ok(SimOutcome {
             response: parsed.response,
             state_patch: if is_write { parsed.state_patch } else { None },
             workspace_ops,
+            thinking,
         })
     }
 
@@ -297,7 +310,18 @@ impl SimSession {
 
             if reply.tool_calls.is_empty() {
                 // Terminal: this content is the candidate final JSON.
+                if let Some(t) = &reply.thinking {
+                    if !t.trim().is_empty() {
+                        self.thinking.push(t.clone());
+                    }
+                }
                 return Ok(reply.content.filter(|c| !c.trim().is_empty()));
+            }
+
+            if let Some(t) = &reply.thinking {
+                if !t.trim().is_empty() {
+                    self.thinking.push(t.clone());
+                }
             }
 
             // The simulator made workspace tool calls. Append the assistant
