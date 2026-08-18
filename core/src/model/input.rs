@@ -20,6 +20,17 @@ pub struct PromptUnderTest {
     ///   serialized form).
     /// - A template with no placeholders needs no `input_domain`.
     ///
+    /// Variables are placeholders for things meant to VARY per scenario —
+    /// the simulator LLM invents each concrete value from the domain
+    /// description. Text under test does NOT belong in a placeholder:
+    /// bake it into the template verbatim. Routing constant text through
+    /// a placeholder hands it to the simulator to (re)generate — it may be
+    /// paraphrased, or silently dropped from `resolved_inputs`, so the
+    /// episode runs without the very text being tested. When the complete
+    /// literal already is the intended value, the simulator tends to copy
+    /// it — but that is a tendency, not a contract. Placeholders are for
+    /// inputs the scenario should sample, not for the prompt itself.
+    ///
     /// The opening user turn is separate — it comes from the scenario's
     /// `user_message`, not the template.
     pub template: String,
