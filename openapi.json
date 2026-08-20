@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/": {
@@ -233,6 +233,41 @@
           },
           "404": {
             "description": "Unknown job id"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [],
+        "summary": "Delete an investigation: remove the job — its traces, grades, and\nprogress — from the server's memory. Irreversible: the evidence is\ngone (a re-run means POSTing a new investigation), and grades are\nonly stored on the job — read the job first if you want to keep\nthem. Useful for pruning a campaign's dead variants so the\ndashboard and POST /api/frontier only show the points you still\ncompare. RUNNING jobs cannot be deleted (409): a run cannot be\ncancelled — its provider calls would keep spending while the\nresult is discarded. Poll until done or failed, then delete.",
+        "operationId": "delete_investigation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job id returned by POST /api/investigations",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted. Body: {\"deleted\": \"<id>\"}"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown job id (already deleted, or lost on restart)"
+          },
+          "409": {
+            "description": "Job is still running — wait for done/failed, then delete"
           }
         },
         "security": [

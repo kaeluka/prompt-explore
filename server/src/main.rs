@@ -350,7 +350,7 @@ struct JobSummary {
                        web UI prompts for the token and stores it in localStorage."
     ),
     modifiers(&SecurityAddon),
-    paths(index, list_investigations, create_investigation, get_investigation, patch_investigation, frontier, list_models)
+    paths(index, list_investigations, create_investigation, get_investigation, patch_investigation, delete_investigation, frontier, list_models)
 )]
 struct ApiDoc;
 
@@ -444,7 +444,9 @@ fn build_app(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/investigations/{id}",
-            get(get_investigation).patch(patch_investigation),
+            get(get_investigation)
+                .patch(patch_investigation)
+                .delete(delete_investigation),
         )
         .route("/api/frontier", post(frontier))
         .route("/api/models", get(list_models))
@@ -1290,6 +1292,63 @@ async fn patch_investigation(
         }),
     )
         .into_response()
+}
+
+/// Delete an investigation: remove the job — its traces, grades, and
+/// progress — from the server's memory. Irreversible: the evidence is
+/// gone (a re-run means POSTing a new investigation), and grades are
+/// only stored on the job — read the job first if you want to keep
+/// them. Useful for pruning a campaign's dead variants so the
+/// dashboard and POST /api/frontier only show the points you still
+/// compare. RUNNING jobs cannot be deleted (409): a run cannot be
+/// cancelled — its provider calls would keep spending while the
+/// result is discarded. Poll until done or failed, then delete.
+#[utoipa::path(
+    delete,
+    path = "/api/investigations/{id}",
+    params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
+    security(("api_token" = [])),
+    responses(
+        (status = 200, description = "Deleted. Body: {\"deleted\": \"<id>\"}"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Unknown job id (already deleted, or lost on restart)"),
+        (status = 409, description = "Job is still running — wait for done/failed, then delete")
+    )
+)]
+async fn delete_investigation(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let mut jobs = state.jobs.lock().unwrap();
+    match jobs.get(&id).map(|j| j.status) {
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("no investigation '{id}' in this server's memory — already deleted, or lost on restart (the job store is in-memory by design)")
+            })),
+        )
+            .into_response(),
+        Some(JobStatus::Running) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "investigation '{id}' is still running and cannot be deleted — a run \
+                     cannot be cancelled: its provider calls would keep spending while the \
+                     result is discarded. Poll GET /api/investigations/{id} until status is \
+                     done or failed, then DELETE again"
+                )
+            })),
+        )
+            .into_response(),
+        Some(_) => {
+            jobs.remove(&id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "deleted": id })),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// Assemble the harness-side facts the frontier needs from one job.

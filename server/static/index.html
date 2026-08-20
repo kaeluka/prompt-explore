@@ -86,7 +86,7 @@
   .grade-row input { width: 7em; }
   .del { color: var(--text-dim); cursor: pointer; border: none; background: none; padding: 0 0.2rem; font-size: 0.9rem; }
   .del:hover { color: var(--red); }
-  .axis-grid { display: grid; grid-template-columns: 1fr auto auto; gap: 0.4rem 0.6rem; align-items: center; }
+  .axis-grid { display: grid; grid-template-columns: 1fr auto auto auto; gap: 0.4rem 0.6rem; align-items: center; }
   .frontier-err { border-left: 2px solid var(--red); padding-left: 0.6rem; margin: 0.4rem 0; }
   .frontier-err .reason { font-family: var(--mono); font-size: 0.74rem; color: var(--red); }
   .ptable { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-top: 0.5rem; }
@@ -134,6 +134,7 @@ const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_t
 // bubbles so `put`/`sim` are recognizable across the card.
 const roleLine = (label, u, cls) => u ? html`<div class="meta usage-line"><span class=${`utag ${cls}`}>${label}</span>${fmtUsage(u)}</div>` : null;
 const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
+const fmtAxisVal = v => v == null ? '—' : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : +v.toFixed(3);
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({scenarios:'simulating scenarios'})[p] || p;
 
@@ -353,78 +354,117 @@ function GradesPanel({ j, token }) {
 function FrontierPanel({ jobs, token }) {
   const eligible = (jobs || []).filter(j => j.status === 'done');
   const [sel, setSel] = useState({});
-  const [xAx, setXAx] = useState('put_output_tokens');
-  const [yAx, setYAx] = useState('');
+  const [axes, setAxes] = useState(['put_output_tokens', '']); // '' = derive at render
   const [dirs, setDirs] = useState({});   // graded axis name → 'lower'|'higher'
-  const [plot, setPlot] = useState(null); // { svg, table }
+  const [plot, setPlot] = useState(null); // { svg?, table, skipped? }
   const [err, setErr] = useState(null);
   const gradedNames = [...new Set(eligible.flatMap(j => Object.keys(j.grades || {})))];
   const options = RESERVED_AXES.map(([n]) => n).concat(gradedNames.filter(n => !reservedDir(n)));
-  // Effective axis names, derived at render time so defaults adapt as
-  // jobs arrive and get graded (state only stores explicit choices).
-  const xName = xAx || 'put_output_tokens';
-  const yName = yAx || gradedNames.find(n => !reservedDir(n)) || 'steps_per_trace_avg';
+  // Effective axis names, derived at render time so a row's default
+  // adapts as jobs arrive and get graded (state only stores explicit
+  // choices). Derived defaults skip names already used by other rows.
+  const names = [];
+  axes.forEach(a => {
+    if (a) { names.push(a); return; }
+    const used = new Set(names);
+    names.push(gradedNames.find(g => !reservedDir(g) && !used.has(g))
+      || options.find(o => !used.has(o)) || 'steps_per_trace_avg');
+  });
   const dirOf = n => reservedDir(n) || dirs[n] || 'higher';
   const setDir = (n, d) => setDirs({ ...dirs, [n]: d });
   const chosen = eligible.filter(j => sel[j.id]);
+  // Graded axes are only plottable on investigations that HAVE them —
+  // and the UI knows grades (it polls them). Checked points missing a
+  // selected graded axis are marked in the list, excluded from the
+  // request, and the exclusion is reported next to the result — never
+  // dropped silently. Reserved (measured) axes can't be predicted
+  // client-side (unpriced model, no completed traces): those keep the
+  // server's precise 422.
+  const gradedSel = names.filter(n => !reservedDir(n));
+  const missingFor = j => gradedSel.filter(n => !Object.prototype.hasOwnProperty.call(j.grades || {}, n));
+  const toSend = chosen.filter(j => missingFor(j).length === 0);
 
   const run = async () => {
     setErr(null); setPlot(null);
+    const skipped = chosen.filter(j => missingFor(j).length > 0)
+      .map(j => ({ label: (j.put && j.put.id) || j.id.slice(0,8), missing: missingFor(j) }));
+    if (!toSend.length) {
+      setErr([{ reason: 'nothing to plot', detail: skipped.length
+        ? `every selected investigation lacks a grade on ${[...new Set(skipped.flatMap(s => s.missing))].join(', ')} — grade it on the job card (PATCH grades) or deselect that axis`
+        : 'select at least one investigation' }]);
+      return;
+    }
     const body = {
-      investigations: chosen.map(j => j.id),
-      axes: [
-        { name: xName, better: dirOf(xName) },
-        { name: yName, better: dirOf(yName) },
-      ],
+      investigations: toSend.map(j => j.id),
+      axes: names.map(n => ({ name: n, better: dirOf(n) })),
     };
-    const [svgR, jsonR] = await Promise.all([
-      fetch('/api/frontier?format=svg', { method: 'POST', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify(body) }),
-      fetch('/api/frontier?format=json', { method: 'POST', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+    const headers = { ...authHeaders(token), 'content-type': 'application/json' };
+    const two = names.length === 2; // the scatter is 2-axis only (v0 rendering constraint)
+    const [jsonR, svgR] = await Promise.all([
+      fetch('/api/frontier?format=json', { method: 'POST', headers, body: JSON.stringify(body) }),
+      two ? fetch('/api/frontier?format=svg', { method: 'POST', headers, body: JSON.stringify(body) }) : Promise.resolve(null),
     ]);
-    if (!svgR.ok || !jsonR.ok) {
+    if (!jsonR.ok || (svgR && !svgR.ok)) {
       const b = await jsonR.json().catch(() => ({}));
       setErr(b.problems || [{ reason: b.error || 'error', detail: `HTTP ${jsonR.status}` }]);
       return;
     }
-    setPlot({ svg: await svgR.text(), table: (await jsonR.json()).points });
+    setPlot({ svg: svgR ? await svgR.text() : null, table: (await jsonR.json()).points, skipped });
   };
 
-  const axisPicker = (label, name, set) => html`
-    <div class="axis-grid">
-      <span class="meta">${label}</span>
-      <select value=${name} onChange=${e => set(e.target.value)}>
-        ${options.map(o => html`<option value=${o} key=${o}>${o}${reservedDir(o) ? '' : ' (graded)'}</option>`)}
-      </select>
-      ${reservedDir(name)
-        ? html`<span class="meta" title="reserved measured axis — direction is baked in">${reservedDir(name)} is better 🔒</span>`
-        : html`<select value=${dirOf(name)} onChange=${e => setDir(name, e.target.value)} title="your call: direction is declared per request, never stored">
-            <option value="higher">higher is better</option>
-            <option value="lower">lower is better</option>
-          </select>`}
-    </div>`;
+  const axisRow = i => {
+    const name = names[i];
+    // A row can't select a name another row already uses (the API
+    // rejects duplicate axes): each row's options exclude the others'.
+    const rowOpts = options.filter(o => !names.some((n, x) => x !== i && n === o));
+    return html`
+      <div class="axis-grid" key=${i}>
+        <span class="meta">${i === 0 ? 'x axis' : i === 1 ? 'y axis' : `axis ${i + 1}`}</span>
+        <select value=${name} onChange=${e => setAxes(axes.map((a, x) => x === i ? e.target.value : a))}>
+          ${rowOpts.map(o => html`<option value=${o} key=${o}>${o}${reservedDir(o) ? '' : ' (graded)'}</option>`)}
+        </select>
+        ${reservedDir(name)
+          ? html`<span class="meta" title="reserved measured axis — direction is baked in">${reservedDir(name)} is better 🔒</span>`
+          : html`<select value=${dirOf(name)} onChange=${e => setDir(name, e.target.value)} title="your call: direction is declared per request, never stored">
+              <option value="higher">higher is better</option>
+              <option value="lower">lower is better</option>
+            </select>`}
+        <button class="del" title="remove this axis" disabled=${axes.length <= 1}
+          onClick=${() => setAxes(axes.filter((_, x) => x !== i))}>✕</button>
+      </div>`;
+  };
 
   return html`
     <div class="card">
       <h2>📈 Pareto frontier <span class="meta" style="font-weight:400">— which variants nobody dominates</span></h2>
       ${eligible.length < 2 ? html`<div class="meta" style="margin:0.4rem 0">Needs ≥ 2 done investigations to compare.${jobs && jobs.length ? ' Grade finished ones and plot them here as more finish.' : ''}</div>` : html`
-        <div style="margin:0.45rem 0">
-          ${eligible.map(j => html`
-            <label class="meta" style="margin-right:1rem;white-space:nowrap;cursor:pointer">
+        <div style="margin:0.45rem 0;display:flex;flex-wrap:wrap;gap:0.3rem 1.1rem">
+          ${eligible.map(j => {
+            const miss = missingFor(j);
+            return html`
+            <label class="meta" style="white-space:nowrap;cursor:pointer${miss.length ? ';opacity:0.55' : ''}"
+              title=${miss.length ? `missing ${miss.join(', ')} — excluded from the analysis until graded (add the grade on this job's card, or PATCH its grades)` : ''}>
               <input type="checkbox" checked=${!!sel[j.id]} onClick=${() => setSel({ ...sel, [j.id]: !sel[j.id] })} />
-              ${(j.put && j.put.id) || j.id.slice(0,8)}
-            </label>`)}
+              ${(j.put && j.put.id) || j.id.slice(0,8)}${miss.length ? ` (no ${miss.join(', ')})` : ''}
+            </label>`;
+          })}
         </div>
-        <div style="margin:0.45rem 0">${axisPicker('x axis', xName, setXAx)}${axisPicker('y axis', yName, setYAx)}</div>
+        <div style="margin:0.45rem 0">${axes.map((_, i) => axisRow(i))}
+          <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="add an axis — dominance is N-dimensional; the scatter is drawn only at exactly 2 axes (the table always renders)">+ axis</button>
+        </div>
         <div class="grow"><button onClick=${run} disabled=${chosen.length < 1}>plot</button>
-          <span class="meta" style="opacity:0.75">up & right is better, whichever directions you pick</span></div>`}
+          <span class="meta" style="opacity:0.75">${names.length === 2 ? 'up & right is better, whichever directions you pick' : `${names.length} axes — N-dimensional dominance; scatter only at exactly 2 (table always renders)`}</span></div>`}
       ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}${p.investigation ? ` · ${String(p.investigation).slice(0,8)}` : ''}${p.axis ? ` · ${p.axis}` : ''}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
+      ${plot && plot.skipped && plot.skipped.length ? html`
+        <div class="note" style="margin:0.45rem 0">excluded from the pareto frontier analysis (missing grades): ${plot.skipped.map(s => `${s.label} → no ${s.missing.join(', ')}`).join(' · ')} — add a grade for the missing axis on that job's card (or PATCH its grades) to include it; the run itself already has traces to judge</div>` : null}
       ${plot ? html`
-        <div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>
+        ${plot.svg ? html`<div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>` : null}
         <table class="ptable">
-          <thead><tr><th>point</th><th>on frontier</th><th>dominated by</th></tr></thead>
+          <thead><tr><th>point</th>${names.map(n => html`<th key=${n} class="mono">${n}</th>`)}<th>on frontier</th><th>dominated by</th></tr></thead>
           <tbody>${plot.table.map(p => html`
             <tr key=${p.investigation}>
               <td class="mono">${p.label}</td>
+              ${names.map(n => html`<td key=${n} class="mono">${fmtAxisVal(p.values[n])}</td>`)}
               <td>${p.on_frontier ? html`<span class="nd">yes</span>` : html`<span class="dom">no</span>`}</td>
               <td class="dom mono">${(p.dominated_by || []).map(d => (plot.table.find(q => q.investigation === d) || { label: d }).label).join(', ') || '—'}</td>
             </tr>`)}</tbody>
@@ -432,7 +472,7 @@ function FrontierPanel({ jobs, token }) {
     </div>`;
 }
 
-function JobCard({ j, token }) {
+function JobCard({ j, token, onDelete }) {
   const inputById = {}; (j.scenarios || []).forEach(s => { inputById[s.id] = s; });
   const progs = (j.progress && j.progress.scenarios) || [];
   return html`
@@ -441,11 +481,14 @@ function JobCard({ j, token }) {
         <span class="badge ${j.status}">${j.status}</span>
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
         <span class="mono meta">${(j.id || '').slice(0,8)}</span>
+        ${j.put && j.put.id ? html`<span class="meta" title="prompt under test id (caller-chosen name for this variant)"><b class="mono">${j.put.id}</b></span>` : null}
         <span class="meta">${'· ' + relTime(j.started_at)}</span>
         ${(j.model || j.sim_model) ? html`<span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
           ${j.model ? html`<span class="utag put" title="prompt under test model">${j.model}</span>` : null}
           ${j.sim_model ? html`<span class="utag sim" title="tool simulator model">${j.sim_model}</span>` : null}
           ${j.workspace_files ? html`<span class="utag ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
+          <button class="del" title="delete this investigation (irreversible — removes the job, its traces, and its grades from the server's memory)"
+            onClick=${() => { if (confirm(`Delete ${(j.put && j.put.id) || j.id.slice(0,8)}? Its traces and grades are removed from the server — irreversible.`)) onDelete(j.id); }}>✕</button>
         </span>` : null}
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
@@ -502,6 +545,18 @@ function App() {
     setAuthError(false);
   };
 
+  const removeJob = async id => {
+    try {
+      const r = await fetch(API(id), { method: 'DELETE', headers: authHeaders(token) });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        alert(b.error || `delete failed: HTTP ${r.status}`);
+        return;
+      }
+    } catch (e) { console.error(e); alert('delete failed: network error'); return; }
+    setJobs(js => (js || []).filter(x => x.id !== id));
+  };
+
   const expandAll = () => {
     const all = [...document.querySelectorAll('#root details')];
     const anyClosed = all.some(d => !d.hasAttribute('open'));
@@ -533,7 +588,7 @@ function App() {
       ${authRequired ? null
        : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} />`)}
+       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${removeJob} />`)}}
     </div>
     <footer class="meta" style="margin-top:2rem;text-align:center">
       API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>
