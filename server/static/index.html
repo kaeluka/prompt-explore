@@ -26,6 +26,13 @@
   .meta { color: var(--text-dim); font-size: 0.85rem; }
   .card { background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 1rem 1.1rem; margin: 0.7rem 0; }
+  .card.enter { animation: card-in 0.24s ease-out; }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .card.leaving { opacity: 0; transform: scale(0.97); transition: opacity 0.22s ease-in, transform 0.22s ease-in, margin 0.22s ease-in, padding 0.22s ease-in, border 0.22s ease-in; }
+  .card.leaving > * { visibility: hidden; }
   .card h2 { font-size: 0.92rem; margin: 0; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
   .mono { font-family: var(--mono); }
   .badge { display: inline-block; font-size: 0.74rem; font-weight: 700;
@@ -113,7 +120,7 @@
 </script>
 <script type="module">
 import { h, render } from 'preact';
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import htm from 'htm';
 const html = htm.bind(h);
 
@@ -384,33 +391,67 @@ function FrontierPanel({ jobs, token }) {
   const missingFor = j => gradedSel.filter(n => !Object.prototype.hasOwnProperty.call(j.grades || {}, n));
   const toSend = chosen.filter(j => missingFor(j).length === 0);
 
-  const run = async () => {
-    setErr(null); setPlot(null);
-    const skipped = chosen.filter(j => missingFor(j).length > 0)
-      .map(j => ({ label: (j.put && j.put.id) || j.id.slice(0,8), missing: missingFor(j) }));
-    if (!toSend.length) {
-      setErr([{ reason: 'nothing to plot', detail: skipped.length
-        ? `every selected investigation lacks a grade on ${[...new Set(skipped.flatMap(s => s.missing))].join(', ')} — grade it on the job card (PATCH grades) or deselect that axis`
-        : 'select at least one investigation' }]);
+  // Auto-run: every settings change (selection, axes, directions)
+  // re-fetches immediately — computing the frontier is cheap. Also
+  // re-fetches when the grades data behind it changes, so a new grade
+  // on the job card updates the plot on the next poll. Out-of-order
+  // responses are guarded (seq token: only the latest request's
+  // answer renders). Empty selection clears plot + errors.
+  const toSendKey = JSON.stringify(toSend.map(j => j.id));
+  const gradesKey = JSON.stringify(eligible.map(j => [j.id, j.grades]));
+  const namesKey = JSON.stringify(names);
+  const dirsKey = JSON.stringify(names.map(n => dirOf(n)));
+  const seq = useRef(0);
+  const skipKey = JSON.stringify(chosen.map(j => [j.id, missingFor(j)]));
+  const tokenRef = useRef(token); tokenRef.current = token;
+  useEffect(() => {
+    // deps: exactly what the request depends on (as memoized keys).
+    // jobs/eligible are covered via toSendKey/skipKey/gradesKey; token
+    // via a ref (changing it mid-session shouldn't re-fire a fetch with
+    // stale axes); derived names via namesKey/dirsKey.
+    const mySeq = ++seq.current;
+    if (!chosen.length) {
+      if (mySeq === seq.current) { setPlot(null); setErr(null); }
       return;
     }
-    const body = {
-      investigations: toSend.map(j => j.id),
-      axes: names.map(n => ({ name: n, better: dirOf(n) })),
-    };
-    const headers = { ...authHeaders(token), 'content-type': 'application/json' };
-    const two = names.length === 2; // the scatter is 2-axis only (v0 rendering constraint)
-    const [jsonR, svgR] = await Promise.all([
-      fetch('/api/frontier?format=json', { method: 'POST', headers, body: JSON.stringify(body) }),
-      two ? fetch('/api/frontier?format=svg', { method: 'POST', headers, body: JSON.stringify(body) }) : Promise.resolve(null),
-    ]);
-    if (!jsonR.ok || (svgR && !svgR.ok)) {
-      const b = await jsonR.json().catch(() => ({}));
-      setErr(b.problems || [{ reason: b.error || 'error', detail: `HTTP ${jsonR.status}` }]);
-      return;
-    }
-    setPlot({ svg: svgR ? await svgR.text() : null, table: (await jsonR.json()).points, skipped });
-  };
+    (async () => {
+      const skipped = chosen.filter(j => missingFor(j).length > 0)
+        .map(j => ({ label: (j.put && j.put.id) || j.id.slice(0,8), missing: missingFor(j) }));
+      if (!toSend.length) {
+        if (mySeq === seq.current) {
+          setPlot(null);
+          setErr([{ reason: 'nothing to plot', detail: skipped.length
+            ? `every selected investigation lacks a grade on ${[...new Set(skipped.flatMap(s => s.missing))].join(', ')} — grade it on the job card (PATCH grades) or deselect that axis`
+            : 'select at least one investigation' }]);
+        }
+        return;
+      }
+      const body = {
+        investigations: toSend.map(j => j.id),
+        axes: names.map(n => ({ name: n, better: dirOf(n) })),
+      };
+      const headers = { ...authHeaders(tokenRef.current), 'content-type': 'application/json' };
+      const two = names.length === 2; // the scatter is 2-axis only (v0 rendering constraint)
+      try {
+        const [jsonR, svgR] = await Promise.all([
+          fetch('/api/frontier?format=json', { method: 'POST', headers, body: JSON.stringify(body) }),
+          two ? fetch('/api/frontier?format=svg', { method: 'POST', headers, body: JSON.stringify(body) }) : Promise.resolve(null),
+        ]);
+        if (!jsonR.ok || (svgR && !svgR.ok)) {
+          const b = await jsonR.json().catch(() => ({}));
+          if (mySeq === seq.current) {
+            setPlot(null);
+            setErr(b.problems || [{ reason: b.error || 'error', detail: `HTTP ${jsonR.status}` }]);
+          }
+          return;
+        }
+        const next = { svg: svgR ? await svgR.text() : null, table: (await jsonR.json()).points, skipped };
+        if (mySeq === seq.current) { setErr(null); setPlot(next); }
+      } catch (e) {
+        if (mySeq === seq.current) setErr([{ reason: 'request failed', detail: String(e) }]);
+      }
+    })();
+  }, [toSendKey, gradesKey, namesKey, dirsKey, skipKey]);
 
   const axisRow = i => {
     const name = names[i];
@@ -452,8 +493,7 @@ function FrontierPanel({ jobs, token }) {
         <div style="margin:0.45rem 0">${axes.map((_, i) => axisRow(i))}
           <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="add an axis — dominance is N-dimensional; the scatter is drawn only at exactly 2 axes (the table always renders)">+ axis</button>
         </div>
-        <div class="grow"><button onClick=${run} disabled=${chosen.length < 1}>plot</button>
-          <span class="meta" style="opacity:0.75">${names.length === 2 ? 'up & right is better, whichever directions you pick' : `${names.length} axes — N-dimensional dominance; scatter only at exactly 2 (table always renders)`}</span></div>`}
+        <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'up & right is better, whichever directions you pick' : `${names.length} axes — N-dimensional dominance; scatter only at exactly 2 (table always renders)`}</div>`}
       ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}${p.investigation ? ` · ${String(p.investigation).slice(0,8)}` : ''}${p.axis ? ` · ${p.axis}` : ''}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
       ${plot && plot.skipped && plot.skipped.length ? html`
         <div class="note" style="margin:0.45rem 0">excluded from the pareto frontier analysis (missing grades): ${plot.skipped.map(s => `${s.label} → no ${s.missing.join(', ')}`).join(' · ')} — add a grade for the missing axis on that job's card (or PATCH its grades) to include it; the run itself already has traces to judge</div>` : null}
@@ -472,11 +512,11 @@ function FrontierPanel({ jobs, token }) {
     </div>`;
 }
 
-function JobCard({ j, token, onDelete }) {
+function JobCard({ j, token, onDelete, leaving }) {
   const inputById = {}; (j.scenarios || []).forEach(s => { inputById[s.id] = s; });
   const progs = (j.progress && j.progress.scenarios) || [];
   return html`
-    <div class="card" key=${j.id}>
+    <div class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
       <h2>
         <span class="badge ${j.status}">${j.status}</span>
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
@@ -488,7 +528,7 @@ function JobCard({ j, token, onDelete }) {
           ${j.sim_model ? html`<span class="utag sim" title="tool simulator model">${j.sim_model}</span>` : null}
           ${j.workspace_files ? html`<span class="utag ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
           <button class="del" title="delete this investigation (irreversible — removes the job, its traces, and its grades from the server's memory)"
-            onClick=${() => { if (confirm(`Delete ${(j.put && j.put.id) || j.id.slice(0,8)}? Its traces and grades are removed from the server — irreversible.`)) onDelete(j.id); }}>✕</button>
+            onClick=${() => onDelete(j.id)}>✕</button>
         </span>` : null}
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
@@ -545,7 +585,9 @@ function App() {
     setAuthError(false);
   };
 
+  const [leaving, setLeaving] = useState(null); // id mid-leave-animation
   const removeJob = async id => {
+    let ok = false;
     try {
       const r = await fetch(API(id), { method: 'DELETE', headers: authHeaders(token) });
       if (!r.ok) {
@@ -553,8 +595,18 @@ function App() {
         alert(b.error || `delete failed: HTTP ${r.status}`);
         return;
       }
+      ok = true;
     } catch (e) { console.error(e); alert('delete failed: network error'); return; }
-    setJobs(js => (js || []).filter(x => x.id !== id));
+    if (!ok) return;
+    // Leave animation: collapse first, drop from state after. The 250ms
+    // covers the 220ms CSS transition plus layout settle; the timeout is
+    // cleared on unmount so a deleted card can't resurrect over a page
+    // navigation.
+    setLeaving(id);
+    setTimeout(() => {
+      setJobs(js => (js || []).filter(x => x.id !== id));
+      setLeaving(null);
+    }, 250);
   };
 
   const expandAll = () => {
@@ -588,7 +640,7 @@ function App() {
       ${authRequired ? null
        : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${removeJob} />`)}}
+       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${removeJob} leaving=${leaving === j.id} />`)}
     </div>
     <footer class="meta" style="margin-top:2rem;text-align:center">
       API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>
