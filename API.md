@@ -356,13 +356,13 @@ A provider's listing result.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `available` | object | yes | The provider was queried successfully. |
+| `available` | object | yes | The provider is usable. `models` is the live catalog when the provider exposes one; it may be EMPTY when the catalog listing failed but the provider itself works (see `note`) — the model list is advisory, not a gate: any `<namespace>::<model-id>` the API accepts can be used in a request even if absent here. |
 
 **Variant**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `error` | object | yes | The provider could not be queried — e.g. no API key in the environment, no AWS credentials, network error, region-gated. |
+| `error` | object | yes | The provider could not be used at all — e.g. no API key in the environment, credentials that don't resolve, network error, region-gated. |
 
 ### `RunPhase`
 

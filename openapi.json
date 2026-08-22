@@ -1017,14 +1017,14 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "The provider was queried successfully.",
+            "description": "The provider is usable. `models` is the live catalog when the\nprovider exposes one; it may be EMPTY when the catalog listing\nfailed but the provider itself works (see `note`) — the model\nlist is advisory, not a gate: any `<namespace>::<model-id>` the\nAPI accepts can be used in a request even if absent here.",
             "required": [
               "available"
             ],
             "properties": {
               "available": {
                 "type": "object",
-                "description": "The provider was queried successfully.",
+                "description": "The provider is usable. `models` is the live catalog when the\nprovider exposes one; it may be EMPTY when the catalog listing\nfailed but the provider itself works (see `note`) — the model\nlist is advisory, not a gate: any `<namespace>::<model-id>` the\nAPI accepts can be used in a request even if absent here.",
                 "required": [
                   "models"
                 ],
@@ -1034,6 +1034,13 @@
                     "items": {
                       "$ref": "#/components/schemas/ModelEntry"
                     }
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Why the catalog may be empty or partial — e.g. a listing\npermission failure on a provider whose generation path works\n(Vertex Model Garden 403 with a personal account). Carries\nthe provider's own message so an operator who CAN fix the\nlisting permission knows exactly what to grant; everyone\nelse can ignore it and use any model id directly."
                   }
                 }
               }
@@ -1041,14 +1048,14 @@
           },
           {
             "type": "object",
-            "description": "The provider could not be queried — e.g. no API key in the\nenvironment, no AWS credentials, network error, region-gated.",
+            "description": "The provider could not be used at all — e.g. no API key in the\nenvironment, credentials that don't resolve, network error,\nregion-gated.",
             "required": [
               "error"
             ],
             "properties": {
               "error": {
                 "type": "object",
-                "description": "The provider could not be queried — e.g. no API key in the\nenvironment, no AWS credentials, network error, region-gated.",
+                "description": "The provider could not be used at all — e.g. no API key in the\nenvironment, credentials that don't resolve, network error,\nregion-gated.",
                 "required": [
                   "error"
                 ],

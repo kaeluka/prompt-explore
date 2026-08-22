@@ -2,9 +2,16 @@
 //!
 //! Returns, per provider, either its models (each in the full namespaced
 //! form you'd paste into a request's `model` field) or an `error`
-//! explaining why it couldn't be listed (no auth, network, region-gated,
-//! …). Listing is best-effort and per-provider: one provider failing
-//! never breaks the others.
+//! explaining why the provider can't be used (no auth, unresolvable
+//! credentials, region-gated, …). Listing is best-effort and
+//! per-provider: one provider failing never breaks the others.
+//!
+//! Availability and catalog are DECOUPLED: a provider can be
+//! `available` with an empty model list plus a `note` — its generation
+//! path works but its catalog listing failed (Vertex with a personal
+//! account is the case). The model list is advisory, never a gate: any
+//! `<namespace>::<model-id>` the API accepts can be used in a request
+//! even when absent from the list.
 //!
 //! Pricing: the optional `pricing` map (per-token USD strings) is
 //! populated where the provider exposes it. The keys (`prompt` = input,
@@ -41,10 +48,25 @@ pub struct ModelEntry {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderModels {
-    /// The provider was queried successfully.
-    Available { models: Vec<ModelEntry> },
-    /// The provider could not be queried — e.g. no API key in the
-    /// environment, no AWS credentials, network error, region-gated.
+    /// The provider is usable. `models` is the live catalog when the
+    /// provider exposes one; it may be EMPTY when the catalog listing
+    /// failed but the provider itself works (see `note`) — the model
+    /// list is advisory, not a gate: any `<namespace>::<model-id>` the
+    /// API accepts can be used in a request even if absent here.
+    Available {
+        models: Vec<ModelEntry>,
+        /// Why the catalog may be empty or partial — e.g. a listing
+        /// permission failure on a provider whose generation path works
+        /// (Vertex Model Garden 403 with a personal account). Carries
+        /// the provider's own message so an operator who CAN fix the
+        /// listing permission knows exactly what to grant; everyone
+        /// else can ignore it and use any model id directly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// The provider could not be used at all — e.g. no API key in the
+    /// environment, credentials that don't resolve, network error,
+    /// region-gated.
     Error { error: String },
 }
 
@@ -110,9 +132,37 @@ async fn list_via_genai(
                 })
                 .collect();
             models.sort_by(|a, b| a.name.cmp(&b.name));
-            (key.into(), ProviderModels::Available { models })
+            (key.into(), ProviderModels::Available { models, note: None })
         }
         Err(e) => (key.into(), ProviderModels::Error { error: e.to_string() }),
+    }
+}
+
+/// Pure decision: how a Vertex listing outcome maps to the response.
+/// Availability follows what GENERATION needs (credentials + project
+/// resolve — `vertex_endpoint()` can't even be built without them);
+/// the Model Garden catalog is a best-effort extra. A listing
+/// permission failure therefore degrades to `Available` with an empty
+/// catalog and an explanatory note rather than a false "broken" —
+/// org/service-account setups whose quota project passes still get the
+/// live catalog. (The model list is advisory: any `vertex::<id>` the
+/// API accepts works in a request regardless of listing.)
+pub(crate) fn vertex_listing_result(
+    listing: Result<Vec<ModelEntry>, String>,
+) -> ProviderModels {
+    match listing {
+        Ok(mut models) => {
+            models.sort_by(|a, b| a.name.cmp(&b.name));
+            ProviderModels::Available { models, note: None }
+        }
+        Err(list_err) => ProviderModels::Available {
+            models: Vec::new(),
+            note: Some(format!(
+                "catalog listing unavailable ({list_err}) — generation still works: \n\
+                 pass any `vertex::<model-id>` (e.g. vertex::gemini-2.5-pro) in the \n\
+                 request's `model` field; the list above is advisory, not a gate"
+            )),
+        },
     }
 }
 
@@ -122,14 +172,25 @@ async fn list_via_genai(
 /// use it). The endpoint needs a quota project (`x-goog-user-project`)
 /// where the aiplatform API + billing are enabled and the caller has
 /// `serviceusage.services.use`; we try the ADC quota project and the
-/// resolved project in turn, so whichever one is set up works. On
-/// failure the returned error is Google's own message, which names the
-/// exact missing piece (enable the API / billing / grant the role).
+/// resolved project in turn, so whichever one is set up works. When
+/// every candidate is rejected — e.g. a personal account whose ADC
+/// quota project is a Google-managed `gen-lang-client-*` it cannot
+/// grant itself roles on — the caller still has working GENERATION
+/// (different endpoint, different permission), so the listing failure
+/// degrades to available-with-note instead of error (see
+/// [`vertex_listing_result`]).
 async fn list_vertex() -> (String, ProviderModels) {
     let token = match gcloud::access_token().await {
         Ok(t) => t,
+        // Credential resolution failing IS predictive: generation
+        // cannot work either.
         Err(e) => return ("vertex".into(), ProviderModels::Error { error: e }),
     };
+    // The resolved project is required for generation's endpoint too,
+    // so absence here is predictive of a broken provider.
+    if let Err(e) = gcloud::project_id().await {
+        return ("vertex".into(), ProviderModels::Error { error: e });
+    }
     let mut candidates: Vec<String> = Vec::new();
     if let Ok(q) = gcloud::adc_quota_project().await {
         candidates.push(q);
@@ -139,24 +200,23 @@ async fn list_vertex() -> (String, ProviderModels) {
     }
     candidates.dedup();
     if candidates.is_empty() {
+        // Token + project resolved but no quota candidate: generation
+        // works (it needs no quota header), listing can't even be tried.
         return (
             "vertex".into(),
-            ProviderModels::Error {
-                error: "no GCP project for the quota header".into(),
-            },
+            vertex_listing_result(Err(
+                "no quota project for the x-goog-user-project header".into()
+            )),
         );
     }
     let mut last_err = String::new();
     for quota_project in &candidates {
         match fetch_vertex_models(&token, quota_project).await {
-            Ok(mut models) => {
-                models.sort_by(|a, b| a.name.cmp(&b.name));
-                return ("vertex".into(), ProviderModels::Available { models });
-            }
+            Ok(models) => return ("vertex".into(), vertex_listing_result(Ok(models))),
             Err(e) => last_err = e,
         }
     }
-    ("vertex".into(), ProviderModels::Error { error: last_err })
+    ("vertex".into(), vertex_listing_result(Err(last_err)))
 }
 
 #[derive(Deserialize)]
@@ -267,7 +327,7 @@ async fn list_baseten() -> (String, ProviderModels) {
     match fetch_baseten(&api_key).await {
         Ok(mut models) => {
             models.sort_by(|a, b| a.name.cmp(&b.name));
-            ("baseten".into(), ProviderModels::Available { models })
+            ("baseten".into(), ProviderModels::Available { models, note: None })
         }
         Err(e) => ("baseten".into(), ProviderModels::Error { error: e }),
     }
@@ -329,7 +389,7 @@ async fn list_openrouter() -> (String, ProviderModels) {
     match fetch_openrouter(&api_key).await {
         Ok(mut models) => {
             models.sort_by(|a, b| a.name.cmp(&b.name));
-            ("open_router".into(), ProviderModels::Available { models })
+            ("open_router".into(), ProviderModels::Available { models, note: None })
         }
         Err(e) => ("open_router".into(), ProviderModels::Error { error: e }),
     }
@@ -403,7 +463,7 @@ pub fn catalog_pricing_map(
 ) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for pm in providers.values() {
-        if let ProviderModels::Available { models } = pm {
+        if let ProviderModels::Available { models, .. } = pm {
             for m in models {
                 if let Some(p) = &m.pricing {
                     out.insert(m.name.clone(), p.clone());
@@ -438,4 +498,73 @@ pub fn cost_usd(
         uncached * prompt + cache_read_tokens as f64 * cache + output_tokens as f64 * completion;
     // Round to nano-dollars so float noise never shows in the output.
     Some((usd * 1e9).round() / 1e9)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str) -> ModelEntry {
+        ModelEntry {
+            name: name.into(),
+            pricing: None,
+        }
+    }
+
+    #[test]
+    fn vertex_listing_ok_is_available_sorted_no_note() {
+        let pm = vertex_listing_result(Ok(vec![entry("vertex::b"), entry("vertex::a")]));
+        match pm {
+            ProviderModels::Available { models, note } => {
+                assert_eq!(
+                    models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+                    vec!["vertex::a", "vertex::b"]
+                );
+                assert!(note.is_none());
+            }
+            other => panic!("expected Available, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vertex_listing_403_degrades_to_available_with_note() {
+        // The issue's exact case: Model Garden rejects the caller's
+        // quota project, but generation works — "broken" would be a lie.
+        let pm = vertex_listing_result(Err(
+            "Model Garden list failed (403 Forbidden) with quota project gen-lang-client-xyz: \
+             Caller does not have required permission to use project gen-lang-client-xyz"
+                .into(),
+        ));
+        match pm {
+            ProviderModels::Available { models, note } => {
+                assert!(models.is_empty(), "degraded listing carries no fake catalog");
+                let note = note.expect("note explains the degraded listing");
+                // The operator-facing fix (the permission) and the
+                // caller-facing fact (any id passes through) both present.
+                assert!(note.contains("403"));
+                assert!(note.contains("generation still works"));
+                assert!(note.contains("vertex::<model-id>"));
+            }
+            other => panic!("expected Available, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vertex_listing_note_serializes_only_when_present() {
+        // snake_case tag + note skipped when None: wire shape is stable
+        // for other providers, additive for degraded Vertex.
+        let ok = serde_json::to_value(ProviderModels::Available {
+            models: vec![],
+            note: None,
+        })
+        .unwrap();
+        assert!(ok["available"].get("note").is_none());
+        let degraded = serde_json::to_value(ProviderModels::Available {
+            models: vec![],
+            note: Some("x".into()),
+        })
+        .unwrap();
+        assert_eq!(degraded["available"]["note"], "x");
+        assert_eq!(degraded["available"]["models"], serde_json::json!([]));
+    }
 }
