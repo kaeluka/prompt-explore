@@ -224,6 +224,18 @@ Pushing the tag triggers the workflow. Watch the Actions tab; once all five
 build jobs pass, the release job attaches the archives to the `v0.1.1`
 release (notes are auto-generated from commits/PRs since the last tag).
 
+**REQUIRED: after cutting a release, write real release notes.** The
+auto-generated commit list is not enough — the release page is the
+product surface users actually read. Once the workflow has published
+the release (all assets attached), write curated notes that summarize
+the full diff since the previous tag (`git log --oneline <prev>..<tag>`
+is the raw material, not the deliverable): what changed, grouped by
+what a user cares about (features, fixes, caveats), with the
+user-facing why — not commit titles restated. Set them with
+`gh release edit <tag> --notes-file <file>`. Commit and push any
+associated repo-doc changes (AGENTS.md included) as part of the same
+flow — do not leave them dangling uncommitted.
+
 **For a first release or any risky cut, ship it as a prerelease.** In the
 release UI check "Set as a pre-release", verify the binaries download and
 run on each platform, then uncheck it and set it as Latest. A bad build then
