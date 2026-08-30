@@ -2,7 +2,7 @@
 
 Designing agentic prompts is hard - LLMs are notoriously bad at predicting how well a prompt will work in practice.
 
-**If your workflow involves your agent writing or updating prompts, this tool is for you.**
+**If your workflow involves your agent writing or updating prompts, this tool is for you: point your coding agent at this readme, ask it to download the latest release and demo it to you. Should be ready and running in a minute.**
 
 Being able to quickly try out a prompt on a wide range of inputs is a basic requirement for optimizing a prompt effectively. But tool calling prompts resist easy experimentation because traditional, deterministic mocking doesn’t work - you can’t, ahead-of-time, mock the tool call a model under test chooses! You can’t quickly ask: „What if we added this one more tool?“
 
