@@ -1,21 +1,23 @@
 # prompt-explore
 
-Designing agentic prompts is hard - LLMs are notoriously bad at predicting how well a prompt will work.
+Designing agentic prompts is hard - LLMs are notoriously bad at predicting how well a prompt will work in practice.
 
-Being able to quickly try out a prompt is a basic requirements for optimizing a prompt.
+**If your workflow involves your agent writing or updating prompts, this tool is for you.**
 
-This tool executes _any_ agentic prompt (the 'prompt under test', PUT) with _any_ tools that it needs by pairing it up with a second LLM, the simulator. The simulator's job is simple: to mock a response for every tool call.
+Being able to quickly try out a prompt on a wide range of inputs is a basic requirement for optimizing a prompt effectively. But tool calling prompts resist easy experimentation because traditional, deterministic mocking doesn’t work - you can’t, ahead-of-time, mock the tool call a model under test chooses! You can’t quickly ask: „What if we added this one more tool?“
+
+**The solution:** This tool executes _any_ agentic prompt (the 'prompt under test', PUT) with _any_ tools that it needs by pairing it up with a second LLM, the simulator. The simulator's job is simple: to mock a response for every tool call, live as the calls come in.
 
 A user of `prompt-explore` can steer the simulator's behaviour by controlling the world the simulator is operating in.
 
-Example: if you're testing a user support agent prompt, you may want to tell the simulator that the user is a premium subscriber with a long positive shopping history, but the last three shipments were cancelled. The simulator picks that context up and mocks responses accordingly.
+**Example:** if you're testing a user support agent prompt, you may want to tell the simulator that the user is a premium subscriber with a long positive shopping history, but the last three shipments were cancelled. The simulator picks that context up and mocks responses accordingly.
 
-The tool is 100% sandboxed, no tool calls can ever reach the outside, no hard drive access to any tools. This makes it easy to run many scenarios in parallel.
+The tool is 100% sandboxed, no tool calls can ever reach the outside, no hard drive or IO access to any tools. This makes it easy and secure to run many scenarios in parallel.
 
 ## Multi-dimensional prompt optimization (grades + Pareto frontier)
 
 Optimizing a prompt is never only about correctness — you also care about
-cost, tone, self-containedness, repeatability, … . prompt-explore
+cost, tone, writing style, repeatability, … prompt-explore
 supports this without ever judging for you:
 
 - **Measured axes** are harness-computed on every run and cannot be
