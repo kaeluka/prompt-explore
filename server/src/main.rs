@@ -31,10 +31,10 @@ use prompt_explore::frontier::{
 };
 use prompt_explore::generate::{Investigator, LlmRole};
 use prompt_explore::llm::{
-    ProviderClient, ProviderModels, UsageByRole, UsageTracker, catalog_pricing_map, cost_usd,
-    list_all_map,
+    ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTracker,
+    catalog_pricing_map, cost_usd, list_all_map,
 };
-use prompt_explore::model::input::{Investigation, PromptUnderTest};
+use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
 use prompt_explore::simulate::{Workspace, unpack_zip};
@@ -91,6 +91,16 @@ struct Job {
     /// default). The simulator is the test environment; surfacing it lets
     /// a reader judge whether it was powerful enough to render believably.
     sim_model: String,
+    /// The resolved thinking level the PUT ran at (the request's
+    /// `put_thinking_level`, or `None` = provider default). Recorded so
+    /// a reader of the traces knows what produced them — a reasoning
+    /// model's effort is part of its measured behavior.
+    put_thinking_level: Option<ThinkingLevel>,
+    /// The resolved thinking level the simulator ran at (the request's
+    /// `sim_thinking_level`, or `None` = provider default). Falls back
+    /// INDEPENDENTLY of `put_thinking_level` — omitting it never
+    /// inherits the PUT's level.
+    sim_thinking_level: Option<ThinkingLevel>,
     /// How many files seeded the simulation workspace (0 if no zip was
     /// uploaded). Surfaced so a reader knows whether the simulator had a
     /// materialized world to consult, or answered purely from narrative.
@@ -146,6 +156,30 @@ struct InvestigateRequest {
     ///    cheaper. Pick a strong model here and leave it set.
     #[serde(default)]
     sim_model: Option<String>,
+    /// Thinking/reasoning level for the PUT runner ONLY (the agent
+    /// under test): `none` | `minimal` | `low` | `medium` | `high` |
+    /// `xhigh` | `max`. Omit to keep the provider's default (which is
+    /// what runs today — no field is sent). This pins what you are
+    /// measuring: a reasoning model's default effort is part of its
+    /// measured behavior, and without this you can neither vary it
+    /// (trade thoroughness for cost at `low`/`none`) nor tell two runs
+    /// apart. The resolved value comes back on the job view as
+    /// `put_thinking_level`. Independent of `sim_thinking_level`:
+    /// setting one never changes the other.
+    #[serde(default)]
+    put_thinking_level: Option<ThinkingLevel>,
+    /// Thinking/reasoning level for the tool SIMULATOR only. Same
+    /// vocabulary as `put_thinking_level`; omit for the provider
+    /// default. The simulator only renders tool responses, so full
+    /// reasoning there is spend without measurement value — `low` or
+    /// `none` cuts per-run cost directly (keep `sim_model` strong; a
+    /// cheap level on a strong model usually degrades less than a
+    /// weak model does). Falls back INDEPENDENTLY of
+    /// `put_thinking_level`: omitting this while setting the PUT's
+    /// level leaves the simulator at its default, NOT at the PUT's
+    /// level.
+    #[serde(default)]
+    sim_thinking_level: Option<ThinkingLevel>,
     /// The test cases to run. Required; ALL of them are run (an explicit
     /// list is a contract — the step/token budget applies per trace, not
     /// to the count). Scenarios are authored outside this API and are
@@ -226,6 +260,17 @@ struct JobView {
     /// see it to judge whether it was powerful enough to render the
     /// world believably.
     sim_model: String,
+    /// The thinking level the PUT ran at (the request's
+    /// `put_thinking_level`; absent = the provider's default). Part of
+    /// the run's provenance: a reasoning model's effort changes cost
+    /// and behavior, so a reader comparing traces needs to know it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    put_thinking_level: Option<ThinkingLevel>,
+    /// The thinking level the simulator ran at (the request's
+    /// `sim_thinking_level`; absent = the provider's default). Resolved
+    /// independently of the PUT's — it never inherits it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sim_thinking_level: Option<ThinkingLevel>,
     /// How many files seeded the simulation workspace (0 = no zip upload;
     /// the simulator answered from narrative alone). The workspace is an
     /// in-memory filesystem the SIMULATOR consults via read/write/list_dir/
@@ -541,6 +586,8 @@ fn fabricate_done_job(
             scenarios: vec![],
             model: "zai_coding::glm-5.2".into(),
             sim_model: "zai_coding::glm-5.2".into(),
+            put_thinking_level: None,
+            sim_thinking_level: None,
             workspace_files: 0,
         },
     )
@@ -804,18 +851,18 @@ async fn index() -> impl axum::response::IntoResponse {
     // truth: env!("CARGO_PKG_VERSION")); the HTML carries a `__VERSION__`
     // placeholder that is replaced here.
     let html = INDEX_HTML.replace("__VERSION__", env!("CARGO_PKG_VERSION"));
-    // During development the UI changes often; in release builds the
-    // embedded page is versioned with the binary, so normal caching
-    // semantics are fine.
-    if cfg!(debug_assertions) {
-        (
-            [(axum::http::header::CACHE_CONTROL, "no-cache")],
-            Html(html),
-        )
-            .into_response()
-    } else {
-        Html(html).into_response()
-    }
+    // Always send no-cache. The page is embedded in the binary, and a
+    // restart with UI changes serves a DIFFERENT page at the same URL —
+    // without this header the browser's heuristic cache happily keeps
+    // serving the old shell (observed: new job-card fields invisible
+    // until a hard refresh). `no-cache` still caches but forces
+    // revalidation, which without an ETag is a cheap 40 KB re-fetch on
+    // a local tool.
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-cache")],
+        Html(html),
+    )
+        .into_response()
 }
 
 /// Start an investigation: run every given scenario against the PUT and
@@ -887,7 +934,7 @@ async fn index() -> impl axum::response::IntoResponse {
     security(("api_token" = [])),
     responses(
         (status = 202, description = "Investigation job created", body = JobCreated),
-        (status = 400, description = "Malformed request body or invalid/oversized zip"),
+        (status = 400, description = "Malformed request body, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"),
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
@@ -940,8 +987,44 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
         (r, Workspace::empty())
     };
 
+    // Fail fast on thinking levels the provider layer cannot honor —
+    // a clear 400 at submit beats a silently-ignored level or a
+    // transport-shaped error mid-run. Bare names resolve through the
+    // server's default provider, exactly as they will at call time.
+    if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": err })))
+            .into_response();
+    }
+
     let id = spawn_investigation(state, investigate_req, workspace_seed);
     (StatusCode::ACCEPTED, Json(JobCreated { id })).into_response()
+}
+
+/// Validate the request's thinking levels against the models they will
+/// run on: `None` when both are fine, or a caller-readable error
+/// string. Independent per role — the PUT's model is checked for
+/// `put_thinking_level`, the simulator's (which may be a different
+/// provider) for `sim_thinking_level`.
+fn thinking_level_problem(
+    req: &InvestigateRequest,
+    default_provider: &str,
+) -> Option<String> {
+    let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
+    let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
+    let mut problems = Vec::new();
+    if let Some(level) = req.put_thinking_level {
+        let qualified = prompt_explore::llm::qualify_model(&put_model, default_provider);
+        if let Err(e) = prompt_explore::llm::thinking_level_supported(&qualified) {
+            problems.push(format!("put_thinking_level {level:?} on '{put_model}': {e}"));
+        }
+    }
+    if let Some(level) = req.sim_thinking_level {
+        let qualified = prompt_explore::llm::qualify_model(&sim_model, default_provider);
+        if let Err(e) = prompt_explore::llm::thinking_level_supported(&qualified) {
+            problems.push(format!("sim_thinking_level {level:?} on '{sim_model}': {e}"));
+        }
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 /// Parse a `multipart/form-data` body: a required `request` part (the
@@ -1015,6 +1098,11 @@ fn spawn_investigation(
     // in flight, not only after it finishes.
     let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
     let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
+    // Thinking levels resolve INDEPENDENTLY per role (issue #4): the
+    // simulator's NEVER inherits the PUT's — omitted means provider
+    // default, which is exactly the pre-option behavior.
+    let put_thinking_level = req.put_thinking_level;
+    let sim_thinking_level = req.sim_thinking_level;
     let workspace_files = workspace_seed.file_count();
     state.jobs.lock().unwrap().insert(
         id.clone(),
@@ -1029,6 +1117,8 @@ fn spawn_investigation(
             scenarios: req.scenarios.clone(),
             model: put_model.clone(),
             sim_model: sim_model.clone(),
+            put_thinking_level,
+            sim_thinking_level,
             workspace_files,
             grades: BTreeMap::new(),
         },
@@ -1050,10 +1140,12 @@ fn spawn_investigation(
             runner_put: LlmRole {
                 client: put_tracker.clone(),
                 model: put_model.clone(),
+                thinking_level: put_thinking_level,
             },
             runner_sim: LlmRole {
                 client: sim_tracker.clone(),
                 model: sim_model,
+                thinking_level: sim_thinking_level,
             },
             workspace_seed,
         };
@@ -1191,6 +1283,8 @@ async fn get_investigation(
         reason: job.reason.clone(),
         model: job.model.clone(),
         sim_model: job.sim_model.clone(),
+        put_thinking_level: job.put_thinking_level,
+        sim_thinking_level: job.sim_thinking_level,
         workspace_files: job.workspace_files,
         grades: job.grades.clone(),
         put: job.put.clone(),
@@ -1498,19 +1592,28 @@ const VENDOR_HTM: &str = include_str!("../static/vendor/htm.mjs");
 
 async fn vendor_preact() -> impl axum::response::IntoResponse {
     (
-        [("content-type", "text/javascript;charset=utf-8")],
+        [
+            ("content-type", "text/javascript;charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
         VENDOR_PREACT,
     )
 }
 async fn vendor_hooks() -> impl axum::response::IntoResponse {
     (
-        [("content-type", "text/javascript;charset=utf-8")],
+        [
+            ("content-type", "text/javascript;charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
         VENDOR_HOOKS,
     )
 }
 async fn vendor_htm() -> impl axum::response::IntoResponse {
     (
-        [("content-type", "text/javascript;charset=utf-8")],
+        [
+            ("content-type", "text/javascript;charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
         VENDOR_HTM,
     )
 }
@@ -1654,6 +1757,104 @@ mod tests {
         assert_eq!(v["grades"]["clarity"], 0.9);
     }
 
+    #[test]
+    fn thinking_level_problem_checks_each_role_independently() {
+        let req = |model: &str, sim_model: Option<&str>, put_level: Option<ThinkingLevel>,
+                   sim_level: Option<ThinkingLevel>| {
+            InvestigateRequest {
+                investigation: Investigation {
+                    reason: None,
+                    budget: Budget { max_steps_per_trace: 2, max_tokens: None },
+                },
+                put: put("x"),
+                model: Some(model.into()),
+                sim_model: sim_model.map(Into::into),
+                put_thinking_level: put_level,
+                sim_thinking_level: sim_level,
+                scenarios: vec![],
+            }
+        };
+        // No levels set: never a problem, whatever the models.
+        assert!(thinking_level_problem(&req("bedrock_sigv4::global.openai.gpt-5.6-luna", None, None, None), "zai").is_none());
+        // OpenRouter PUT + zai sim: both mappable.
+        assert!(thinking_level_problem(
+            &req("open_router::openai/gpt-5.6-luna", Some("zai_coding::glm-5.3"), Some(ThinkingLevel::High), Some(ThinkingLevel::None)),
+            "zai"
+        )
+        .is_none());
+        // GPT-5.6 on Bedrock: rejected for the PUT role, naming the model.
+        let err = thinking_level_problem(
+            &req("bedrock_sigv4::global.openai.gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
+            "zai"
+        )
+        .expect("openai publisher on bedrock must be rejected");
+        assert!(err.contains("put_thinking_level"), "{err}");
+        assert!(err.contains("gpt-5.6-luna"), "{err}");
+        // Sim role on a different provider is checked against ITS model:
+        // PUT fine on open_router, sim rejected on bedrock meta.*.
+        let err = thinking_level_problem(
+            &req("open_router::openai/gpt-5.6-luna", Some("bedrock_sigv4::global.meta.llama3-1-70b"), Some(ThinkingLevel::Low), Some(ThinkingLevel::Low)),
+            "zai"
+        )
+        .expect("sim on unsupported bedrock model must be rejected");
+        assert!(err.contains("sim_thinking_level"), "{err}");
+        // Bedrock anthropic profile ids are supported (genai maps them
+        // to a thinking budget).
+        assert!(thinking_level_problem(
+            &req("bedrock_sigv4::global.anthropic.claude-opus-5", Some("bedrock_sigv4::eu.anthropic.claude-sonnet-5"), Some(ThinkingLevel::Medium), Some(ThinkingLevel::None)),
+            "zai"
+        )
+        .is_none());
+        // A bare name qualifies through the server's default provider.
+        let err = thinking_level_problem(
+            &req("gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
+            "bedrock"
+        )
+        .expect("bare name under bedrock default must be checked as bedrock");
+        assert!(err.contains("bedrock"), "{err}");
+    }
+
+    #[test]
+    fn unknown_thinking_level_word_is_a_parse_error() {
+        // The vocabulary fails fast at deserialization, before any
+        // provider logic runs.
+        let bad = r#"{"investigation": {"budget": {"max_steps_per_trace": 2}}, "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []}, "scenarios": [], "put_thinking_level": "ultra"}"#;
+        assert!(serde_json::from_str::<InvestigateRequest>(bad).is_err());
+        let good = bad.replace("\"ultra\"", "\"xhigh\"");
+        let req: InvestigateRequest = serde_json::from_str(&good).unwrap();
+        assert_eq!(req.put_thinking_level, Some(ThinkingLevel::Xhigh));
+        assert_eq!(req.sim_thinking_level, None);
+    }
+
+    #[tokio::test]
+    async fn create_investigation_rejects_unsupported_thinking_level_with_400() {
+        let state = test_state();
+        let app = build_app(state);
+        let body = serde_json::json!({
+            "investigation": {"budget": {"max_steps_per_trace": 2}},
+            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "scenarios": [],
+            "model": "bedrock_sigv4::global.openai.gpt-5.6-luna",
+            "put_thinking_level": "high"
+        });
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::post("/api/investigations")
+                    .header("content-type", "application/json")
+                    .body(serde_json::to_string(&body).unwrap())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let err = v["error"].as_str().unwrap();
+        assert!(err.contains("put_thinking_level"), "{err}");
+        assert!(err.contains("not supported"), "{err}");
+    }
+
     #[tokio::test]
     async fn patch_grades_rejects_reserved_and_bad_names() {
         let state = test_state();
@@ -1744,6 +1945,8 @@ mod tests {
                 scenarios: vec![],
                 model: "zai_coding::glm-5.2".into(),
                 sim_model: "zai_coding::glm-5.2".into(),
+                put_thinking_level: None,
+                sim_thinking_level: None,
                 workspace_files: 0,
             },
         );

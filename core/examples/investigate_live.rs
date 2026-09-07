@@ -22,6 +22,7 @@ async fn main() {
     let role = LlmRole {
         client: client.clone(),
         model: MODEL.into(),
+        thinking_level: None,
     };
 
     let put = PromptUnderTest {

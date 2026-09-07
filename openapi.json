@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.3.2"
+    "version": "0.3.4"
   },
   "paths": {
     "/": {
@@ -188,7 +188,7 @@
             }
           },
           "400": {
-            "description": "Malformed request body or invalid/oversized zip"
+            "description": "Malformed request body, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -723,6 +723,17 @@
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest"
           },
+          "put_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel",
+                "description": "Thinking/reasoning level for the PUT runner ONLY (the agent\nunder test): `none` | `minimal` | `low` | `medium` | `high` |\n`xhigh` | `max`. Omit to keep the provider's default (which is\nwhat runs today — no field is sent). This pins what you are\nmeasuring: a reasoning model's default effort is part of its\nmeasured behavior, and without this you can neither vary it\n(trade thoroughness for cost at `low`/`none`) nor tell two runs\napart. The resolved value comes back on the job view as\n`put_thinking_level`. Independent of `sim_thinking_level`:\nsetting one never changes the other."
+              }
+            ]
+          },
           "scenarios": {
             "type": "array",
             "items": {
@@ -736,6 +747,17 @@
               "null"
             ],
             "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Defaults to `model`.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `model`, not this). You\n   are comparing candidate PUTs; the environment must stay fixed\n   so differences in the traces come from the PUT, not from a\n   shifting simulation.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
+          },
+          "sim_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel",
+                "description": "Thinking/reasoning level for the tool SIMULATOR only. Same\nvocabulary as `put_thinking_level`; omit for the provider\ndefault. The simulator only renders tool responses, so full\nreasoning there is spend without measurement value — `low` or\n`none` cuts per-run cost directly (keep `sim_model` strong; a\ncheap level on a strong model usually degrades less than a\nweak model does). Falls back INDEPENDENTLY of\n`put_thinking_level`: omitting this while setting the PUT's\nlevel leaves the simulator at its default, NOT at the PUT's\nlevel."
+              }
+            ]
           }
         }
       },
@@ -887,6 +909,17 @@
             "$ref": "#/components/schemas/PromptUnderTest",
             "description": "The prompt under test."
           },
+          "put_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel",
+                "description": "The thinking level the PUT ran at (the request's\n`put_thinking_level`; absent = the provider's default). Part of\nthe run's provenance: a reasoning model's effort changes cost\nand behavior, so a reader comparing traces needs to know it."
+              }
+            ]
+          },
           "reason": {
             "type": [
               "string",
@@ -914,6 +947,17 @@
           "sim_model": {
             "type": "string",
             "description": "The resolved model name that ran the tool simulator (the `sim_model`\nfrom the request, defaulting to the PUT model, then the server\ndefault). The simulator is the test ENVIRONMENT; a reader needs to\nsee it to judge whether it was powerful enough to render the\nworld believably."
+          },
+          "sim_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel",
+                "description": "The thinking level the simulator ran at (the request's\n`sim_thinking_level`; absent = the provider's default). Resolved\nindependently of the PUT's — it never inherits it."
+              }
+            ]
           },
           "started_at": {
             "type": "integer",
@@ -1296,6 +1340,19 @@
         "enum": [
           "read",
           "write"
+        ]
+      },
+      "ThinkingLevel": {
+        "type": "string",
+        "description": "Provider-neutral thinking/reasoning level for one LLM role. The\nvocabulary is deliberately small and shared across providers:\n`none` explicitly requests NO reasoning, `minimal`…`max` scale\neffort up. Omitting the field entirely means \"provider default\"\n— which is a different thing from `none` (reasoning models come\nwith a non-trivial default, e.g. OpenAI Responses models default\nto medium; `none` asks the provider to turn reasoning OFF).\n\nEach provider maps what it supports (OpenAI-family endpoints send\n`reasoning_effort`, Gemini maps to `thinkingLevel`, Bedrock\nAnthropic models to a `thinking.budget_tokens`); combinations the\nprovider layer cannot honor are rejected at request time with a\nclear error, not silently dropped.",
+        "enum": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
         ]
       },
       "ToolCall": {

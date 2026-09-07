@@ -6,8 +6,8 @@
 //! deterministic tests of the runtime layers.
 
 pub mod client;
-pub mod genai;
 mod gcloud;
+pub mod genai;
 pub mod mock;
 pub mod models;
 pub mod parse;
@@ -15,9 +15,9 @@ pub mod track;
 pub mod types;
 
 pub use client::{LlmClient, LlmError};
-pub use genai::{ProviderClient, GenaiClient};
+pub use genai::{GenaiClient, ProviderClient, qualify_model, thinking_level_supported};
 pub use mock::MockLlmClient;
-pub use models::{catalog_pricing_map, cost_usd, list_all_map, ModelEntry, ProviderModels};
+pub use models::{ModelEntry, ProviderModels, catalog_pricing_map, cost_usd, list_all_map};
 pub use parse::{extract_json, parse_json};
 pub use track::{UsageByRole, UsageTotals, UsageTracker};
 pub use types::*;

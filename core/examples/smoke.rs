@@ -23,7 +23,9 @@ async fn main() {
         "bedrock" => ProviderClient::bedrock(),
         "gemini" => ProviderClient::gemini(),
         other => {
-            eprintln!("unknown provider {other:?}; expected zai | zai_standard | openrouter | bedrock | gemini");
+            eprintln!(
+                "unknown provider {other:?}; expected zai | zai_standard | openrouter | bedrock | gemini"
+            );
             std::process::exit(1);
         }
     };
@@ -51,6 +53,7 @@ async fn main() {
         }],
         temperature: Some(0.7),
         max_tokens: Some(512),
+        thinking_level: None,
     };
 
     println!(">>> {provider} / {model}");

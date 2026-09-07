@@ -50,7 +50,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
     let put_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
-                thinking: None,
+            thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "call_1".into(),
                 name: "cancel_order".into(),
@@ -60,7 +60,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
         },
         ChatResponse {
             content: Some("Done — order cancelled.".into()),
-                thinking: None,
+            thinking: None,
             tool_calls: vec![],
             usage: None,
         },
@@ -80,8 +80,10 @@ async fn tool_call_loop_runs_and_mutates_state() {
     let runner = Runner::new(
         Arc::new(put_model),
         "put-model",
+        None,
         Arc::new(sim_model),
         "sim-model",
+        None,
         Workspace::empty(),
     );
     let trace = runner
@@ -111,7 +113,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
     let put_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
-                thinking: None,
+            thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "call_1".into(),
                 name: "cancel_order".into(),
@@ -121,7 +123,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         },
         ChatResponse {
             content: Some("sorry, I need the order id as text".into()),
-                thinking: None,
+            thinking: None,
             tool_calls: vec![],
             usage: None,
         },
@@ -132,8 +134,10 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
     let runner = Runner::new(
         Arc::new(put_model),
         "put-model",
+        None,
         Arc::new(sim_model),
         "sim-model",
+        None,
         Workspace::empty(),
     );
     let trace = runner
@@ -152,7 +156,7 @@ async fn empty_tool_array_means_single_shot() {
 
     let put_model = MockLlmClient::scripted(vec![ChatResponse {
         content: Some("I can help with that.".into()),
-            thinking: None,
+        thinking: None,
         tool_calls: vec![],
         usage: None,
     }]);
@@ -161,8 +165,10 @@ async fn empty_tool_array_means_single_shot() {
     let runner = Runner::new(
         Arc::new(put_model),
         "put-model",
+        None,
         Arc::new(sim_model),
         "sim-model",
+        None,
         Workspace::empty(),
     );
     let trace = runner

@@ -21,9 +21,9 @@
 
 use std::collections::BTreeMap;
 
+use genai::Client;
 use genai::adapter::AdapterKind;
 use genai::resolver::{Endpoint, ProviderConfig};
-use genai::Client;
 use serde::{Deserialize, Serialize};
 
 use super::gcloud;
@@ -131,7 +131,12 @@ async fn list_via_genai(
             models.sort_by(|a, b| a.name.cmp(&b.name));
             (key.into(), ProviderModels::Available { models, note: None })
         }
-        Err(e) => (key.into(), ProviderModels::Error { error: e.to_string() }),
+        Err(e) => (
+            key.into(),
+            ProviderModels::Error {
+                error: e.to_string(),
+            },
+        ),
     }
 }
 
@@ -167,17 +172,13 @@ async fn list_bedrock() -> (String, ProviderModels) {
 /// with an empty catalog and an explanatory note rather than a false
 /// "broken". (The model list is advisory: any `bedrock_sigv4::<id>`
 /// the API accepts works in a request regardless of listing.)
-pub(crate) fn bedrock_listing_result(
-    listing: Result<Vec<ModelEntry>, String>,
-) -> ProviderModels {
+pub(crate) fn bedrock_listing_result(listing: Result<Vec<ModelEntry>, String>) -> ProviderModels {
     match listing {
         Ok(mut models) => {
             models.sort_by(|a, b| a.name.cmp(&b.name));
             ProviderModels::Available { models, note: None }
         }
-        Err(e) if e.to_lowercase().contains("credential") => {
-            ProviderModels::Error { error: e }
-        }
+        Err(e) if e.to_lowercase().contains("credential") => ProviderModels::Error { error: e },
         Err(list_err) => ProviderModels::Available {
             models: Vec::new(),
             note: Some(format!(
@@ -265,7 +266,10 @@ pub(crate) fn bedrock_model_entries(
 /// `global.*` spans the most regions; anything else ties out
 /// alphabetically so the choice is deterministic.
 fn is_preferred_profile(candidate: &str, current: &str) -> bool {
-    match (candidate.starts_with("global."), current.starts_with("global.")) {
+    match (
+        candidate.starts_with("global."),
+        current.starts_with("global."),
+    ) {
         (true, false) => true,
         (false, true) => false,
         _ => candidate < current,
@@ -295,8 +299,8 @@ async fn fetch_bedrock_models() -> Result<Vec<ModelEntry>, String> {
         .await;
     let client = aws_sdk_bedrock::Client::new(&config);
 
-    use aws_sdk_bedrock::types::InferenceProfileType;
     use aws_sdk_bedrock::types::FoundationModelLifecycleStatus;
+    use aws_sdk_bedrock::types::InferenceProfileType;
 
     // System-defined cross-region profiles (`global.*`, `eu.*`, …),
     // paginated. Application-defined profiles are skipped: they are
@@ -336,15 +340,12 @@ async fn fetch_bedrock_models() -> Result<Vec<ModelEntry>, String> {
         .map_err(|e| format!("ListFoundationModels: {}", error_chain(&e)))?;
     let mut foundation_ids: Vec<String> = Vec::new();
     for s in resp.model_summaries() {
-        if s
-            .model_lifecycle()
+        if s.model_lifecycle()
             .is_some_and(|l| *l.status() == FoundationModelLifecycleStatus::Legacy)
         {
             continue;
         }
-        if !modality_is_text(s.input_modalities())
-            || !modality_is_text(s.output_modalities())
-        {
+        if !modality_is_text(s.input_modalities()) || !modality_is_text(s.output_modalities()) {
             continue;
         }
         foundation_ids.push(s.model_id().to_string());
@@ -358,8 +359,7 @@ async fn fetch_bedrock_models() -> Result<Vec<ModelEntry>, String> {
 /// is kept — the list is advisory and over-listing is the safer
 /// failure.
 fn modality_is_text(modalities: &[aws_sdk_bedrock::types::ModelModality]) -> bool {
-    modalities.is_empty()
-        || modalities.contains(&aws_sdk_bedrock::types::ModelModality::Text)
+    modalities.is_empty() || modalities.contains(&aws_sdk_bedrock::types::ModelModality::Text)
 }
 
 /// Pure decision: how a Vertex listing outcome maps to the response.
@@ -371,9 +371,7 @@ fn modality_is_text(modalities: &[aws_sdk_bedrock::types::ModelModality]) -> boo
 /// org/service-account setups whose quota project passes still get the
 /// live catalog. (The model list is advisory: any `vertex::<id>` the
 /// API accepts works in a request regardless of listing.)
-pub(crate) fn vertex_listing_result(
-    listing: Result<Vec<ModelEntry>, String>,
-) -> ProviderModels {
+pub(crate) fn vertex_listing_result(listing: Result<Vec<ModelEntry>, String>) -> ProviderModels {
     match listing {
         Ok(mut models) => {
             models.sort_by(|a, b| a.name.cmp(&b.name));
@@ -465,10 +463,7 @@ fn is_vertex_chat_model(id: &str) -> bool {
     chat_family && !non_chat.iter().any(|s| id.contains(s))
 }
 
-async fn fetch_vertex_models(
-    token: &str,
-    quota_project: &str,
-) -> Result<Vec<ModelEntry>, String> {
+async fn fetch_vertex_models(token: &str, quota_project: &str) -> Result<Vec<ModelEntry>, String> {
     // Regional host, like `gcloud ai model-garden models list`
     // (us-central1 is its default); the inventory is not region-scoped.
     let url = "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/*/models";
@@ -545,13 +540,16 @@ async fn list_baseten() -> (String, ProviderModels) {
                 ProviderModels::Error {
                     error: format!("no API key in ${BASETEN_API_KEY_ENV}"),
                 },
-            )
+            );
         }
     };
     match fetch_baseten(&api_key).await {
         Ok(mut models) => {
             models.sort_by(|a, b| a.name.cmp(&b.name));
-            ("baseten".into(), ProviderModels::Available { models, note: None })
+            (
+                "baseten".into(),
+                ProviderModels::Available { models, note: None },
+            )
         }
         Err(e) => ("baseten".into(), ProviderModels::Error { error: e }),
     }
@@ -607,13 +605,16 @@ async fn list_openrouter() -> (String, ProviderModels) {
                 ProviderModels::Error {
                     error: format!("no API key in ${OPENROUTER_API_KEY_ENV}"),
                 },
-            )
+            );
         }
     };
     match fetch_openrouter(&api_key).await {
         Ok(mut models) => {
             models.sort_by(|a, b| a.name.cmp(&b.name));
-            ("open_router".into(), ProviderModels::Available { models, note: None })
+            (
+                "open_router".into(),
+                ProviderModels::Available { models, note: None },
+            )
         }
         Err(e) => ("open_router".into(), ProviderModels::Error { error: e }),
     }
@@ -821,7 +822,10 @@ mod tests {
         ));
         match pm {
             ProviderModels::Available { models, note } => {
-                assert!(models.is_empty(), "degraded listing carries no fake catalog");
+                assert!(
+                    models.is_empty(),
+                    "degraded listing carries no fake catalog"
+                );
                 let note = note.expect("note explains the degraded listing");
                 assert!(note.contains("403"));
                 assert!(note.contains("generation may still work"));
@@ -876,7 +880,10 @@ mod tests {
         ));
         match pm {
             ProviderModels::Available { models, note } => {
-                assert!(models.is_empty(), "degraded listing carries no fake catalog");
+                assert!(
+                    models.is_empty(),
+                    "degraded listing carries no fake catalog"
+                );
                 let note = note.expect("note explains the degraded listing");
                 // The operator-facing fix (the permission) and the
                 // caller-facing fact (any id passes through) both present.

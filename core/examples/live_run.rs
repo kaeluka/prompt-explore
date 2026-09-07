@@ -74,7 +74,8 @@ async fn main() {
 
     let scenario = Scenario {
         world: "One order B-7788 (status: processing, total $129.99). \
-                cancel_order cancels by id; send_user_message reaches the customer.".into(),
+                cancel_order cancels by id; send_user_message reaches the customer."
+            .into(),
         input_domain: HashMap::from([("customer_tier".into(), "gold".into())]),
         user_message: Some(
             "I don't need the stuff from order B-7788 anymore, do something about it".into(),
@@ -87,7 +88,15 @@ async fn main() {
         max_tokens: None,
     };
 
-    let runner = Runner::new(client.clone(), MODEL, client, MODEL, prompt_explore::simulate::Workspace::empty());
+    let runner = Runner::new(
+        client.clone(),
+        MODEL,
+        None,
+        client,
+        MODEL,
+        None,
+        prompt_explore::simulate::Workspace::empty(),
+    );
     let trace = runner
         .run(&put, &scenario, &budget, 0, None)
         .await

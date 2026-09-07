@@ -19,11 +19,11 @@
 //! `gcloud auth application-default login` is all Gemini needs.
 
 use async_trait::async_trait;
+use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest as GChatRequest, ChatResponse as GChatResponse,
     MessageContent, Tool as GTool,
 };
-use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, ModelMapper, ServiceTargetResolver};
 use genai::{Client, ModelIden, ModelName, ServiceTarget};
 use serde_json::Value;
@@ -34,7 +34,7 @@ pub use genai::Client as GenaiClient;
 
 use super::client::{LlmClient, LlmError};
 use super::types::{
-    ChatRequest, ChatResponse, Message, ToolCallRequest, ToolDef, Usage,
+    ChatRequest, ChatResponse, Message, ThinkingLevel, ToolCallRequest, ToolDef, Usage,
 };
 
 /// Which provider a bare (un-namespaced) model name resolves to.
@@ -96,29 +96,28 @@ impl ProviderClient {
         let baseten_key = std::env::var("BASETEN_API_KEY").unwrap_or_default();
 
         let client = Client::builder()
-            .with_model_mapper(ModelMapper::from_mapper_fn(move |model_ident: ModelIden| {
-                // `baseten::` is OUR namespace — genai has no Baseten
-                // adapter, so its name-based guess falls back to Ollama
-                // (Baseten model ids like `deepseek-ai/...` match no
-                // known prefix). Re-pin it to OpenAI; the service-target
-                // resolver below supplies endpoint + auth.
-                if model_ident.model_name.namespace_is("baseten") {
-                    return Ok(ModelIden::new(
-                        AdapterKind::OpenAI,
-                        model_ident.model_name,
-                    ));
-                }
-                // Other namespaced model strings already resolved to the
-                // right adapter — pass through. Bare names get the
-                // client's default provider.
-                if model_ident.model_name.namespace().is_some() {
-                    return Ok(model_ident);
-                }
-                Ok(ModelIden::new(
-                    default.adapter_kind(),
-                    ModelName::new(default.qualify(model_ident.model_name.as_str())),
-                ))
-            }))
+            .with_model_mapper(ModelMapper::from_mapper_fn(
+                move |model_ident: ModelIden| {
+                    // `baseten::` is OUR namespace — genai has no Baseten
+                    // adapter, so its name-based guess falls back to Ollama
+                    // (Baseten model ids like `deepseek-ai/...` match no
+                    // known prefix). Re-pin it to OpenAI; the service-target
+                    // resolver below supplies endpoint + auth.
+                    if model_ident.model_name.namespace_is("baseten") {
+                        return Ok(ModelIden::new(AdapterKind::OpenAI, model_ident.model_name));
+                    }
+                    // Other namespaced model strings already resolved to the
+                    // right adapter — pass through. Bare names get the
+                    // client's default provider.
+                    if model_ident.model_name.namespace().is_some() {
+                        return Ok(model_ident);
+                    }
+                    Ok(ModelIden::new(
+                        default.adapter_kind(),
+                        ModelName::new(default.qualify(model_ident.model_name.as_str())),
+                    ))
+                },
+            ))
             // Per-request routing overrides, composable with any default
             // provider in a single client:
             // - baseten:: models go to the Baseten endpoint with its API key.
@@ -131,17 +130,15 @@ impl ProviderClient {
             .with_service_target_resolver(ServiceTargetResolver::from_resolver_async_fn(
                 move |mut st: ServiceTarget| -> std::pin::Pin<
                     Box<
-                        dyn std::future::Future<
-                                Output = genai::resolver::Result<ServiceTarget>,
-                            > + Send,
+                        dyn std::future::Future<Output = genai::resolver::Result<ServiceTarget>>
+                            + Send,
                     >,
                 > {
                     let baseten_endpoint = baseten_endpoint.clone();
                     let baseten_key = baseten_key.clone();
                     Box::pin(async move {
                         if st.model.model_name.namespace_is("baseten") {
-                            st.endpoint =
-                                genai::resolver::Endpoint::from_owned(baseten_endpoint);
+                            st.endpoint = genai::resolver::Endpoint::from_owned(baseten_endpoint);
                             if !baseten_key.is_empty() {
                                 st.auth = AuthData::from_single(baseten_key);
                             }
@@ -256,6 +253,9 @@ impl LlmClient for ProviderClient {
         if let Some(t) = effective_temperature(&model, req.temperature) {
             options = options.with_temperature(t as f64);
         }
+        if let Some(level) = req.thinking_level {
+            options = options.with_reasoning_effort(genai_reasoning_effort(level));
+        }
         if let Some(m) = req.max_tokens {
             options = options.with_max_tokens(m);
         }
@@ -316,6 +316,87 @@ fn effective_temperature(model: &str, requested: Option<f32>) -> Option<f32> {
     }
 }
 
+/// Our provider-neutral [`ThinkingLevel`] → genai's `ReasoningEffort`,
+/// which the adapters map per provider: OpenAI-family endpoints
+/// (zai, zai_coding, open_router, baseten) send `reasoning_effort`,
+/// Gemini maps to `generationConfig.thinkingConfig.thinkingLevel`
+/// (or a thinking budget), Anthropic-family and Bedrock-Anthropic to a
+/// `thinking` budget. 1:1 on keywords (`none` is genai's `Zero`, the
+/// explicit no-reasoning request).
+fn genai_reasoning_effort(level: ThinkingLevel) -> genai::chat::ReasoningEffort {
+    use genai::chat::ReasoningEffort;
+    match level {
+        ThinkingLevel::None => ReasoningEffort::Zero,
+        ThinkingLevel::Minimal => ReasoningEffort::Minimal,
+        ThinkingLevel::Low => ReasoningEffort::Low,
+        ThinkingLevel::Medium => ReasoningEffort::Medium,
+        ThinkingLevel::High => ReasoningEffort::High,
+        ThinkingLevel::Xhigh => ReasoningEffort::XHigh,
+        ThinkingLevel::Max => ReasoningEffort::Max,
+    }
+}
+
+/// Whether a thinking level can be honored for a (namespace-qualified)
+/// model string. Returns `Err(reason)` when the provider layer maps
+/// NOTHING for that model — callers reject the request up front (a
+/// clear 400) instead of silently running at the provider default or
+/// failing mid-run.
+///
+/// What's known-unsupported today: Bedrock's Converse adapter maps
+/// `reasoning_effort` only for Anthropic-publisher and
+/// Amazon(Nova)-publisher models; every other publisher (`openai.*`,
+/// `meta.*`, `mistral.*`, …) silently drops it (the upstream gap that
+/// deferred the GPT-5.6 reasoning nice-to-have on issue #3). The
+/// publisher detection below mirrors genai 0.7.0-beta.18's
+/// `BedrockPublisher::from_model_id` — including its quirk that only
+/// region-prefixed profile ids (`global.anthropic.…`, `us.amazon.…`)
+/// expose the publisher segment — so support tracks what the adapter
+/// actually does, not what the ids look like they should do.
+pub fn thinking_level_supported(model: &str) -> Result<(), String> {
+    if !model.starts_with("bedrock_sigv4::") {
+        return Ok(());
+    }
+    let id = model.strip_prefix("bedrock_sigv4::").unwrap_or(model);
+    // Mirror of genai's BedrockPublisher::from_model_id.
+    let tail = id.split_once('.').map(|(_, rest)| rest).unwrap_or(id);
+    let publisher_segment = tail.split_once('.').map(|(p, _)| p).unwrap_or(tail);
+    let publisher = if publisher_segment.is_empty() {
+        id.split_once('.').map(|(p, _)| p).unwrap_or(id)
+    } else {
+        publisher_segment
+    };
+    match publisher {
+        "anthropic" | "amazon" => Ok(()),
+        other => Err(format!(
+            "thinking_level is not supported for bedrock model '{id}': the Bedrock \
+             adapter maps reasoning only for anthropic-publisher and \
+             amazon-publisher models, not '{other}' (the level would be \
+             silently ignored)"
+        )),
+    }
+}
+
+/// Namespace-qualify a model name the way the server's default
+/// provider does (`PROMPT_EXPLORE_PROVIDER`, e.g. "zai" →
+/// `zai_coding::`, "bedrock" → `bedrock_sigv4::`); namespaced names
+/// pass through. Shared so request validation and the provider layer
+/// agree on what a bare name resolves to.
+pub fn qualify_model(model: &str, default_provider: &str) -> String {
+    if model.contains("::") {
+        return model.to_string();
+    }
+    let ns = match default_provider {
+        "zai" | "zai_coding" => "zai_coding",
+        "zai_standard" | "zai::" => "zai",
+        "openrouter" | "open_router" => "open_router",
+        "bedrock" | "bedrock_sigv4" => "bedrock_sigv4",
+        "baseten" => "baseten",
+        "gemini" | "vertex" => "vertex",
+        other => return format!("{other}::{model}"),
+    };
+    format!("{ns}::{model}")
+}
+
 /// A 429 that's worth retrying: a transient per-request or shared-pool
 /// rate limit, NOT a long quota window or a billing limit. Detected from
 /// genai's flattened error string (which includes the HTTP status and the
@@ -329,8 +410,7 @@ fn is_retryable_429(err: &str) -> bool {
     // `insufficient_quota` — which otherwise reads as a billing limit — but
     // its body explicitly says "temporarily rate-limited upstream. Please
     // retry shortly". That one is transient: retry it.
-    if lower.contains("please retry shortly")
-        || lower.contains("temporarily rate-limited upstream")
+    if lower.contains("please retry shortly") || lower.contains("temporarily rate-limited upstream")
     {
         return true;
     }
@@ -522,6 +602,69 @@ mod tests {
     }
 
     #[test]
+    fn thinking_level_maps_one_to_one_to_genai_effort() {
+        use genai::chat::ReasoningEffort;
+        assert!(matches!(genai_reasoning_effort(ThinkingLevel::None), ReasoningEffort::Zero));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::Minimal),
+            ReasoningEffort::Minimal
+        ));
+        assert!(matches!(genai_reasoning_effort(ThinkingLevel::Low), ReasoningEffort::Low));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::Medium),
+            ReasoningEffort::Medium
+        ));
+        assert!(matches!(genai_reasoning_effort(ThinkingLevel::High), ReasoningEffort::High));
+        assert!(matches!(genai_reasoning_effort(ThinkingLevel::Xhigh), ReasoningEffort::XHigh));
+        assert!(matches!(genai_reasoning_effort(ThinkingLevel::Max), ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn thinking_level_supported_everywhere_except_non_publisher_bedrock() {
+        // OpenAI-family, zai, gemini, baseten: mapped by their adapters.
+        for m in [
+            "open_router::openai/gpt-5.6-luna",
+            "zai_coding::glm-5.3",
+            "zai::glm-4.6",
+            "vertex::gemini-3-pro",
+            "baseten::deepseek-ai/deepseek-v4-flash",
+        ] {
+            assert!(thinking_level_supported(m).is_ok(), "{m}");
+        }
+        // Bedrock: only anthropic/amazon publishers (as genai's adapter
+        // detects them — region-prefixed profile ids) map the level.
+        assert!(thinking_level_supported("bedrock_sigv4::global.anthropic.claude-opus-5").is_ok());
+        assert!(thinking_level_supported("bedrock_sigv4::eu.anthropic.claude-sonnet-5").is_ok());
+        assert!(thinking_level_supported("bedrock_sigv4::us.amazon.nova-pro-v1:0").is_ok());
+        // GPT-5.6 on Bedrock: the #3 deferred gap — genai maps nothing
+        // for BedrockPublisher::Other, so we reject up front instead of
+        // silently running at the provider default.
+        let err = thinking_level_supported("bedrock_sigv4::global.openai.gpt-5.6-luna")
+            .expect_err("openai publisher on bedrock must be rejected");
+        assert!(err.contains("not supported"), "{err}");
+        assert!(err.contains("openai"), "names the publisher: {err}");
+        assert!(
+            thinking_level_supported("bedrock_sigv4::global.meta.llama3-1-70b").is_err()
+        );
+    }
+
+    #[test]
+    fn qualify_model_matches_server_provider_names() {
+        // The names PROMPT_EXPLORE_PROVIDER accepts (server docs) map to
+        // the same namespaces the ModelMapper produces.
+        assert_eq!(qualify_model("glm-5.3", "zai"), "zai_coding::glm-5.3");
+        assert_eq!(qualify_model("glm-4.6", "zai_standard"), "zai::glm-4.6");
+        assert_eq!(qualify_model("x", "openrouter"), "open_router::x");
+        assert_eq!(qualify_model("x", "bedrock"), "bedrock_sigv4::x");
+        assert_eq!(qualify_model("x", "gemini"), "vertex::x");
+        // Namespaced names pass through untouched.
+        assert_eq!(
+            qualify_model("bedrock_sigv4::global.anthropic.claude-opus-5", "zai"),
+            "bedrock_sigv4::global.anthropic.claude-opus-5"
+        );
+    }
+
+    #[test]
     fn openrouter_shared_pool_429_is_retryable() {
         assert!(is_retryable_429(OPENROUTER_SHARED_POOL_429));
     }
@@ -667,16 +810,14 @@ fn convert_message(m: Message) -> ChatMessage {
                 }
             }
             for tc in tool_calls {
-                let args: Value = serde_json::from_str(&tc.arguments)
-                    .unwrap_or(Value::String(tc.arguments));
-                parts.push(genai::chat::ContentPart::ToolCall(
-                    genai::chat::ToolCall {
-                        call_id: tc.id,
-                        fn_name: tc.name,
-                        fn_arguments: args,
-                        thought_signatures: None,
-                    },
-                ));
+                let args: Value =
+                    serde_json::from_str(&tc.arguments).unwrap_or(Value::String(tc.arguments));
+                parts.push(genai::chat::ContentPart::ToolCall(genai::chat::ToolCall {
+                    call_id: tc.id,
+                    fn_name: tc.name,
+                    fn_arguments: args,
+                    thought_signatures: None,
+                }));
             }
             ChatMessage::assistant(MessageContent::from_parts(parts))
         }

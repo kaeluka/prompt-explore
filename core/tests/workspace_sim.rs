@@ -32,7 +32,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
     let put_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
-                thinking: None,
+            thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "c1".into(),
                 name: "get_code".into(),
@@ -42,7 +42,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         },
         ChatResponse {
             content: Some("here is the code".into()),
-                thinking: None,
+            thinking: None,
             tool_calls: vec![],
             usage: None,
         },
@@ -52,7 +52,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
     let sim_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
-                thinking: None,
+            thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "w1".into(),
                 name: "read".into(),
@@ -62,7 +62,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         },
         ChatResponse {
             content: Some(r#"{"response": "fn main() {}"}"#.into()),
-                thinking: None,
+            thinking: None,
             tool_calls: vec![],
             usage: None,
         },
@@ -98,14 +98,13 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
     let runner = Runner::new(
         Arc::new(put_model),
         "put-model",
+        None,
         Arc::new(sim_model),
         "sim-model",
+        None,
         seeded_workspace(),
     );
-    let trace = runner
-        .run(&put, &scenario, &budget, 0, None)
-        .await
-        .unwrap();
+    let trace = runner.run(&put, &scenario, &budget, 0, None).await.unwrap();
 
     // First step is the tool call; it must carry the workspace read the
     // simulator performed, with the REAL seeded content as the result.
@@ -129,7 +128,7 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
     let put_model = MockLlmClient::scripted(vec![
         ChatResponse {
             content: None,
-                thinking: None,
+            thinking: None,
             tool_calls: vec![ToolCallRequest {
                 id: "c1".into(),
                 name: "ping".into(),
@@ -139,14 +138,14 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
         },
         ChatResponse {
             content: Some("ok".into()),
-                thinking: None,
+            thinking: None,
             tool_calls: vec![],
             usage: None,
         },
     ]);
     let sim_model = MockLlmClient::scripted(vec![ChatResponse {
         content: Some(r#"{"response": "pong"}"#.into()),
-            thinking: None,
+        thinking: None,
         tool_calls: vec![],
         usage: None,
     }]);
@@ -172,8 +171,10 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
     let runner = Runner::new(
         Arc::new(put_model),
         "put-model",
+        None,
         Arc::new(sim_model),
         "sim-model",
+        None,
         Workspace::empty(),
     );
     let trace = runner

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ToolDef};
+use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolDef};
 use crate::model::simulation::{RunProgress, Scenario, ToolCall, Trace, TraceStep};
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
@@ -28,6 +28,7 @@ pub enum RunnerError {
 pub struct Runner {
     put_client: Arc<dyn LlmClient>,
     put_model: String,
+    put_thinking_level: Option<ThinkingLevel>,
     simulator: ToolSimulator,
 }
 
@@ -35,14 +36,22 @@ impl Runner {
     pub fn new(
         put_client: Arc<dyn LlmClient>,
         put_model: impl Into<String>,
+        put_thinking_level: Option<ThinkingLevel>,
         sim_client: Arc<dyn LlmClient>,
         sim_model: impl Into<String>,
+        sim_thinking_level: Option<ThinkingLevel>,
         workspace_seed: Workspace,
     ) -> Self {
         Self {
             put_client,
             put_model: put_model.into(),
-            simulator: ToolSimulator::new(sim_client, sim_model, workspace_seed),
+            put_thinking_level,
+            simulator: ToolSimulator::new(
+                sim_client,
+                sim_model,
+                sim_thinking_level,
+                workspace_seed,
+            ),
         }
     }
 
@@ -95,6 +104,7 @@ impl Runner {
                     tools: tools.clone(),
                     temperature: Some(0.7),
                     max_tokens: None,
+                    thinking_level: self.put_thinking_level,
                 })
                 .await
                 .map_err(RunnerError::PutModel)?;
@@ -133,9 +143,7 @@ impl Runner {
             // own step so the trace reads as a linear story.
             for (i, tc) in response.tool_calls.iter().enumerate() {
                 let (tool_response, state_after, workspace_ops, sim_thinking) = self
-                    .handle_tool_call(
-                        put, tc, &mut world_state, &mut messages, &mut sim,
-                    )
+                    .handle_tool_call(put, tc, &mut world_state, &mut messages, &mut sim)
                     .await?;
 
                 steps.push(TraceStep {
@@ -190,7 +198,15 @@ impl Runner {
         world_state: &mut Map<String, Value>,
         messages: &mut Vec<Message>,
         sim: &mut SimSession,
-    ) -> Result<(Value, Option<std::collections::HashMap<String, Value>>, Vec<crate::model::simulation::WorkspaceOp>, Option<String>), RunnerError> {
+    ) -> Result<
+        (
+            Value,
+            Option<std::collections::HashMap<String, Value>>,
+            Vec<crate::model::simulation::WorkspaceOp>,
+            Option<String>,
+        ),
+        RunnerError,
+    > {
         let tool = put.tools.iter().find(|t| t.name == tc.name);
         let mut workspace_ops = Vec::new();
         let mut sim_thinking = None;

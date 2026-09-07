@@ -18,12 +18,15 @@ use crate::model::output::{RunResult, RunStatus, ScenarioFailure};
 use crate::model::simulation::Scenario;
 use crate::simulate::{Runner, Workspace};
 
-
 /// One LLM client + model name, reused across runner roles.
 #[derive(Clone)]
 pub struct LlmRole {
     pub client: Arc<dyn LlmClient>,
     pub model: String,
+    /// Thinking level for this role's completions; `None` = the
+    /// provider's default (no field sent). Per-role by design: setting
+    /// the PUT's level never changes the simulator's, and vice versa.
+    pub thinking_level: Option<crate::llm::types::ThinkingLevel>,
 }
 
 pub struct Investigator {
@@ -102,10 +105,7 @@ impl Investigator {
                 Ok(RunOne::Done(index, scenario, trace)) => {
                     if let Some(p) = &progress {
                         if let Ok(mut g) = p.lock() {
-                            g.set_state(
-                                index,
-                                crate::model::simulation::ScenarioState::Done,
-                            );
+                            g.set_state(index, crate::model::simulation::ScenarioState::Done);
                         }
                     }
                     attempts.push(Attempt { scenario, trace });
@@ -186,8 +186,10 @@ impl Investigator {
             let runner = Runner::new(
                 put_role.client,
                 &put_role.model,
+                put_role.thinking_level,
                 sim_role.client,
                 &sim_role.model,
+                sim_role.thinking_level,
                 workspace_seed,
             );
 

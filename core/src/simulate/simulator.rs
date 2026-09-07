@@ -23,11 +23,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
-use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ToolCallRequest, ToolDef, parse_json};
+use crate::llm::{
+    ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolCallRequest, ToolDef, parse_json,
+};
 use crate::model::ToolSchema;
 use crate::model::simulation::{ToolCall, WorkspaceOp};
 
@@ -42,6 +44,9 @@ const MAX_WORKSPACE_TURNS: usize = 12;
 pub struct ToolSimulator {
     client: Arc<dyn LlmClient>,
     model: String,
+    /// Thinking level for every simulator completion in every trace;
+    /// `None` = the provider's default (no field sent).
+    thinking_level: Option<ThinkingLevel>,
     /// The workspace seed (uploaded zip, or empty). Cloned cheaply per
     /// trace (the seed is shared by `Arc`; only the per-trace overlay is
     /// copied), so every scenario run gets an isolated workspace.
@@ -69,6 +74,7 @@ pub struct SimOutcome {
 pub struct SimSession {
     client: Arc<dyn LlmClient>,
     model: String,
+    thinking_level: Option<ThinkingLevel>,
     messages: Vec<Message>,
     /// This trace's workspace: a clone of the seed with its own overlay.
     workspace: Workspace,
@@ -84,11 +90,13 @@ impl ToolSimulator {
     pub fn new(
         client: Arc<dyn LlmClient>,
         model: impl Into<String>,
+        thinking_level: Option<ThinkingLevel>,
         workspace_seed: Workspace,
     ) -> Self {
         Self {
             client,
             model: model.into(),
+            thinking_level,
             workspace_seed,
         }
     }
@@ -104,6 +112,7 @@ impl ToolSimulator {
         SimSession {
             client: self.client.clone(),
             model: self.model.clone(),
+            thinking_level: self.thinking_level,
             messages: vec![Message::System { content: system }],
             workspace: self.workspace_seed.clone(),
             workspace_ops: Vec::new(),
@@ -304,6 +313,7 @@ impl SimSession {
                     // Reasoning-style models can burn a small budget on
                     // hidden reasoning and return empty content.
                     max_tokens: Some(8192),
+                    thinking_level: self.thinking_level,
                 })
                 .await
                 .map_err(|e| LlmError::Provider(e.to_string()))?;
