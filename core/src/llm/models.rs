@@ -93,14 +93,11 @@ pub async fn list_all(client: &Client) -> Vec<(String, ProviderModels)> {
         // OPEN_ROUTER_API_KEY.
         list_openrouter().await,
         // AWS Bedrock via native Converse + SigV4; auth from the default
-        // AWS credential chain. Bedrock's list API exposes no pricing.
-        list_via_genai(
-            client,
-            "bedrock_sigv4",
-            AdapterKind::BedrockSigv4,
-            ProviderConfig::default(),
-        )
-        .await,
+        // AWS credential chain. Listed LIVE from the control plane —
+        // genai's all_model_names for Bedrock returns a hardcoded, stale
+        // curated list that names ids many accounts cannot invoke while
+        // missing newer models entirely (issue #3). See list_bedrock.
+        list_bedrock().await,
         // Google Vertex AI (Gemini); auth from GCP Application Default
         // Credentials (`gcloud auth application-default login`). Live
         // Model Garden query; no pricing.
@@ -136,6 +133,233 @@ async fn list_via_genai(
         }
         Err(e) => (key.into(), ProviderModels::Error { error: e.to_string() }),
     }
+}
+
+/// Live AWS Bedrock catalog (issue #3).
+///
+/// What counts as invocable is account-specific: many accounts can only
+/// call a model through a cross-region inference profile
+/// (`global.openai.gpt-5.6-luna`), while the direct foundation id
+/// (`openai.gpt-5.6-luna`) 400s with "The provided model identifier is
+/// invalid". So the catalog is queried live from the control plane,
+/// with the same default credential chain (env/profile/SSO/IMDS) the
+/// generation path signs with:
+///
+/// - `ListInferenceProfiles` — ACTIVE, system-defined profiles
+///   (`global.*`, `eu.*`, …): invocable by construction in this region;
+/// - `ListFoundationModels` — the full catalog; a direct foundation id
+///   is emitted only when NO profile covers it, and LEGACY models are
+///   skipped (names that 400 on use were the old hardcoded listing's
+///   failure mode).
+async fn list_bedrock() -> (String, ProviderModels) {
+    match fetch_bedrock_models().await {
+        Ok(models) => ("bedrock_sigv4".into(), bedrock_listing_result(Ok(models))),
+        Err(e) => ("bedrock_sigv4".into(), bedrock_listing_result(Err(e))),
+    }
+}
+
+/// Pure decision: how a Bedrock listing outcome maps to the response.
+/// Mirrors [`vertex_listing_result`]: a failure mentioning credentials
+/// is predictive — generation cannot auth either — so it maps to
+/// `Error`; any other failure is control-plane-only (listing and
+/// generation are different IAM actions: ListFoundationModels vs
+/// InvokeModel on the Converse API), so it degrades to `Available`
+/// with an empty catalog and an explanatory note rather than a false
+/// "broken". (The model list is advisory: any `bedrock_sigv4::<id>`
+/// the API accepts works in a request regardless of listing.)
+pub(crate) fn bedrock_listing_result(
+    listing: Result<Vec<ModelEntry>, String>,
+) -> ProviderModels {
+    match listing {
+        Ok(mut models) => {
+            models.sort_by(|a, b| a.name.cmp(&b.name));
+            ProviderModels::Available { models, note: None }
+        }
+        Err(e) if e.to_lowercase().contains("credential") => {
+            ProviderModels::Error { error: e }
+        }
+        Err(list_err) => ProviderModels::Available {
+            models: Vec::new(),
+            note: Some(format!(
+                "catalog listing unavailable ({list_err}) — generation may still work: \
+                 listing and invocation are separate IAM actions. Pass any \
+                 `bedrock_sigv4::<model-id>` (cross-region profile ids like \
+                 `bedrock_sigv4::global.anthropic.claude-opus-5` are what most \
+                 accounts can invoke) in the request's `model` field; the list \
+                 above is advisory, not a gate"
+            )),
+        },
+    }
+}
+
+/// Merge the control-plane inventories into the namespaced, pastable
+/// entries for `GET /api/models`. Pure — unit-testable without AWS:
+///
+/// - a foundation model WITH a covering profile is listed AS the
+///   profile id (the invocable form; `global.*` preferred over regional
+///   variants, remaining ties broken alphabetically for determinism);
+/// - a foundation model with NO profile keeps its direct id (accounts
+///   with direct invocation enabled can use it); LEGACY filtering and
+///   chat-shape filtering happen in [`fetch_bedrock_models`];
+/// - a profile that covers no emitted foundation id is still listed
+///   (invocable by construction — e.g. an ACTIVE profile over a LEGACY
+///   foundation model we filtered out).
+pub(crate) fn bedrock_model_entries(
+    foundation_ids: &[String],
+    profile_ids: &[String],
+) -> Vec<ModelEntry> {
+    /// The foundation-model part of a profile id: everything after the
+    /// region-group segment (`global.` / `eu.` / `us.` / …). Only a
+    /// dotted remainder counts — a single-segment tail is not a
+    /// profile-over-foundation shape.
+    fn profile_tail(profile_id: &str) -> Option<&str> {
+        let (_, rest) = profile_id.split_once('.')?;
+        rest.contains('.').then_some(rest)
+    }
+
+    // Preferred profile per tail: global.* first, then alphabetical.
+    let mut by_tail: std::collections::BTreeMap<&str, &str> = Default::default();
+    for p in profile_ids {
+        if let Some(tail) = profile_tail(p) {
+            let entry = by_tail.entry(tail).or_insert(p);
+            if is_preferred_profile(p, entry) {
+                *entry = p;
+            }
+        }
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    let mut covered: std::collections::BTreeSet<&str> = Default::default();
+    for f in foundation_ids {
+        match by_tail.get(f.as_str()) {
+            Some(profile) => {
+                names.push((*profile).to_string());
+                covered.insert(f.as_str());
+            }
+            None => names.push(f.clone()),
+        }
+    }
+    // Profiles whose foundation entry never made it here (filtered as
+    // LEGACY, absent from the catalog, or malformed) are still listed —
+    // they are invocable regardless.
+    for p in profile_ids {
+        if let Some(tail) = profile_tail(p) {
+            if covered.contains(tail) {
+                continue;
+            }
+        }
+        names.push(p.clone());
+    }
+
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|id| ModelEntry {
+            name: format!("bedrock_sigv4::{id}"),
+            pricing: None,
+        })
+        .collect()
+}
+
+/// `global.*` spans the most regions; anything else ties out
+/// alphabetically so the choice is deterministic.
+fn is_preferred_profile(candidate: &str, current: &str) -> bool {
+    match (candidate.starts_with("global."), current.starts_with("global.")) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => candidate < current,
+    }
+}
+
+/// SdkError's Display stops at the top level ("dispatch failure") —
+/// the actionable detail (region, credentials, IAM) lives in the source
+/// chain, so flatten it into one string.
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(err) = src {
+        s.push_str(": ");
+        s.push_str(&err.to_string());
+        src = err.source();
+    }
+    s
+}
+
+/// Query the Bedrock control plane with the default credential chain
+/// — the same chain genai's bedrock-sigv4 adapter signs generation
+/// requests with, so listing works exactly where generation does.
+async fn fetch_bedrock_models() -> Result<Vec<ModelEntry>, String> {
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .load()
+        .await;
+    let client = aws_sdk_bedrock::Client::new(&config);
+
+    use aws_sdk_bedrock::types::InferenceProfileType;
+    use aws_sdk_bedrock::types::FoundationModelLifecycleStatus;
+
+    // System-defined cross-region profiles (`global.*`, `eu.*`, …),
+    // paginated. Application-defined profiles are skipped: they are
+    // account-authored routing wrappers, not the standard pastable
+    // form the docs and this listing teach.
+    let mut profile_ids: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let resp = client
+            .list_inference_profiles()
+            .type_equals(InferenceProfileType::SystemDefined)
+            .set_next_token(token.take())
+            .send()
+            .await
+            .map_err(|e| format!("ListInferenceProfiles: {}", error_chain(&e)))?;
+        for s in resp.inference_profile_summaries() {
+            if *s.status() == aws_sdk_bedrock::types::InferenceProfileStatus::Active {
+                profile_ids.push(s.inference_profile_id().to_string());
+            }
+        }
+        token = resp.next_token().map(str::to_string);
+        if token.is_none() {
+            break;
+        }
+    }
+
+    // Foundation catalog (single response, no pagination). Keep
+    // chat-shaped models only — TEXT in and TEXT out when the catalog
+    // states modalities; absent modalities keep the entry (the list is
+    // advisory, over-listing is the safer failure) — and skip LEGACY
+    // models: they 400 for anyone without grandfathered access, the
+    // exact trap the old hardcoded listing had.
+    let resp = client
+        .list_foundation_models()
+        .send()
+        .await
+        .map_err(|e| format!("ListFoundationModels: {}", error_chain(&e)))?;
+    let mut foundation_ids: Vec<String> = Vec::new();
+    for s in resp.model_summaries() {
+        if s
+            .model_lifecycle()
+            .is_some_and(|l| *l.status() == FoundationModelLifecycleStatus::Legacy)
+        {
+            continue;
+        }
+        if !modality_is_text(s.input_modalities())
+            || !modality_is_text(s.output_modalities())
+        {
+            continue;
+        }
+        foundation_ids.push(s.model_id().to_string());
+    }
+
+    Ok(bedrock_model_entries(&foundation_ids, &profile_ids))
+}
+
+/// Chat-shape test for one modality list: requires TEXT when the
+/// catalog states modalities; an entry with none stated (empty list)
+/// is kept — the list is advisory and over-listing is the safer
+/// failure.
+fn modality_is_text(modalities: &[aws_sdk_bedrock::types::ModelModality]) -> bool {
+    modalities.is_empty()
+        || modalities.contains(&aws_sdk_bedrock::types::ModelModality::Text)
 }
 
 /// Pure decision: how a Vertex listing outcome maps to the response.
@@ -508,6 +732,121 @@ mod tests {
         ModelEntry {
             name: name.into(),
             pricing: None,
+        }
+    }
+
+    #[test]
+    fn bedrock_prefers_global_profile_over_regional_and_direct() {
+        // Issue #3's account shape: GPT-5.6 exists as direct id AND as
+        // eu./global. profiles — only profiles are invocable, and
+        // global.* is the broadest.
+        let foundation = vec![
+            "openai.gpt-5.6-luna".to_string(),
+            "openai.gpt-5.6-terra".to_string(),
+            "anthropic.claude-opus-5".to_string(),
+        ];
+        let profiles = vec![
+            "eu.openai.gpt-5.6-luna".to_string(),
+            "global.openai.gpt-5.6-luna".to_string(),
+            "eu.openai.gpt-5.6-terra".to_string(),
+            "eu.anthropic.claude-opus-5".to_string(),
+            "global.anthropic.claude-opus-5".to_string(),
+        ];
+        let entries = bedrock_model_entries(&foundation, &profiles);
+        assert_eq!(
+            entries.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                // Sorted lexicographically: eu.* before global.*.
+                "bedrock_sigv4::eu.openai.gpt-5.6-terra",
+                "bedrock_sigv4::global.anthropic.claude-opus-5",
+                "bedrock_sigv4::global.openai.gpt-5.6-luna",
+            ]
+        );
+    }
+
+    #[test]
+    fn bedrock_keeps_direct_id_when_no_profile_covers_it() {
+        let foundation = vec![
+            "amazon.nova-pro-v1:0".to_string(),
+            "meta.llama3-1-70b-instruct-v1:0".to_string(),
+        ];
+        let entries = bedrock_model_entries(&foundation, &[]);
+        assert_eq!(
+            entries.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "bedrock_sigv4::amazon.nova-pro-v1:0",
+                "bedrock_sigv4::meta.llama3-1-70b-instruct-v1:0",
+            ]
+        );
+    }
+
+    #[test]
+    fn bedrock_lists_orphan_profiles_and_dedupes() {
+        // A profile over a LEGACY-filtered foundation model is still
+        // invocable and must be listed; duplicate profile shapes
+        // collapse.
+        let profiles = vec![
+            "global.anthropic.claude-3-7-sonnet".to_string(),
+            "global.anthropic.claude-3-7-sonnet".to_string(),
+            "single-segment".to_string(), // not profile-shaped: kept as-is
+        ];
+        let entries = bedrock_model_entries(&[], &profiles);
+        assert_eq!(
+            entries.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "bedrock_sigv4::global.anthropic.claude-3-7-sonnet",
+                "bedrock_sigv4::single-segment",
+            ]
+        );
+    }
+
+    #[test]
+    fn bedrock_listing_credential_failure_is_error() {
+        // Credential failure is predictive: generation cannot auth either.
+        let pm = bedrock_listing_result(Err(
+            "ListFoundationModels: dispatch failure: failed to load credentials: CredentialsNotLoaded".into(),
+        ));
+        match pm {
+            ProviderModels::Error { error } => assert!(error.contains("credentials")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bedrock_listing_control_plane_failure_degrades_to_note() {
+        // An IAM/listing failure is control-plane-only; generation
+        // (InvokeModel) may still work — "broken" would be a lie.
+        let pm = bedrock_listing_result(Err(
+            "ListFoundationModels: 403 Forbidden — not authorized to perform: bedrock:ListFoundationModels".into(),
+        ));
+        match pm {
+            ProviderModels::Available { models, note } => {
+                assert!(models.is_empty(), "degraded listing carries no fake catalog");
+                let note = note.expect("note explains the degraded listing");
+                assert!(note.contains("403"));
+                assert!(note.contains("generation may still work"));
+                assert!(note.contains("bedrock_sigv4::<model-id>"));
+                assert!(note.contains("advisory"));
+            }
+            other => panic!("expected Available, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bedrock_listing_ok_is_available_sorted() {
+        let pm = bedrock_listing_result(Ok(vec![
+            entry("bedrock_sigv4::b"),
+            entry("bedrock_sigv4::a"),
+        ]));
+        match pm {
+            ProviderModels::Available { models, note } => {
+                assert_eq!(
+                    models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+                    vec!["bedrock_sigv4::a", "bedrock_sigv4::b"]
+                );
+                assert!(note.is_none());
+            }
+            other => panic!("expected Available, got {other:?}"),
         }
     }
 

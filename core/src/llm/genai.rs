@@ -78,6 +78,11 @@ impl DefaultProvider {
 
 pub struct ProviderClient {
     client: Client,
+    /// Which provider bare (un-namespaced) model names resolve to. Kept
+    /// alongside the client so call sites can recompute the effective
+    /// namespace of a model string (e.g. the Bedrock temperature rule in
+    /// [`effective_temperature`]) exactly the way the ModelMapper does.
+    default: DefaultProvider,
 }
 
 impl ProviderClient {
@@ -157,7 +162,18 @@ impl ProviderClient {
                 },
             ))
             .build();
-        Self { client }
+        Self { client, default }
+    }
+
+    /// The model string, namespace-qualified the same way this client's
+    /// ModelMapper qualifies it (bare names get the default provider;
+    /// namespaced names pass through).
+    fn effective_model(&self, model: &str) -> String {
+        if model.contains("::") {
+            model.to_string()
+        } else {
+            self.default.qualify(model)
+        }
     }
 
     /// z.ai **coding-plan** endpoint; bare model names default to it.
@@ -215,6 +231,10 @@ impl ProviderClient {
             client: Client::builder()
                 .with_service_target_resolver(resolver)
                 .build(),
+            // Only namespaced strings are meaningful here (see doc); the
+            // default exists so the temperature heuristic below still has
+            // an answer for a bare name.
+            default: DefaultProvider::OpenRouter,
         }
     }
 }
@@ -229,7 +249,11 @@ impl LlmClient for ProviderClient {
         }
 
         let mut options = ChatOptions::default();
-        if let Some(t) = req.temperature {
+        // Model string, namespace-qualified the way the ModelMapper will
+        // qualify it, so provider-specific decisions below see the real
+        // target.
+        let model = self.effective_model(&req.model);
+        if let Some(t) = effective_temperature(&model, req.temperature) {
             options = options.with_temperature(t as f64);
         }
         if let Some(m) = req.max_tokens {
@@ -255,7 +279,7 @@ impl LlmClient for ProviderClient {
         loop {
             match self
                 .client
-                .exec_chat(&req.model, chat_req.clone(), Some(&options))
+                .exec_chat(&model, chat_req.clone(), Some(&options))
                 .await
             {
                 Ok(resp) => return Ok(convert_response(resp)),
@@ -271,6 +295,24 @@ impl LlmClient for ProviderClient {
                 }
             }
         }
+    }
+}
+
+/// Temperature to actually send for a (namespace-qualified) model
+/// string. Newer Bedrock models — the OpenAI GPT-5.x family, the current
+/// Claude line — hard-reject ANY request carrying `temperature` in
+/// inferenceConfig (400: "This model doesn't support the temperature
+/// field" / "`temperature` is deprecated for this model"), and Bedrock
+/// offers no signal for which models accept it, so the whole namespace
+/// loses the field and the model's own default applies. This was the
+/// server's bug, not genai's: the adapter omits `temperature` when unset
+/// (issue #3), but the runner and simulator always passed `Some(0.7)`.
+/// Every other provider passes the requested value through unchanged.
+fn effective_temperature(model: &str, requested: Option<f32>) -> Option<f32> {
+    if model.starts_with("bedrock_sigv4::") {
+        None
+    } else {
+        requested
     }
 }
 
@@ -337,6 +379,48 @@ mod tests {
         \"remedy_hint\":\"Retry shortly, add your own provider key \
         (https://openrouter.ai/settings/integrations), or route to another \
         provider with provider routing: https://openrouter.ai/docs/features/provider-routing\"}}}";
+
+    #[test]
+    fn bedrock_requests_omit_temperature() {
+        // Issue #3's exact models: newer Bedrock rejects any temperature
+        // field, so the namespace never sends one — requested or not.
+        for m in [
+            "bedrock_sigv4::global.openai.gpt-5.6-luna",
+            "bedrock_sigv4::eu.openai.gpt-5.6-luna",
+            "bedrock_sigv4::global.anthropic.claude-opus-5",
+            "bedrock_sigv4::anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_sigv4::amazon.nova-pro-v1:0",
+        ] {
+            assert_eq!(effective_temperature(m, Some(0.7)), None, "{m}");
+            assert_eq!(effective_temperature(m, None), None, "{m}");
+        }
+    }
+
+    #[test]
+    fn non_bedrock_providers_keep_requested_temperature() {
+        for m in [
+            "zai_coding::glm-5.2",
+            "zai::glm-4.6",
+            "open_router::qwen/qwen3.7-flash",
+            "vertex::gemini-2.5-pro",
+            "baseten::deepseek-ai/deepseek-v4-flash",
+        ] {
+            assert_eq!(effective_temperature(m, Some(0.7)), Some(0.7), "{m}");
+            assert_eq!(effective_temperature(m, None), None, "{m}");
+        }
+    }
+
+    #[test]
+    fn bare_name_under_bedrock_default_qualifies_to_bedrock() {
+        // PROMPT_EXPLORE_PROVIDER=bedrock makes bare names bedrock
+        // models — they must hit the temperature rule too.
+        let qualified = DefaultProvider::Bedrock.qualify("foo");
+        assert_eq!(qualified, "bedrock_sigv4::foo");
+        assert_eq!(effective_temperature(&qualified, Some(0.7)), None);
+        // And a non-bedrock default keeps steering bare names.
+        let qualified = DefaultProvider::ZaiCoding.qualify("foo");
+        assert_eq!(effective_temperature(&qualified, Some(0.7)), Some(0.7));
+    }
 
     #[test]
     fn openrouter_shared_pool_429_is_retryable() {
