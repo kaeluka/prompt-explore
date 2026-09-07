@@ -381,6 +381,105 @@ mod tests {
         provider with provider routing: https://openrouter.ai/docs/features/provider-routing\"}}}";
 
     #[test]
+    fn consecutive_tool_messages_merge_into_one() {
+        // One assistant completion with two parallel tool calls, then the
+        // two results the runner emits (one Message::Tool per call). They
+        // must land in ONE tool message so the Bedrock adapter renders a
+        // single user message carrying both toolResult blocks.
+        let messages = vec![
+            Message::System {
+                content: "sys".into(),
+            },
+            Message::User {
+                content: "hi".into(),
+            },
+            Message::Assistant {
+                content: Some("calling".into()),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call_a".into(),
+                        name: "f".into(),
+                        arguments: "{}".into(),
+                    },
+                    ToolCallRequest {
+                        id: "call_b".into(),
+                        name: "g".into(),
+                        arguments: "{}".into(),
+                    },
+                ],
+            },
+            Message::Tool {
+                tool_call_id: "call_a".into(),
+                content: "one".into(),
+            },
+            Message::Tool {
+                tool_call_id: "call_b".into(),
+                content: "two".into(),
+            },
+        ];
+        let out = convert_messages(messages);
+        assert_eq!(out.len(), 4, "system, user, assistant, one merged tool");
+        let tool_msg = out.last().unwrap();
+        assert_eq!(tool_msg.role, genai::chat::ChatRole::Tool);
+        let responses: Vec<_> = tool_msg
+            .content
+            .iter()
+            .filter_map(|p| p.as_tool_response().cloned())
+            .collect();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].call_id, "call_a");
+        assert_eq!(responses[0].content, "one");
+        assert_eq!(responses[1].call_id, "call_b");
+        assert_eq!(responses[1].content, "two");
+    }
+
+    #[test]
+    fn tool_results_from_separate_turns_stay_separate() {
+        // Two assistant turns, each with its own tool call: the merge must
+        // not span turns — each turn's result stays in its own message,
+        // separated by the next assistant message.
+        let messages = vec![
+            Message::Assistant {
+                content: None,
+                tool_calls: vec![ToolCallRequest {
+                    id: "call_a".into(),
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "call_a".into(),
+                content: "one".into(),
+            },
+            Message::Assistant {
+                content: None,
+                tool_calls: vec![ToolCallRequest {
+                    id: "call_b".into(),
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "call_b".into(),
+                content: "two".into(),
+            },
+        ];
+        let out = convert_messages(messages);
+        assert_eq!(out.len(), 4);
+        for (i, expected_id) in ["call_a", "call_b"].iter().enumerate() {
+            assert_eq!(out[i * 2].role, genai::chat::ChatRole::Assistant);
+            assert_eq!(out[i * 2 + 1].role, genai::chat::ChatRole::Tool);
+            let responses: Vec<_> = out[i * 2 + 1]
+                .content
+                .iter()
+                .filter_map(|p| p.as_tool_response().cloned())
+                .collect();
+            assert_eq!(responses.len(), 1);
+            assert_eq!(responses[0].call_id, *expected_id);
+        }
+    }
+
+    #[test]
     fn bedrock_requests_omit_temperature() {
         // Issue #3's exact models: newer Bedrock rejects any temperature
         // field, so the namespace never sends one — requested or not.
@@ -513,7 +612,44 @@ fn convert_response(resp: GChatResponse) -> ChatResponse {
 }
 
 fn convert_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
-    messages.into_iter().map(convert_message).collect()
+    // Consecutive tool results are merged into a single tool message so
+    // every adapter sees all of an assistant turn's tool responses
+    // together. Bedrock Converse requires every toolResult for one
+    // assistant message's tool_use blocks to live in ONE user message;
+    // one message per result produced one user message per result and
+    // Bedrock rejected the follow-up completion with 400 "Expected
+    // toolResult blocks at messages.N.content for the following Ids".
+    // The other adapters iterate the parts and are unchanged: OpenAI
+    // re-emits one tool message per part, Anthropic/Gemini/Bedrock
+    // collect the parts into a single user message.
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    let mut pending: Vec<genai::chat::ToolResponse> = Vec::new();
+    for m in messages {
+        match m {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => pending.push(genai::chat::ToolResponse::new(tool_call_id, content)),
+            other => {
+                if !pending.is_empty() {
+                    let parts = pending
+                        .drain(..)
+                        .map(genai::chat::ContentPart::ToolResponse)
+                        .collect::<Vec<_>>();
+                    out.push(ChatMessage::tool(MessageContent::from_parts(parts)));
+                }
+                out.push(convert_message(other));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        let parts = pending
+            .drain(..)
+            .map(genai::chat::ContentPart::ToolResponse)
+            .collect::<Vec<_>>();
+        out.push(ChatMessage::tool(MessageContent::from_parts(parts)));
+    }
+    out
 }
 
 fn convert_message(m: Message) -> ChatMessage {
