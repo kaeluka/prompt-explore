@@ -98,6 +98,7 @@ async fn main() {
         runner_put: role.clone(),
         runner_sim: role.clone(),
         workspace_seed: prompt_explore::simulate::Workspace::empty(),
+        max_workspace_turns: 100,
     };
 
     let InvestigateOutcome {

@@ -85,6 +85,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
         "sim-model",
         None,
         Workspace::empty(),
+        100,
     );
     let trace = runner
         .run(&support_put(), &scenario(), &budget(), 0, None)
@@ -139,6 +140,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         "sim-model",
         None,
         Workspace::empty(),
+        100,
     );
     let trace = runner
         .run(&support_put(), &scenario(), &budget(), 0, None)
@@ -170,6 +172,7 @@ async fn empty_tool_array_means_single_shot() {
         "sim-model",
         None,
         Workspace::empty(),
+        100,
     );
     let trace = runner
         .run(&put, &scenario(), &budget(), 0, None)

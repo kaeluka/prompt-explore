@@ -9,6 +9,6 @@ pub mod transcript;
 pub mod workspace;
 
 pub use runner::{Runner, RunnerError};
-pub use simulator::ToolSimulator;
+pub use simulator::{DEFAULT_MAX_WORKSPACE_TURNS, ToolSimulator};
 pub use transcript::render_transcript;
-pub use workspace::{Workspace, WorkspaceError, unpack_zip};
+pub use workspace::{Workspace, WorkspaceError, unpack_zip, unpack_zip_with_limits};

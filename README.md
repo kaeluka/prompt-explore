@@ -205,6 +205,17 @@ ENVIRONMENT:
     PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC
                            Set to 1 to allow a non-loopback bind over plain HTTP
                            (the bearer token and all traces travel in cleartext).
+    PROMPT_EXPLORE_MAX_WORKSPACE_TURNS
+                           Maximum workspace tool calls the simulator may make per
+                           response before being nudged to produce a final answer
+                           (default: 100). Raise if your scenarios have large
+                           workspaces that need more lookups per tool response.
+    PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT
+                           Maximum size (bytes) of uploaded workspace .zip files
+                           (default: 52428800 = 50 MB).
+    PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT
+                           Maximum total decompressed size (bytes) of workspace
+                           contents (default: 524288000 = 500 MB).
 ```
 
 ### 2. Setup with your coding agent

@@ -28,12 +28,13 @@ use zip::ZipArchive;
 use crate::llm::ToolDef;
 
 /// Hard cap on the uploaded (compressed) zip, in bytes. Enforced before
-/// and during unpack.
-pub const COMPRESSED_LIMIT: usize = 5 * 1024 * 1024;
+/// and during unpack. Overridable via `PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT`.
+pub const DEFAULT_COMPRESSED_LIMIT: usize = 50 * 1024 * 1024;
 /// Hard cap on the total decompressed content, in bytes. Enforced during
 /// unpack by reading in chunks and aborting if exceeded (defends against
 /// decompression bombs regardless of the sizes declared in the archive).
-pub const DECOMPRESSED_LIMIT: usize = 50 * 1024 * 1024;
+/// Overridable via `PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT`.
+pub const DEFAULT_DECOMPRESSED_LIMIT: usize = 500 * 1024 * 1024;
 /// Hard cap on the number of files, to bound pathological archives.
 pub const MAX_FILES: usize = 100_000;
 
@@ -160,6 +161,12 @@ impl Workspace {
                 let cap_end = start.saturating_add(MAX_READ_LINES).saturating_sub(1);
                 let requested_end = usize_arg(args, "end_line").unwrap_or(cap_end);
                 let end = requested_end.min(cap_end);
+                if end < start {
+                    return json!({
+                        "path": raw_path,
+                        "error": "end_line is before start_line",
+                    });
+                }
                 if start > total {
                     return json!({
                         "path": raw_path,
@@ -414,10 +421,21 @@ const MAX_LINE_LEN: usize = 500;
 /// decompressed) and zip-slip rejection make a malicious or malformed
 /// archive safe: it cannot escape the workspace root or exhaust memory.
 pub fn unpack_zip(bytes: &[u8]) -> Result<Workspace, WorkspaceError> {
-    if bytes.len() > COMPRESSED_LIMIT {
+    unpack_zip_with_limits(bytes, DEFAULT_COMPRESSED_LIMIT, DEFAULT_DECOMPRESSED_LIMIT)
+}
+
+/// Same as `unpack_zip` but with caller-chosen compressed and decompressed
+/// limits (in bytes). The defaults are `DEFAULT_COMPRESSED_LIMIT` and
+/// `DEFAULT_DECOMPRESSED_LIMIT` (50 MB / 500 MB).
+pub fn unpack_zip_with_limits(
+    bytes: &[u8],
+    compressed_limit: usize,
+    decompressed_limit: usize,
+) -> Result<Workspace, WorkspaceError> {
+    if bytes.len() > compressed_limit {
         return Err(WorkspaceError::TooLargeCompressed {
             size: bytes.len(),
-            limit: COMPRESSED_LIMIT,
+            limit: compressed_limit,
         });
     }
     let cursor = std::io::Cursor::new(bytes);
@@ -456,10 +474,10 @@ pub fn unpack_zip(bytes: &[u8]) -> Result<Workspace, WorkspaceError> {
                 break;
             }
             total_decompressed += n;
-            if total_decompressed > DECOMPRESSED_LIMIT {
+            if total_decompressed > decompressed_limit {
                 return Err(WorkspaceError::TooLargeDecompressed {
                     size: total_decompressed,
-                    limit: DECOMPRESSED_LIMIT,
+                    limit: decompressed_limit,
                 });
             }
             buf.extend_from_slice(&chunk[..n]);
@@ -703,7 +721,7 @@ mod tests {
 
     #[test]
     fn unpack_rejects_compressed_over_limit() {
-        let bytes = vec![0u8; COMPRESSED_LIMIT + 1];
+        let bytes = vec![0u8; DEFAULT_COMPRESSED_LIMIT + 1];
         assert!(matches!(
             unpack_zip(&bytes),
             Err(WorkspaceError::TooLargeCompressed { .. })

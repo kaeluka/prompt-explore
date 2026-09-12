@@ -96,6 +96,7 @@ async fn main() {
         MODEL,
         None,
         prompt_explore::simulate::Workspace::empty(),
+        100,
     );
     let trace = runner
         .run(&put, &scenario, &budget, 0, None)

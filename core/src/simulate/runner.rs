@@ -41,6 +41,7 @@ impl Runner {
         sim_model: impl Into<String>,
         sim_thinking_level: Option<ThinkingLevel>,
         workspace_seed: Workspace,
+        max_workspace_turns: usize,
     ) -> Self {
         Self {
             put_client,
@@ -51,6 +52,7 @@ impl Runner {
                 sim_model,
                 sim_thinking_level,
                 workspace_seed,
+                max_workspace_turns,
             ),
         }
     }

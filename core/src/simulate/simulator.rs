@@ -38,8 +38,9 @@ use super::workspace::Workspace;
 /// Cap on how many workspace tool turns the simulator may take before it
 /// must produce a final answer for one request. Generous enough to
 /// list → grep → read several files; bounded so a stuck model cannot loop
-/// forever.
-const MAX_WORKSPACE_TURNS: usize = 12;
+/// forever. Default is 100, configurable via the
+/// `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS` environment variable (default 100).
+pub const DEFAULT_MAX_WORKSPACE_TURNS: usize = 100;
 
 pub struct ToolSimulator {
     client: Arc<dyn LlmClient>,
@@ -51,6 +52,9 @@ pub struct ToolSimulator {
     /// trace (the seed is shared by `Arc`; only the per-trace overlay is
     /// copied), so every scenario run gets an isolated workspace.
     workspace_seed: Workspace,
+    /// Max workspace tool turns per simulator response (default 100,
+    /// configurable via `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS`).
+    max_workspace_turns: usize,
 }
 
 /// What the simulator decided for one tool call.
@@ -76,6 +80,9 @@ pub struct SimSession {
     model: String,
     thinking_level: Option<ThinkingLevel>,
     messages: Vec<Message>,
+    /// How many workspace lookups the simulator may make before the
+    /// harness nudges it to produce a final answer.
+    max_workspace_turns: usize,
     /// This trace's workspace: a clone of the seed with its own overlay.
     workspace: Workspace,
     /// Workspace ops accumulated since the last drain (used to attach
@@ -92,12 +99,14 @@ impl ToolSimulator {
         model: impl Into<String>,
         thinking_level: Option<ThinkingLevel>,
         workspace_seed: Workspace,
+        max_workspace_turns: usize,
     ) -> Self {
         Self {
             client,
             model: model.into(),
             thinking_level,
             workspace_seed,
+            max_workspace_turns,
         }
     }
 
@@ -115,6 +124,7 @@ impl ToolSimulator {
             thinking_level: self.thinking_level,
             messages: vec![Message::System { content: system }],
             workspace: self.workspace_seed.clone(),
+            max_workspace_turns: self.max_workspace_turns,
             workspace_ops: Vec::new(),
             thinking: Vec::new(),
         }
@@ -293,14 +303,57 @@ impl SimSession {
     /// Run the simulator with workspace tools until it produces a
     /// terminal reply (no tool calls). Tool calls are executed against
     /// this trace's workspace and fed back as tool messages. Returns the
-    /// terminal content (None if empty). Bounded by `MAX_WORKSPACE_TURNS`.
+    /// terminal content (None if empty). Bounded by `max_workspace_turns`.
+    /// When the cap is reached the harness first nudges the simulator to
+    /// produce its final answer from what it has already seen; only if it
+    /// still calls tools after the nudge does the call fail.
     async fn run_workspace_loop(&mut self, tools: &[ToolDef]) -> Result<Option<String>, LlmError> {
         let mut turns = 0;
         loop {
-            if turns >= MAX_WORKSPACE_TURNS {
+            if turns >= self.max_workspace_turns {
+                // Graceful fallback: nudge the simulator to produce its
+                // final answer from what it has already seen. Only
+                // escalate to an error if it still calls tools after
+                // this nudge — the caller can then raise the cap via
+                // PROMPT_EXPLORE_MAX_WORKSPACE_TURNS.
+                let max = self.max_workspace_turns;
+                self.messages.push(Message::System {
+                    content: format!(
+                        "You have used your {max} workspace lookups for this response. \
+                         Produce your FINAL answer as the JSON object now, from what \
+                         you have already seen. Do NOT call any workspace tools."
+                    ),
+                });
+                let reply = self
+                    .client
+                    .complete(ChatRequest {
+                        model: self.model.clone(),
+                        messages: self.messages.clone(),
+                        tools: tools.to_vec(),
+                        temperature: Some(0.7),
+                        max_tokens: Some(8192),
+                        thinking_level: self.thinking_level,
+                    })
+                    .await
+                    .map_err(|e| LlmError::Provider(e.to_string()))?;
+
+                if reply.tool_calls.is_empty() {
+                    if let Some(t) = &reply.thinking {
+                        if !t.trim().is_empty() {
+                            self.thinking.push(t.clone());
+                        }
+                    }
+                    return Ok(reply.content.filter(|c| !c.trim().is_empty()));
+                }
+
+                // Still making tool calls — escalate to error.
+                self.messages.push(Message::Assistant {
+                    content: reply.content.clone(),
+                    tool_calls: reply.tool_calls.clone(),
+                });
                 return Err(LlmError::MalformedResponse(format!(
-                    "simulator made more than {MAX_WORKSPACE_TURNS} workspace tool calls \
-                     without a final answer"
+                    "simulator made more than {max} workspace tool calls \
+                     without a final answer (even after a nudge to stop)"
                 )));
             }
             let reply = self

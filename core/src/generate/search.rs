@@ -36,6 +36,9 @@ pub struct Investigator {
     /// per trace so every scenario run gets an isolated workspace; the
     /// seed itself is shared by `Arc` so a large upload is paid for once.
     pub workspace_seed: Workspace,
+    /// Max workspace tool turns per simulator response (default 100,
+    /// configurable via `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS`).
+    pub max_workspace_turns: usize,
 }
 
 pub struct InvestigateOutcome {
@@ -182,6 +185,7 @@ impl Investigator {
         let workspace_seed = self.workspace_seed.clone();
         let put_template = put.template.clone();
         let put_tools = put.tools.clone();
+        let max_workspace_turns = self.max_workspace_turns;
         tasks.spawn(async move {
             let runner = Runner::new(
                 put_role.client,
@@ -191,6 +195,7 @@ impl Investigator {
                 &sim_role.model,
                 sim_role.thinking_level,
                 workspace_seed,
+                max_workspace_turns,
             );
 
             // A lightweight PUT view for the runner (design_goals are

@@ -103,6 +103,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         "sim-model",
         None,
         seeded_workspace(),
+        100,
     );
     let trace = runner.run(&put, &scenario, &budget, 0, None).await.unwrap();
 
@@ -176,6 +177,7 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
         "sim-model",
         None,
         Workspace::empty(),
+        100,
     );
     let trace = runner
         .run(&put, &scenario, &budget(), 0, None)

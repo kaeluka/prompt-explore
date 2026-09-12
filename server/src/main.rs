@@ -37,7 +37,7 @@ use prompt_explore::llm::{
 use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
 use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
-use prompt_explore::simulate::{Workspace, unpack_zip};
+use prompt_explore::simulate::{Workspace, unpack_zip_with_limits};
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 use utoipa::Modify;
@@ -384,8 +384,10 @@ struct JobSummary {
                        found\"; partial: \"these are SOME files; simulate the rest\"). Each \
                        trace step records the simulator's workspace operations \
                        (`workspace_ops`) so you can judge whether an answer was grounded in \
-                       the uploaded files or invented. Caps: ≤ 5 MB compressed, ≤ 50 MB \
-                       decompressed; zip-slip entries are rejected.
+                       the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB \
+                       decompressed (overridable via
+                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);
+                       zip-slip entries are rejected.
 
  \
                        AUTHENTICATION. The server is open by default. When \
@@ -469,6 +471,17 @@ fn print_help() {
     println!("    PROMPT_EXPLORE_ALLOW_INSECURE_PUBLIC");
     println!("                           Set to 1 to allow a non-loopback bind over plain HTTP");
     println!("                           (the bearer token and all traces travel in cleartext).");
+    println!("    PROMPT_EXPLORE_MAX_WORKSPACE_TURNS");
+    println!("                           Maximum workspace tool calls the simulator may make per");
+    println!("                           response before being nudged to produce a final answer");
+    println!("                           (default: 100). Raise if your scenarios have large");
+    println!("                           workspaces that need more lookups per tool response.");
+    println!("    PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT");
+    println!("                           Maximum size (bytes) of uploaded workspace .zip files");
+    println!("                           (default: 52428800 = 50 MB).");
+    println!("    PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT");
+    println!("                           Maximum total decompressed size (bytes) of workspace");
+    println!("                           contents (default: 524288000 = 500 MB).");
 }
 
 /// The full application router. Factored out of `main` so tests (and
@@ -877,8 +890,10 @@ async fn index() -> impl axum::response::IntoResponse {
 ///   is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never
 ///   written to disk) and seeds the SIMULATION WORKSPACE — an in-memory
 ///   filesystem the tool SIMULATOR consults with four tools (read, write,
-///   list_dir, grep). Hard caps: the compressed zip must be ≤ 5 MB and
-///   decompress to ≤ 50 MB total, or the request is rejected. Zip entries
+///   list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and
+///   decompress to ≤ 500 MB total (overridable via
+///   PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the
+///   request is rejected. Zip entries
 ///   that escape the workspace root (zip-slip) are rejected.
 ///
 /// The workspace is the simulator's CAPABILITY, not a policy. The harness
@@ -1062,9 +1077,20 @@ async fn parse_multipart_request(
                     .bytes()
                     .await
                     .map_err(|e| format!("could not read 'workspace' part: {e}"))?;
-                // unpack_zip enforces the compressed/decompressed caps and
-                // zip-slip rejection; nothing is written to disk.
-                workspace = unpack_zip(&bytes).map_err(|e| e.to_string())?;
+                let compressed_limit = std::env::var("PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_COMPRESSED_LIMIT);
+                let decompressed_limit = std::env::var(
+                    "PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT",
+                )
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_DECOMPRESSED_LIMIT);
+                // unpack_zip_with_limits enforces the compressed/decompressed
+                // caps and zip-slip rejection; nothing is written to disk.
+                workspace = unpack_zip_with_limits(&bytes, compressed_limit, decompressed_limit)
+                    .map_err(|e| e.to_string())?;
             }
             other => {
                 eprintln!("ignoring unknown multipart part '{other}'");
@@ -1136,6 +1162,10 @@ fn spawn_investigation(
         // is moved into the runner role.
         let put_model_cost = put_model.clone();
         let sim_model_cost = sim_model.clone();
+        let max_workspace_turns: usize = std::env::var("PROMPT_EXPLORE_MAX_WORKSPACE_TURNS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(prompt_explore::simulate::DEFAULT_MAX_WORKSPACE_TURNS);
         let investigator = Investigator {
             runner_put: LlmRole {
                 client: put_tracker.clone(),
@@ -1148,6 +1178,7 @@ fn spawn_investigation(
                 thinking_level: sim_thinking_level,
             },
             workspace_seed,
+            max_workspace_turns,
         };
 
         let outcome = investigator
