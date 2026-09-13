@@ -105,7 +105,7 @@ impl Runner {
                     messages: messages.clone(),
                     tools: tools.clone(),
                     temperature: Some(0.7),
-                    max_tokens: None,
+                    max_tokens: Some(32 * 1024),  // ~128KB of output text
                     thinking_level: self.put_thinking_level,
                 })
                 .await
