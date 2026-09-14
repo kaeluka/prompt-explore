@@ -35,7 +35,9 @@ pub async fn run() {
         client: None,
         jobs: Mutex::new(HashMap::new()),
         default_provider: "zai".into(),
-        models_client: prompt_explore::llm::GenaiClient::builder().build(),
+        models_client: prompt_explore::llm::GenaiClient::builder()
+            .build()
+            .expect("failed to initialize model-listing HTTP client"),
         models_cache: Mutex::new(None),
         api_token: None,
     });

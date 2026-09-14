@@ -168,7 +168,8 @@ impl ProviderClient {
                     })
                 },
             ))
-            .build();
+            .build()
+            .expect("failed to initialize LLM HTTP client");
         Self { client, default }
     }
 
@@ -237,7 +238,8 @@ impl ProviderClient {
         Self {
             client: Client::builder()
                 .with_service_target_resolver(resolver)
-                .build(),
+                .build()
+                .expect("failed to initialize LLM HTTP client"),
             // Only namespaced strings are meaningful here (see doc); the
             // default exists so the temperature heuristic below still has
             // an answer for a bare name.
@@ -356,35 +358,30 @@ fn genai_reasoning_effort(level: ThinkingLevel) -> genai::chat::ReasoningEffort 
 /// clear 400) instead of silently running at the provider default or
 /// failing mid-run.
 ///
-/// What's known-unsupported today: Bedrock's Converse adapter maps
-/// `reasoning_effort` only for Anthropic-publisher and
-/// Amazon(Nova)-publisher models; every other publisher (`openai.*`,
-/// `meta.*`, `mistral.*`, …) silently drops it (the upstream gap that
-/// deferred the GPT-5.6 reasoning nice-to-have on issue #3). The
-/// publisher detection below mirrors genai 0.7.0-beta.18's
-/// `BedrockPublisher::from_model_id` — including its quirk that only
-/// region-prefixed profile ids (`global.anthropic.…`, `us.amazon.…`)
-/// expose the publisher segment — so support tracks what the adapter
-/// actually does, not what the ids look like they should do.
+/// Mirrors the pinned genai Bedrock adapter's publisher detection. It maps
+/// reasoning for Anthropic, Amazon Nova, and OpenAI (flat `reasoning_effort`
+/// for GPT-OSS; nested `reasoning.effort` for newer OpenAI models).
+/// Other publishers would silently drop the setting, so reject them here.
+/// This checks serialization support, not each model's accepted effort
+/// vocabulary: unsupported keywords remain explicit provider errors.
 pub fn thinking_level_supported(model: &str) -> Result<(), String> {
-    if !model.starts_with("bedrock_sigv4::") {
+    let Some(id) = model
+        .strip_prefix("bedrock_sigv4::")
+        .or_else(|| model.strip_prefix("bedrock_api::"))
+    else {
         return Ok(());
-    }
-    let id = model.strip_prefix("bedrock_sigv4::").unwrap_or(model);
-    // Mirror of genai's BedrockPublisher::from_model_id.
-    let tail = id.split_once('.').map(|(_, rest)| rest).unwrap_or(id);
-    let publisher_segment = tail.split_once('.').map(|(p, _)| p).unwrap_or(tail);
-    let publisher = if publisher_segment.is_empty() {
-        id.split_once('.').map(|(p, _)| p).unwrap_or(id)
-    } else {
-        publisher_segment
+    };
+    let mut segments = id.split('.');
+    let publisher = match segments.next().unwrap_or_default() {
+        "us" | "eu" | "apac" | "global" | "in" => segments.next().unwrap_or_default(),
+        publisher => publisher,
     };
     match publisher {
-        "anthropic" | "amazon" => Ok(()),
+        "anthropic" | "amazon" | "openai" => Ok(()),
         other => Err(format!(
             "thinking_level is not supported for bedrock model '{id}': the Bedrock \
-             adapter maps reasoning only for anthropic-publisher and \
-             amazon-publisher models, not '{other}' (the level would be \
+             adapter maps reasoning only for anthropic-, amazon-, and \
+             openai-publisher models, not '{other}' (the level would be \
              silently ignored)"
         )),
     }
@@ -698,19 +695,29 @@ mod tests {
         ] {
             assert!(thinking_level_supported(m).is_ok(), "{m}");
         }
-        // Bedrock: only anthropic/amazon publishers (as genai's adapter
-        // detects them — region-prefixed profile ids) map the level.
-        assert!(thinking_level_supported("bedrock_sigv4::global.anthropic.claude-opus-5").is_ok());
-        assert!(thinking_level_supported("bedrock_sigv4::eu.anthropic.claude-sonnet-5").is_ok());
-        assert!(thinking_level_supported("bedrock_sigv4::us.amazon.nova-pro-v1:0").is_ok());
-        // GPT-5.6 on Bedrock: the #3 deferred gap — genai maps nothing
-        // for BedrockPublisher::Other, so we reject up front instead of
-        // silently running at the provider default.
-        let err = thinking_level_supported("bedrock_sigv4::global.openai.gpt-5.6-luna")
-            .expect_err("openai publisher on bedrock must be rejected");
-        assert!(err.contains("not supported"), "{err}");
-        assert!(err.contains("openai"), "names the publisher: {err}");
-        assert!(thinking_level_supported("bedrock_sigv4::global.meta.llama3-1-70b").is_err());
+        for adapter in ["bedrock_sigv4", "bedrock_api"] {
+            for prefix in ["", "us.", "eu.", "apac.", "global.", "in."] {
+                for model in [
+                    "anthropic.claude-sonnet-5",
+                    "amazon.nova-pro-v1:0",
+                    "openai.gpt-oss-20b-1:0",
+                    "openai.gpt-oss-120b-1:0",
+                    "openai.gpt-5.6-luna",
+                    "openai.gpt-5.6-terra",
+                    "openai.gpt-5.6-sol",
+                    "openai.gpt-6-astra",
+                ] {
+                    let model = format!("{adapter}::{prefix}{model}");
+                    assert!(thinking_level_supported(&model).is_ok(), "{model}");
+                }
+                for model in ["meta.llama3-1-70b", "custom.openai.gpt-5.6-luna"] {
+                    let model = format!("{adapter}::{prefix}{model}");
+                    let err = thinking_level_supported(&model).expect_err("unmapped publisher");
+                    assert!(err.contains("not supported"), "{err}");
+                    assert!(err.contains(&model.split_once("::").unwrap().1), "{err}");
+                }
+            }
+        }
     }
 
     #[test]

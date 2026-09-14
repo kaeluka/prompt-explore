@@ -8,15 +8,24 @@ use serde_json::Value;
 /// vocabulary is deliberately small and shared across providers:
 /// `none` explicitly requests NO reasoning, `minimal`…`max` scale
 /// effort up. Omitting the field entirely means "provider default"
-/// — which is a different thing from `none` (reasoning models come
-/// with a non-trivial default, e.g. OpenAI Responses models default
-/// to medium; `none` asks the provider to turn reasoning OFF).
+/// — which is different from `none`. Defaults vary by model and
+/// endpoint; omitting the field does not imply medium or no reasoning.
 ///
-/// Each provider maps what it supports (OpenAI-family endpoints send
-/// `reasoning_effort`, Gemini maps to `thinkingLevel`, Bedrock
-/// Anthropic models to a `thinking.budget_tokens`); combinations the
-/// provider layer cannot honor are rejected at request time with a
-/// clear error, not silently dropped.
+/// Bedrock OpenAI keywords are passed through literally, without
+/// downgrading unsupported levels. GPT-OSS uses flat `reasoning_effort`
+/// and supports low/medium/high; none/minimal/xhigh/max are rejected.
+/// GPT-5.6 Luna/Terra/Sol use nested
+/// `reasoning.effort` and support none/low/medium/high/xhigh/max.
+/// GPT-6 Astra uses the nested shape and supports low/medium/high/xhigh/max,
+/// but not none. All these Bedrock models reject minimal.
+///
+/// POST rejects models for which the adapter has no reasoning mapping
+/// (for example Bedrock Meta models). Model-specific keyword support is
+/// checked by the provider DURING execution, not prevalidated at POST.
+/// A 202 response therefore does not guarantee the level is supported:
+/// poll GET /api/investigations/{id} and inspect `result.result.failures`
+/// for provider rejections, alongside the traces. Other providers may
+/// map effort differently; do not assume that a level is portable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
@@ -29,11 +38,11 @@ pub enum ThinkingLevel {
     Low,
     Medium,
     High,
-    /// Extra-high effort; providers without a distinct tier treat
-    /// this as their highest.
+    /// Extra-high effort. Unsupported levels may be rejected by the
+    /// provider; Bedrock OpenAI does not downgrade this to high.
     Xhigh,
-    /// Maximum effort; providers without a distinct tier treat this
-    /// as their highest.
+    /// Maximum effort. Unsupported levels may be rejected by the
+    /// provider; Bedrock OpenAI does not downgrade this to high.
     Max,
 }
 
@@ -115,7 +124,10 @@ mod tests {
             ("xhigh", ThinkingLevel::Xhigh),
             ("max", ThinkingLevel::Max),
         ] {
-            assert_eq!(serde_json::to_value(level).unwrap(), serde_json::json!(word));
+            assert_eq!(
+                serde_json::to_value(level).unwrap(),
+                serde_json::json!(word)
+            );
             let back: ThinkingLevel = serde_json::from_str(&format!("\"{word}\""))
                 .unwrap_or_else(|e| panic!("{word}: {e}"));
             assert_eq!(back, level);

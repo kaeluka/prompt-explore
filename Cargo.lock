@@ -1143,17 +1143,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eventsource-stream"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74fef4569247a5f429d9156b9d0a2599914385dd189c539334c625d8099d90ab"
-dependencies = [
- "futures-core",
- "nom",
- "pin-project-lite",
-]
-
-[[package]]
 name = "fancy-regex"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1362,9 +1351,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.0-beta.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "966edccd1d3fec4d372dcd58d3feac7dd8dad0e60f4712938d7e9b1a7d6e7ef5"
+version = "0.7.0-beta.24-WIP"
+source = "git+https://github.com/kaeluka/rust-genai.git?rev=849d657347429fe04753a487422ab06ab4e098db#849d657347429fe04753a487422ab06ab4e098db"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1372,7 +1360,6 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "derive_more",
- "eventsource-stream",
  "futures",
  "macro_rules_attribute",
  "mime_guess",
@@ -2104,12 +2091,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2145,16 +2126,6 @@ dependencies = [
  "mime",
  "spin",
  "version_check",
-]
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
 ]
 
 [[package]]

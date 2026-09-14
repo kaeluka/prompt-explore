@@ -758,7 +758,9 @@ async fn main() {
         client: Some(Arc::new(client)),
         jobs: Mutex::new(HashMap::new()),
         default_provider: provider.clone(),
-        models_client: prompt_explore::llm::GenaiClient::builder().build(),
+        models_client: prompt_explore::llm::GenaiClient::builder()
+            .build()
+            .expect("failed to initialize model-listing HTTP client"),
         models_cache: Mutex::new(None),
         api_token,
     });
@@ -1044,7 +1046,7 @@ async fn index() -> impl axum::response::IntoResponse {
     security(("api_token" = [])),
     responses(
         (status = 202, description = "Investigation job created", body = JobCreated),
-        (status = 400, description = "Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"),
+        (status = 400, description = "Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.result.failures."),
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
@@ -1097,9 +1099,9 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
         (r, Workspace::empty())
     };
 
-    // Fail fast on thinking levels the provider layer cannot honor —
-    // a clear 400 at submit beats a silently-ignored level or a
-    // transport-shaped error mid-run. Bare names resolve through the
+    // Fail fast when the adapter would silently ignore a thinking level.
+    // Per-model keyword validation remains with the provider during the run.
+    // Bare names resolve through the
     // server's default provider, exactly as they will at call time.
     if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider)
         .or_else(|| conversation_controls_problem(&investigate_req.conversation_controls))
@@ -1862,7 +1864,7 @@ mod tests {
             client: None,
             jobs: Mutex::new(HashMap::new()),
             default_provider: "zai".into(),
-            models_client: prompt_explore::llm::GenaiClient::builder().build(),
+            models_client: prompt_explore::llm::GenaiClient::builder().build().unwrap(),
             models_cache: Mutex::new(None),
             api_token: None,
         })
@@ -2077,19 +2079,32 @@ mod tests {
             )
             .is_none()
         );
-        // GPT-5.6 on Bedrock: rejected for the PUT role, naming the model.
-        let err = thinking_level_problem(
-            &req(
-                "bedrock_sigv4::global.openai.gpt-5.6-luna",
-                None,
-                Some(ThinkingLevel::High),
-                None,
-            ),
-            "zai",
-        )
-        .expect("openai publisher on bedrock must be rejected");
-        assert!(err.contains("put_thinking_level"), "{err}");
-        assert!(err.contains("gpt-5.6-luna"), "{err}");
+        // Bedrock OpenAI settings are mapped independently for both roles.
+        assert!(
+            thinking_level_problem(
+                &req(
+                    "bedrock_sigv4::global.openai.gpt-6-astra",
+                    Some("bedrock_sigv4::us.openai.gpt-5.6-luna"),
+                    Some(ThinkingLevel::High),
+                    Some(ThinkingLevel::None),
+                ),
+                "zai",
+            )
+            .is_none()
+        );
+        // Keyword validation belongs to the provider, not this mapping check.
+        assert!(
+            thinking_level_problem(
+                &req(
+                    "openai.gpt-6-astra",
+                    None,
+                    Some(ThinkingLevel::Minimal),
+                    None
+                ),
+                "bedrock",
+            )
+            .is_none()
+        );
         // Sim role on a different provider is checked against ITS model:
         // PUT fine on open_router, sim rejected on bedrock meta.*.
         let err = thinking_level_problem(
@@ -2118,6 +2133,13 @@ mod tests {
             .is_none()
         );
         // A bare name qualifies through the server's default provider.
+        assert!(
+            thinking_level_problem(
+                &req("openai.gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
+                "bedrock",
+            )
+            .is_none()
+        );
         let err = thinking_level_problem(
             &req("gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
             "bedrock",
@@ -2146,7 +2168,7 @@ mod tests {
             "investigation": {"budget": {"max_steps_per_trace": 2}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
             "scenarios": [],
-            "put_model": "bedrock_sigv4::global.openai.gpt-5.6-luna",
+            "put_model": "bedrock_sigv4::global.meta.llama3-1-70b",
             "put_thinking_level": "high"
         });
         let res = app
@@ -2167,6 +2189,37 @@ mod tests {
         let err = v["error"].as_str().unwrap();
         assert!(err.contains("put_thinking_level"), "{err}");
         assert!(err.contains("not supported"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_investigation_accepts_bedrock_openai_thinking_levels() {
+        let app = build_app(test_state());
+        for model in [
+            "bedrock_sigv4::openai.gpt-oss-20b-1:0",
+            "bedrock_sigv4::us.openai.gpt-5.6-luna",
+            "bedrock_sigv4::global.openai.gpt-6-astra",
+        ] {
+            let body = serde_json::json!({
+                "investigation": {"budget": {"max_steps_per_trace": 2}},
+                "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+                "scenarios": [],
+                "put_model": model,
+                "sim_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
+                "put_thinking_level": "high",
+                "sim_thinking_level": "none"
+            });
+            let res = app
+                .clone()
+                .oneshot(
+                    HttpRequest::post("/api/investigations")
+                        .header("content-type", "application/json")
+                        .body(body.to_string())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::ACCEPTED, "{model}");
+        }
     }
 
     #[tokio::test]

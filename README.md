@@ -165,11 +165,12 @@ $ cargo build --release
 $ target/release/prompt-explore-server --version
 ```
 
-Whichever path you take, `--help` prints usage and the environment variables:
+Whichever path you take, `--help` prints usage and the environment variables
+(abridged example):
 
 ```
 $ prompt-explore-server --help
-prompt-explore-server 0.1.2
+prompt-explore-server 0.4.0
 
 Property-based testing for agent behavior. HTTP API + web UI.
 
@@ -190,7 +191,7 @@ ENVIRONMENT:
     PROMPT_EXPLORE_PROVIDER  Which provider runs the LLM calls (default: zai).
                            zai | zai_standard | openrouter | bedrock | baseten | gemini
     ZAI_API_KEY            API key for zai / zai_standard (coding-plan default).
-    OPENROUTER_API_KEY     API key for openrouter.
+    OPEN_ROUTER_API_KEY    API key for openrouter.
     bedrock uses the default AWS credential chain (aws sso login, profiles, IMDS).
     gemini uses GCP Application Default Credentials (gcloud auth application-default
                            login). Project: VERTEX_PROJECT_ID or gcloud config;
@@ -208,7 +209,7 @@ ENVIRONMENT:
     PROMPT_EXPLORE_MAX_WORKSPACE_TURNS
                            Maximum workspace tool calls the simulator may make per
                            response before being nudged to produce a final answer
-                           (default: 100). Raise if your scenarios have large
+                           (default: 250). Raise if your scenarios have large
                            workspaces that need more lookups per tool response.
     PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT
                            Maximum size (bytes) of uploaded workspace .zip files
@@ -228,3 +229,87 @@ Tell your coding agent to
 If you started the server with `PROMPT_EXPLORE_API_TOKEN` set, give the token to
 your agent too (it goes in an `Authorization: Bearer <token>` header on `/api/*`
 calls), and enter the same token in the web UI when prompted.
+
+### 3. Example: GPT-5.6 Luna on AWS Bedrock (0.4.0+)
+
+With an existing AWS SSO profile that has Bedrock model-invocation access,
+log in and start the server (replace `your-profile` with your profile name):
+
+```bash
+aws sso login --profile your-profile
+AWS_PROFILE=your-profile AWS_REGION=us-east-1 \
+  PROMPT_EXPLORE_PROVIDER=bedrock ./prompt-explore-server
+```
+
+Existing `aws login` credentials, workload roles, and other sources in the
+AWS credential chain also work; no permanent access key is needed. Catalog
+access alone does not guarantee invocation access.
+
+In another terminal, submit a small inventory scenario. Both roles explicitly
+select Luna's US inference profile: the PUT uses `high` reasoning, while the
+simulator uses `none`. Model and thinking settings are independent per role.
+Only the LLM calls reach AWS; `lookup_stock` is simulated, not a real tool.
+
+```bash
+curl --fail-with-body -sS http://127.0.0.1:8080/api/investigations \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "investigation": {
+    "reason": "Check that Luna looks up stock rather than inventing availability.",
+    "budget": {"max_steps_per_trace": 3}
+  },
+  "put": {
+    "id": "luna-stock-check",
+    "template": "You are an inventory assistant. Always look up stock before answering availability questions. Never invent stock counts.",
+    "design_goals": "Use the lookup result and report availability accurately.",
+    "tools": [{
+      "name": "lookup_stock",
+      "description": "Return the stock count for one SKU.",
+      "parameters": {
+        "type": "object",
+        "properties": {"sku": {"type": "string"}},
+        "required": ["sku"],
+        "additionalProperties": false
+      },
+      "side_effect": "read"
+    }]
+  },
+  "put_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
+  "sim_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
+  "put_thinking_level": "high",
+  "sim_thinking_level": "none",
+  "conversation_controls": {"put_max_tokens": 2048, "sim_max_tokens": 2048},
+  "scenarios": [{
+    "world": "SKU-7 is a Solar Lantern with stock 3. This is the complete inventory; no other SKUs exist and stock never changes. lookup_stock returns the requested SKU and its stock count, or an unknown-SKU error. Never invent items or contradict these facts.",
+    "input_domain": {},
+    "user_message": "Is SKU-7 in stock?"
+  }]
+}
+JSON
+```
+
+The response is `{"id":"..."}`. Poll with the returned ID until `status`
+is `done` or `failed`, or watch the run in the web UI:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/investigations/REPLACE_WITH_ID
+```
+
+Read `result.attempts[].turns[]` for the model output and tool exchanges,
+and **check `result.result.failures` even when the job is `done`**. The caller
+judges the trace; the harness does not grade whether Luna behaved correctly.
+If server authentication is enabled, add your `Authorization: Bearer ...`
+header to both requests.
+
+Luna supports `none`, `low`, `medium`, `high`, `xhigh`, and `max` on Bedrock;
+`minimal` is rejected. Omitting a thinking field keeps the provider default,
+which is not the same as `none`. For comparison, GPT-OSS supports only
+`low`/`medium`/`high`, and Astra supports `low`/`medium`/`high`/`xhigh`/`max`
+but not `none`. The harness forwards these keywords literally: unsupported
+values are not downgraded and can fail during execution after POST returns
+202. See [API.md](API.md) for the complete request and response contract.
+
+The Bedrock reasoning fix is temporarily supplied by a [revision-pinned
+genai fork](https://github.com/kaeluka/rust-genai/commit/849d657347429fe04753a487422ab06ab4e098db).
+The pin will be removed once an upstream crates.io release includes it.

@@ -67,7 +67,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Status | Response |
 |---|---|
 | `202` | Investigation job created: [`JobCreated`](#jobcreated) |
-| `400` | Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason) |
+| `400` | Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.result.failures. |
 | `401` | Missing or invalid bearer token |
 
 ### `DELETE /api/investigations/{id}`
@@ -499,7 +499,7 @@ Values: `read`, `write`
 
 ### `ThinkingLevel`
 
-Provider-neutral thinking/reasoning level for one LLM role. The vocabulary is deliberately small and shared across providers: `none` explicitly requests NO reasoning, `minimal`…`max` scale effort up. Omitting the field entirely means "provider default" — which is a different thing from `none` (reasoning models come with a non-trivial default, e.g. OpenAI Responses models default to medium; `none` asks the provider to turn reasoning OFF).  Each provider maps what it supports (OpenAI-family endpoints send `reasoning_effort`, Gemini maps to `thinkingLevel`, Bedrock Anthropic models to a `thinking.budget_tokens`); combinations the provider layer cannot honor are rejected at request time with a clear error, not silently dropped.
+Provider-neutral thinking/reasoning level for one LLM role. The vocabulary is deliberately small and shared across providers: `none` explicitly requests NO reasoning, `minimal`…`max` scale effort up. Omitting the field entirely means "provider default" — which is different from `none`. Defaults vary by model and endpoint; omitting the field does not imply medium or no reasoning.  Bedrock OpenAI keywords are passed through literally, without downgrading unsupported levels. GPT-OSS uses flat `reasoning_effort` and supports low/medium/high; none/minimal/xhigh/max are rejected. GPT-5.6 Luna/Terra/Sol use nested `reasoning.effort` and support none/low/medium/high/xhigh/max. GPT-6 Astra uses the nested shape and supports low/medium/high/xhigh/max, but not none. All these Bedrock models reject minimal.  POST rejects models for which the adapter has no reasoning mapping (for example Bedrock Meta models). Model-specific keyword support is checked by the provider DURING execution, not prevalidated at POST. A 202 response therefore does not guarantee the level is supported: poll GET /api/investigations/{id} and inspect `result.result.failures` for provider rejections, alongside the traces. Other providers may map effort differently; do not assume that a level is portable.
 
 Values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`
 
