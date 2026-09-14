@@ -38,8 +38,8 @@ pub enum RunPhase {
 
 /// Live progress of a run, exposed while it's in flight: one entry per
 /// scenario (positional — index = position in the submitted list), with
-/// its steps accumulated as they are simulated. The runner pushes; the
-/// server/UI poll and render.
+/// its PUT model turns accumulated as they are simulated. The runner pushes;
+/// the server/UI poll and render.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunProgress {
     /// Which LLM phase the investigation is currently in.
@@ -52,8 +52,10 @@ pub struct RunProgress {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ScenarioProgress {
     pub state: ScenarioState,
-    /// Steps simulated so far (tool calls + responses + model output).
-    pub steps: Vec<TraceStep>,
+    /// PUT model turns simulated so far. Each turn is one model completion;
+    /// all tool calls requested by that completion are nested together in
+    /// `tool_exchanges` rather than flattened into misleading sequential turns.
+    pub turns: Vec<TraceTurn>,
     /// The opening user message (the protagonist's first turn). Lets a
     /// chat view render the whole conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,10 +96,10 @@ impl RunProgress {
         }
     }
 
-    /// Append a simulated step to a scenario by position.
-    pub fn push_step(&mut self, index: usize, step: TraceStep) {
+    /// Append one completed PUT model turn to a scenario by position.
+    pub fn push_turn(&mut self, index: usize, turn: TraceTurn) {
         if let Some(s) = self.scenarios.get_mut(index) {
-            s.steps.push(step);
+            s.turns.push(turn);
         }
     }
 
@@ -217,36 +219,43 @@ pub struct Scenario {
     pub simulator_notes: String,
 }
 
+/// One PUT model completion. Text, thinking, and every tool request emitted
+/// by that completion stay together, preserving the model's actual turn
+/// boundary. An empty `tool_exchanges` list is a text-only/final completion.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct TraceStep {
-    /// The model's text output for this turn (empty on non-first tool
-    /// calls within one completion).
+pub struct TraceTurn {
+    /// The model's text output for this completion, or empty when it emitted
+    /// only tool calls.
     pub model_output: String,
-    /// The PUT model's visible reasoning ("thinking") for this
-    /// completion, when the provider reports it. Transparency only —
-    /// it is never fed back into the conversation. Present on the
-    /// first step produced by a completion (same rule as
-    /// `model_output`).
+    /// The PUT model's visible reasoning ("thinking") for this completion,
+    /// when the provider reports it. Transparency only — it is never fed back
+    /// into the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
-    /// The tool the model asked to call, if any. A completion that
-    /// requests N tool calls becomes N steps.
-    pub tool_call: Option<ToolCall>,
-    /// The simulated tool response.
-    pub tool_response: Option<Value>,
-    /// The SIMULATOR model's visible reasoning while rendering this
-    /// step's tool response (its whole inner drive: lookups and final
-    /// answer). Transparency only; `None` when the simulator model
-    /// reports no reasoning.
+    /// All tool calls requested together by this single model completion,
+    /// paired with their simulated responses. Exchanges retain provider order
+    /// and are simulated in that order; they are one batch, not separate PUT
+    /// turns.
+    pub tool_exchanges: Vec<ToolExchange>,
+}
+
+/// One tool request and its simulated result within a PUT model turn.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ToolExchange {
+    /// The tool request emitted by the PUT.
+    pub call: ToolCall,
+    /// The response rendered by the simulator and returned to the PUT.
+    pub response: Value,
+    /// The SIMULATOR model's visible reasoning while rendering this response
+    /// (its whole inner drive: lookups and final answer). Transparency only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_thinking: Option<String>,
-    /// Present on write-tool steps: world state after the patch applied.
+    /// Present for write tools: world state after this exchange's patch was
+    /// applied. Sibling exchanges are simulated in list order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world_state_after: Option<HashMap<String, Value>>,
     /// Workspace operations the SIMULATOR performed while rendering this
-    /// step's tool response — e.g. it read or grepped the simulation
-    /// workspace before answering. Lets the caller see whether the
-    /// response was grounded in the uploaded files or invented. Empty
-    /// when the simulator answered without consulting the workspace.
+    /// response. Empty when it answered without consulting the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_ops: Vec<WorkspaceOp>,
 }
@@ -259,7 +268,9 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Trace {
-    pub steps: Vec<TraceStep>,
+    /// The trace grouped by actual PUT model completion. Multi-tool calls are
+    /// nested in one turn instead of appearing as several sequential turns.
+    pub turns: Vec<TraceTurn>,
     /// The world state at the end of the run (after all applied patches).
     /// Empty if no write tool ever ran.
     #[serde(default)]
@@ -271,3 +282,21 @@ pub struct Trace {
     pub resolved_inputs: HashMap<String, Value>,
 }
 
+impl Trace {
+    /// Budget units consumed under `Budget::max_steps_per_trace`: every tool
+    /// exchange is one step; a turn without tool calls is one final-completion
+    /// step. A multi-tool turn remains atomic and can therefore cross the cap.
+    pub fn step_count(&self) -> usize {
+        self.turns
+            .iter()
+            .map(|turn| turn.tool_exchanges.len().max(1))
+            .sum()
+    }
+
+    pub fn tool_call_count(&self) -> usize {
+        self.turns
+            .iter()
+            .map(|turn| turn.tool_exchanges.len())
+            .sum()
+    }
+}

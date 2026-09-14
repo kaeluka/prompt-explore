@@ -1,6 +1,6 @@
 //! Run output: status, attempts, and failures. The harness runs
 //! scenarios and surfaces complete evidence (world, input domain,
-//! resolved inputs, full steps); the CALLER is the judge — there is
+//! resolved inputs, full model turns); the CALLER is the judge — there is
 //! no in-harness verdict, witness, or attribution.
 
 use serde::{Deserialize, Serialize};

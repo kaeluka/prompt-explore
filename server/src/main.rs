@@ -31,13 +31,16 @@ use prompt_explore::frontier::{
 };
 use prompt_explore::generate::{Investigator, LlmRole};
 use prompt_explore::llm::{
-    ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTracker,
-    catalog_pricing_map, cost_usd, list_all_map,
+    ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTracker, catalog_pricing_map,
+    cost_usd, list_all_map,
 };
-use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
+use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
-use prompt_explore::model::simulation::{RunProgress, Scenario, TraceStep};
-use prompt_explore::simulate::{Workspace, unpack_zip_with_limits};
+use prompt_explore::model::simulation::{RunProgress, Scenario, TraceTurn};
+use prompt_explore::simulate::{
+    DEFAULT_MAX_WORKSPACE_TURNS, RunnerOptions, Workspace, WorkspaceToolLimits,
+    unpack_zip_with_limits,
+};
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 use utoipa::Modify;
@@ -66,7 +69,7 @@ struct Job {
     status: JobStatus,
     result: Option<InvestigateResponse>,
     error: Option<String>,
-    /// Live progress: populated as steps are simulated.
+    /// Live progress: populated as PUT model turns are simulated.
     progress: Arc<std::sync::Mutex<RunProgress>>,
     /// Wall-clock start, epoch millis.
     started_at: u64,
@@ -81,14 +84,14 @@ struct Job {
     /// The full input scenarios (narrative, world_state, simulator_notes),
     /// so the ground truth is visible while the run unfolds.
     scenarios: Vec<Scenario>,
-    /// The resolved model name running the prompt under test (the `model`
+    /// The resolved model name running the prompt under test (the `put_model`
     /// from the request, or the server default). Stored so the dashboard
     /// can show which model produced the traces — set at job creation,
     /// visible while running.
-    model: String,
+    put_model: String,
     /// The resolved model name running the tool simulator (the `sim_model`
-    /// from the request, defaulting to the PUT model, then the server
-    /// default). The simulator is the test environment; surfacing it lets
+    /// from the request, or the server default). It resolves independently
+    /// of `put_model`. The simulator is the test environment; surfacing it lets
     /// a reader judge whether it was powerful enough to render believably.
     sim_model: String,
     /// The resolved thinking level the PUT ran at (the request's
@@ -101,6 +104,10 @@ struct Job {
     /// INDEPENDENTLY of `put_thinking_level` — omitting it never
     /// inherits the PUT's level.
     sim_thinking_level: Option<ThinkingLevel>,
+    /// Resolved controls that governed the PUT and simulator conversations.
+    /// Recorded with the job so its traces can be reproduced even when server
+    /// environment defaults later change.
+    conversation_controls: ResolvedConversationControls,
     /// How many files seeded the simulation workspace (0 if no zip was
     /// uploaded). Surfaced so a reader knows whether the simulator had a
     /// materialized world to consult, or answered purely from narrative.
@@ -124,8 +131,8 @@ enum JobStatus {
 struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
-    /// Model for every LLM role (the PUT runner and the tool
-    /// simulator). Omit to use the server default (`glm-5.2`). Provider
+    /// Model for the prompt under test. Omit to use the server default
+    /// (`glm-5.2`). Provider
     /// is selected by namespace prefix, e.g. `zai_coding::glm-5.2`,
     /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,
     /// `vertex::gemini-2.5-pro`; a bare
@@ -137,14 +144,15 @@ struct InvestigateRequest {
     /// across runs. Keep `sim_model` fixed while you do (see below), so
     /// each candidate PUT runs in the same simulated environment.
     #[serde(default)]
-    model: Option<String>,
+    put_model: Option<String>,
     /// Model for the tool SIMULATOR only (the LLM that roleplays the
-    /// environment). Defaults to `model`.
+    /// environment). Omit to use the server default independently of
+    /// `put_model`; setting `put_model` never changes the simulator.
     ///
     /// The simulator is the test ENVIRONMENT, not the thing under test.
     /// Two consequences:
     /// 1. When tuning which model works well for your prompt, keep
-    ///    `sim_model` STABLE across runs (vary `model`, not this). You
+    ///    `sim_model` STABLE across runs (vary `put_model`, not this). You
     ///    are comparing candidate PUTs; the environment must stay fixed
     ///    so differences in the traces come from the PUT, not from a
     ///    shifting simulation.
@@ -180,11 +188,91 @@ struct InvestigateRequest {
     /// level.
     #[serde(default)]
     sim_thinking_level: Option<ThinkingLevel>,
+    /// Per-investigation overrides for LLM conversation controls. Omit a
+    /// field to use its documented server default. These controls are recorded
+    /// resolved on the job view so traces remain reproducible.
+    #[serde(default)]
+    conversation_controls: ConversationControls,
     /// The test cases to run. Required; ALL of them are run (an explicit
     /// list is a contract — the step/token budget applies per trace, not
     /// to the count). Scenarios are authored outside this API and are
     /// editable before running: reviewing them is the intended workflow.
     scenarios: Vec<Scenario>,
+}
+
+/// Caller-selected limits and sampling controls for an investigation's LLM
+/// conversations. Defaults: temperature 0.7; PUT/simulator output limits
+/// 32768 tokens each; five JSON-repair attempts; 250 workspace turns;
+/// 5000 read lines, 1000 grep matches, and 2000 characters per grep line.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
+struct ConversationControls {
+    /// PUT sampling temperature; omit for the documented default.
+    #[serde(default)]
+    #[schema(minimum = 0)]
+    put_temperature: Option<f32>,
+    /// Maximum output tokens per PUT completion; omit for the documented default.
+    #[serde(default)]
+    #[schema(minimum = 1)]
+    put_max_tokens: Option<u32>,
+    /// Simulator sampling temperature; omit for the documented default.
+    #[serde(default)]
+    #[schema(minimum = 0)]
+    sim_temperature: Option<f32>,
+    /// Maximum output tokens per simulator completion; omit for the documented default.
+    #[serde(default)]
+    #[schema(minimum = 1)]
+    sim_max_tokens: Option<u32>,
+    /// Total attempts for malformed simulator JSON, including the initial reply.
+    #[serde(default)]
+    #[schema(minimum = 1)]
+    sim_max_repair_attempts: Option<usize>,
+    /// Workspace tool calls per simulator response before a final-answer nudge.
+    #[serde(default)]
+    max_workspace_turns: Option<usize>,
+    /// Lines one simulator workspace `read` may return.
+    #[serde(default)]
+    #[schema(minimum = 1)]
+    workspace_max_read_lines: Option<usize>,
+    /// Matches one simulator workspace `grep` may return.
+    #[serde(default)]
+    #[schema(minimum = 1)]
+    workspace_max_grep_matches: Option<usize>,
+    /// Characters retained from each simulator workspace grep-result line.
+    #[serde(default)]
+    #[schema(minimum = 1)]
+    workspace_max_line_len: Option<usize>,
+}
+
+/// Actual controls after request and server defaults have been resolved.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+struct ResolvedConversationControls {
+    put_temperature: Option<f32>,
+    put_max_tokens: Option<u32>,
+    sim_temperature: Option<f32>,
+    sim_max_tokens: Option<u32>,
+    sim_max_repair_attempts: usize,
+    max_workspace_turns: usize,
+    workspace_max_read_lines: usize,
+    workspace_max_grep_matches: usize,
+    workspace_max_line_len: usize,
+}
+
+impl Default for ResolvedConversationControls {
+    fn default() -> Self {
+        let runner = RunnerOptions::default();
+        let workspace = WorkspaceToolLimits::default();
+        Self {
+            put_temperature: runner.put_temperature,
+            put_max_tokens: runner.put_max_tokens,
+            sim_temperature: runner.simulator.temperature,
+            sim_max_tokens: runner.simulator.max_tokens,
+            sim_max_repair_attempts: runner.simulator.max_repair_attempts,
+            max_workspace_turns: runner.simulator.max_workspace_turns,
+            workspace_max_read_lines: workspace.max_read_lines,
+            workspace_max_grep_matches: workspace.max_grep_matches,
+            workspace_max_line_len: workspace.max_line_len,
+        }
+    }
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
@@ -210,8 +298,9 @@ struct AttemptView {
     /// self-describing: here is the world, the input domain, the opening
     /// turn, and the trace they produced.
     scenario: Scenario,
-    /// Structured steps, rendered as HTML by the UI.
-    steps: Vec<TraceStep>,
+    /// Structured PUT model turns, rendered as whole turn objects by the UI.
+    /// Tool calls requested by one completion are nested together.
+    turns: Vec<TraceTurn>,
     /// World state at the end of the trace (after all applied patches).
     final_world_state: HashMap<String, Value>,
     /// Number of tool calls the simulated PUT made in this trace.
@@ -249,14 +338,14 @@ struct JobView {
     /// reader should know — no strict standard). Optional; surfaced to
     /// guide reading the traces. Nothing is judged against it.
     reason: Option<String>,
-    /// The resolved model name that ran the prompt under test (the `model`
+    /// The resolved model name that ran the prompt under test (the `put_model`
     /// from the request, or the server default). Echoed RESOLVED so a
     /// reader knows exactly what produced the traces — including the
     /// default, which the request leaves implicit.
-    model: String,
+    put_model: String,
     /// The resolved model name that ran the tool simulator (the `sim_model`
-    /// from the request, defaulting to the PUT model, then the server
-    /// default). The simulator is the test ENVIRONMENT; a reader needs to
+    /// from the request, or the server default), resolved independently of
+    /// `put_model`. The simulator is the test ENVIRONMENT; a reader needs to
     /// see it to judge whether it was powerful enough to render the
     /// world believably.
     sim_model: String,
@@ -271,6 +360,8 @@ struct JobView {
     /// independently of the PUT's — it never inherits it.
     #[serde(skip_serializing_if = "Option::is_none")]
     sim_thinking_level: Option<ThinkingLevel>,
+    /// Resolved controls for the PUT and simulator conversations.
+    conversation_controls: ResolvedConversationControls,
     /// How many files seeded the simulation workspace (0 = no zip upload;
     /// the simulator answered from narrative alone). The workspace is an
     /// in-memory filesystem the SIMULATOR consults via read/write/list_dir/
@@ -286,7 +377,7 @@ struct JobView {
     put: PromptUnderTest,
     /// The full input scenarios (narrative = ground truth, etc.).
     scenarios: Vec<Scenario>,
-    /// Live progress — per-scenario state + steps simulated so far.
+    /// Live progress — per-scenario state + PUT model turns simulated so far.
     /// Populated while running; frozen (all scenarios done/failed) when
     /// the job finishes. Lets a dashboard show a tool-call log as it
     /// happens.
@@ -318,7 +409,7 @@ struct JobSummary {
                        concrete inputs from the input domain, renders the world's tools, and the \
                        PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every \
                        scenario — the world, the input domain, the resolved inputs, and the full \
-                       trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
+                       trace of model turns. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
                        The `reason` justifies the run — what it aims to accomplish, what \
                        changed compared to previous runs, what a reader should know (there \
                        is no strict standard) — and is surfaced with the result to guide \
@@ -382,7 +473,7 @@ struct JobSummary {
                        state what the zip contains, where things live, and its completeness \
                        stance (closed: \"these are ALL the files; anything else is not \
                        found\"; partial: \"these are SOME files; simulate the rest\"). Each \
-                       trace step records the simulator's workspace operations \
+                       tool exchange records the simulator's workspace operations \
                        (`workspace_ops`) so you can judge whether an answer was grounded in \
                        the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB \
                        decompressed (overridable via
@@ -472,10 +563,14 @@ fn print_help() {
     println!("                           Set to 1 to allow a non-loopback bind over plain HTTP");
     println!("                           (the bearer token and all traces travel in cleartext).");
     println!("    PROMPT_EXPLORE_MAX_WORKSPACE_TURNS");
-    println!("                           Maximum workspace tool calls the simulator may make per");
-    println!("                           response before being nudged to produce a final answer");
-    println!("                           (default: 100). Raise if your scenarios have large");
-    println!("                           workspaces that need more lookups per tool response.");
+    println!("                           Default maximum workspace tool calls per simulator");
+    println!("                           response (default: 250; request override available).");
+    println!("    PROMPT_EXPLORE_MAX_RETRIES");
+    println!("                           Transient provider retries (default: 20; 0 disables).");
+    println!("    PROMPT_EXPLORE_RETRY_BASE_DELAY_MS");
+    println!("                           Linear retry backoff step in ms (default: 5000).");
+    println!("    PROMPT_EXPLORE_RETRY_JITTER_PERCENT");
+    println!("                           Maximum positive retry jitter (default: 10 percent).");
     println!("    PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT");
     println!("                           Maximum size (bytes) of uploaded workspace .zip files");
     println!("                           (default: 52428800 = 50 MB).");
@@ -540,15 +635,11 @@ fn fabricate_done_job(
                 user_message: Some("yes".into()),
                 simulator_notes: String::new(),
             },
-            steps: vec![
-                TraceStep {
+            turns: vec![
+                TraceTurn {
                     model_output: "Order O-1 is confirmed cancelled.".into(),
                     thinking: None,
-                    tool_call: None,
-                    tool_response: None,
-                    sim_thinking: None,
-                    world_state_after: None,
-                    workspace_ops: vec![],
+                    tool_exchanges: vec![],
                 };
                 *n
             ],
@@ -588,7 +679,10 @@ fn fabricate_done_job(
             error: None,
             progress: Arc::new(Mutex::new(RunProgress::default())),
             started_at: 0,
-            reason: Some("Tone-instruction sweep: comparing politeness vs. cost on the same scenarios.".into()),
+            reason: Some(
+                "Tone-instruction sweep: comparing politeness vs. cost on the same scenarios."
+                    .into(),
+            ),
             put: PromptUnderTest {
                 id: put_id.into(),
                 template: template.into(),
@@ -597,10 +691,11 @@ fn fabricate_done_job(
             },
             grades: BTreeMap::new(),
             scenarios: vec![],
-            model: "zai_coding::glm-5.2".into(),
+            put_model: "zai_coding::glm-5.2".into(),
             sim_model: "zai_coding::glm-5.2".into(),
             put_thinking_level: None,
             sim_thinking_level: None,
+            conversation_controls: ResolvedConversationControls::default(),
             workspace_files: 0,
         },
     )
@@ -705,7 +800,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-/// Models available to put in a request's `model` field, by provider.
+/// Models available to put in a request's `put_model` or `sim_model` field, by provider.
 ///
 /// Returns the server defaults plus a map keyed by provider namespace
 /// (`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each
@@ -719,7 +814,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 /// others. Cached for a short time so repeated listing is cheap.
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct ModelsResponse {
-    /// Model used when a request omits `model` (a bare name; the server
+    /// Model used when a request omits `put_model` (a bare name; the server
     /// resolves it via `server_default_provider`).
     server_default_model: String,
     /// Provider applied to bare model names when no namespace is given
@@ -905,7 +1000,7 @@ async fn index() -> impl axum::response::IntoResponse {
 /// `world` what the zip contains, where things live, and its completeness
 /// stance ("these are ALL the files; anything else is not found" vs "these
 /// are SOME files; simulate the rest"). The harness enforces none of that;
-/// the simulator's workspace operations appear in each trace step
+/// the simulator's workspace operations appear in each trace tool exchange
 /// (`workspace_ops`) so you can judge whether an answer was grounded in the
 /// uploaded files or invented.
 #[utoipa::path(
@@ -949,7 +1044,7 @@ async fn index() -> impl axum::response::IntoResponse {
     security(("api_token" = [])),
     responses(
         (status = 202, description = "Investigation job created", body = JobCreated),
-        (status = 400, description = "Malformed request body, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"),
+        (status = 400, description = "Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"),
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
@@ -1006,8 +1101,13 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
     // a clear 400 at submit beats a silently-ignored level or a
     // transport-shaped error mid-run. Bare names resolve through the
     // server's default provider, exactly as they will at call time.
-    if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": err })))
+    if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider)
+        .or_else(|| conversation_controls_problem(&investigate_req.conversation_controls))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": err })),
+        )
             .into_response();
     }
 
@@ -1020,23 +1120,71 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
 /// string. Independent per role — the PUT's model is checked for
 /// `put_thinking_level`, the simulator's (which may be a different
 /// provider) for `sim_thinking_level`.
-fn thinking_level_problem(
-    req: &InvestigateRequest,
-    default_provider: &str,
-) -> Option<String> {
-    let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
-    let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
+fn resolved_models(req: &InvestigateRequest) -> (String, String) {
+    (
+        req.put_model.clone().unwrap_or_else(|| MODEL.into()),
+        req.sim_model.clone().unwrap_or_else(|| MODEL.into()),
+    )
+}
+
+fn thinking_level_problem(req: &InvestigateRequest, default_provider: &str) -> Option<String> {
+    let (put_model, sim_model) = resolved_models(req);
     let mut problems = Vec::new();
     if let Some(level) = req.put_thinking_level {
         let qualified = prompt_explore::llm::qualify_model(&put_model, default_provider);
         if let Err(e) = prompt_explore::llm::thinking_level_supported(&qualified) {
-            problems.push(format!("put_thinking_level {level:?} on '{put_model}': {e}"));
+            problems.push(format!(
+                "put_thinking_level {level:?} on '{put_model}': {e}"
+            ));
         }
     }
     if let Some(level) = req.sim_thinking_level {
         let qualified = prompt_explore::llm::qualify_model(&sim_model, default_provider);
         if let Err(e) = prompt_explore::llm::thinking_level_supported(&qualified) {
-            problems.push(format!("sim_thinking_level {level:?} on '{sim_model}': {e}"));
+            problems.push(format!(
+                "sim_thinking_level {level:?} on '{sim_model}': {e}"
+            ));
+        }
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+fn conversation_controls_problem(controls: &ConversationControls) -> Option<String> {
+    let mut problems = Vec::new();
+    for (name, value) in [
+        ("put_temperature", controls.put_temperature),
+        ("sim_temperature", controls.sim_temperature),
+    ] {
+        if value.is_some_and(|v| !v.is_finite() || v < 0.0) {
+            problems.push(format!(
+                "conversation_controls.{name} must be finite and non-negative"
+            ));
+        }
+    }
+    for (name, value) in [
+        ("put_max_tokens", controls.put_max_tokens.map(u64::from)),
+        ("sim_max_tokens", controls.sim_max_tokens.map(u64::from)),
+        (
+            "sim_max_repair_attempts",
+            controls.sim_max_repair_attempts.map(|v| v as u64),
+        ),
+        (
+            "workspace_max_read_lines",
+            controls.workspace_max_read_lines.map(|v| v as u64),
+        ),
+        (
+            "workspace_max_grep_matches",
+            controls.workspace_max_grep_matches.map(|v| v as u64),
+        ),
+        (
+            "workspace_max_line_len",
+            controls.workspace_max_line_len.map(|v| v as u64),
+        ),
+    ] {
+        if value == Some(0) {
+            problems.push(format!(
+                "conversation_controls.{name} must be greater than zero"
+            ));
         }
     }
     (!problems.is_empty()).then(|| problems.join("; "))
@@ -1081,12 +1229,11 @@ async fn parse_multipart_request(
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_COMPRESSED_LIMIT);
-                let decompressed_limit = std::env::var(
-                    "PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT",
-                )
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_DECOMPRESSED_LIMIT);
+                let decompressed_limit =
+                    std::env::var("PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_DECOMPRESSED_LIMIT);
                 // unpack_zip_with_limits enforces the compressed/decompressed
                 // caps and zip-slip rejection; nothing is written to disk.
                 workspace = unpack_zip_with_limits(&bytes, compressed_limit, decompressed_limit)
@@ -1108,6 +1255,51 @@ async fn parse_multipart_request(
 /// Create a job for `req`, spawn its run, and return the job id.
 /// `workspace_seed` seeds the simulator's in-memory workspace for every
 /// trace (cloned per trace; the seed is shared by Arc).
+fn resolved_conversation_controls(
+    controls: &ConversationControls,
+) -> (
+    RunnerOptions,
+    WorkspaceToolLimits,
+    ResolvedConversationControls,
+) {
+    let mut runner = RunnerOptions::default();
+    let mut workspace = WorkspaceToolLimits::default();
+    runner.put_temperature = controls.put_temperature.or(runner.put_temperature);
+    runner.put_max_tokens = controls.put_max_tokens.or(runner.put_max_tokens);
+    runner.simulator.temperature = controls.sim_temperature.or(runner.simulator.temperature);
+    runner.simulator.max_tokens = controls.sim_max_tokens.or(runner.simulator.max_tokens);
+    runner.simulator.max_repair_attempts = controls
+        .sim_max_repair_attempts
+        .unwrap_or(runner.simulator.max_repair_attempts);
+    runner.simulator.max_workspace_turns = controls.max_workspace_turns.unwrap_or_else(|| {
+        std::env::var("PROMPT_EXPLORE_MAX_WORKSPACE_TURNS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MAX_WORKSPACE_TURNS)
+    });
+    workspace.max_read_lines = controls
+        .workspace_max_read_lines
+        .unwrap_or(workspace.max_read_lines);
+    workspace.max_grep_matches = controls
+        .workspace_max_grep_matches
+        .unwrap_or(workspace.max_grep_matches);
+    workspace.max_line_len = controls
+        .workspace_max_line_len
+        .unwrap_or(workspace.max_line_len);
+    let resolved = ResolvedConversationControls {
+        put_temperature: runner.put_temperature,
+        put_max_tokens: runner.put_max_tokens,
+        sim_temperature: runner.simulator.temperature,
+        sim_max_tokens: runner.simulator.max_tokens,
+        sim_max_repair_attempts: runner.simulator.max_repair_attempts,
+        max_workspace_turns: runner.simulator.max_workspace_turns,
+        workspace_max_read_lines: workspace.max_read_lines,
+        workspace_max_grep_matches: workspace.max_grep_matches,
+        workspace_max_line_len: workspace.max_line_len,
+    };
+    (runner, workspace, resolved)
+}
+
 fn spawn_investigation(
     state: Arc<AppState>,
     req: InvestigateRequest,
@@ -1122,13 +1314,15 @@ fn spawn_investigation(
     // Resolve the model names now (defaults applied) so they can be
     // surfaced on the job immediately — visible while the run is still
     // in flight, not only after it finishes.
-    let put_model = req.model.clone().unwrap_or_else(|| MODEL.into());
-    let sim_model = req.sim_model.clone().unwrap_or_else(|| put_model.clone());
-    // Thinking levels resolve INDEPENDENTLY per role (issue #4): the
+    let (put_model, sim_model) = resolved_models(&req);
+    // Model names and thinking levels resolve INDEPENDENTLY per role (issue #4): the
     // simulator's NEVER inherits the PUT's — omitted means provider
     // default, which is exactly the pre-option behavior.
     let put_thinking_level = req.put_thinking_level;
     let sim_thinking_level = req.sim_thinking_level;
+    let (runner_options, workspace_limits, conversation_controls) =
+        resolved_conversation_controls(&req.conversation_controls);
+    let workspace_seed = workspace_seed.with_tool_limits(workspace_limits);
     let workspace_files = workspace_seed.file_count();
     state.jobs.lock().unwrap().insert(
         id.clone(),
@@ -1141,10 +1335,11 @@ fn spawn_investigation(
             reason: req.investigation.reason.clone(),
             put: req.put.clone(),
             scenarios: req.scenarios.clone(),
-            model: put_model.clone(),
+            put_model: put_model.clone(),
             sim_model: sim_model.clone(),
             put_thinking_level,
             sim_thinking_level,
+            conversation_controls,
             workspace_files,
             grades: BTreeMap::new(),
         },
@@ -1162,10 +1357,6 @@ fn spawn_investigation(
         // is moved into the runner role.
         let put_model_cost = put_model.clone();
         let sim_model_cost = sim_model.clone();
-        let max_workspace_turns: usize = std::env::var("PROMPT_EXPLORE_MAX_WORKSPACE_TURNS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(prompt_explore::simulate::DEFAULT_MAX_WORKSPACE_TURNS);
         let investigator = Investigator {
             runner_put: LlmRole {
                 client: put_tracker.clone(),
@@ -1178,7 +1369,7 @@ fn spawn_investigation(
                 thinking_level: sim_thinking_level,
             },
             workspace_seed,
-            max_workspace_turns,
+            runner_options,
         };
 
         let outcome = investigator
@@ -1195,14 +1386,9 @@ fn spawn_investigation(
             .iter()
             .map(|a| AttemptView {
                 scenario: a.scenario.clone(),
-                steps: a.trace.steps.clone(),
+                turns: a.trace.turns.clone(),
                 final_world_state: a.trace.final_world_state.clone(),
-                tool_calls: a
-                    .trace
-                    .steps
-                    .iter()
-                    .filter(|s| s.tool_call.is_some())
-                    .count(),
+                tool_calls: a.trace.tool_call_count(),
                 resolved_inputs: a.trace.resolved_inputs.clone(),
             })
             .collect();
@@ -1281,7 +1467,7 @@ async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<Job
     Json(rows)
 }
 
-/// Poll an investigation job. `progress` is always present (live steps
+/// Poll an investigation job. `progress` is always present (live model turns
 /// while running, frozen when done); `result` is present once done.
 #[utoipa::path(
     get,
@@ -1312,10 +1498,11 @@ async fn get_investigation(
         phase,
         started_at: job.started_at,
         reason: job.reason.clone(),
-        model: job.model.clone(),
+        put_model: job.put_model.clone(),
         sim_model: job.sim_model.clone(),
         put_thinking_level: job.put_thinking_level,
         sim_thinking_level: job.sim_thinking_level,
+        conversation_controls: job.conversation_controls.clone(),
         workspace_files: job.workspace_files,
         grades: job.grades.clone(),
         put: job.put.clone(),
@@ -1490,12 +1677,23 @@ fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
         put_id: Some(job.put.id.clone()).filter(|p| !p.is_empty()),
         grades: job.grades.clone(),
         usage: result.map(|r| r.usage),
-        put_model: Some(job.model.clone()),
+        put_model: Some(job.put_model.clone()),
         sim_model: Some(job.sim_model.clone()),
-        // A "step" is one tool call OR the final completion — the same
-        // unit max_steps_per_trace budgets. Completed attempts only.
+        // Budget-step count remains one per tool call or one per final
+        // completion. Multi-tool turns are atomic but still consume one unit
+        // per nested exchange. Completed attempts only.
         steps_per_trace: result
-            .map(|r| r.attempts.iter().map(|a| a.steps.len() as u64).collect())
+            .map(|r| {
+                r.attempts
+                    .iter()
+                    .map(|a| {
+                        a.turns
+                            .iter()
+                            .map(|turn| turn.tool_exchanges.len().max(1) as u64)
+                            .sum()
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
     }
 }
@@ -1654,6 +1852,7 @@ mod tests {
     use super::*;
     use crate::INDEX_HTML;
     use axum::http::Request as HttpRequest;
+    use prompt_explore::model::Budget;
     use tower::ServiceExt; // oneshot against the REAL router
 
     /// A state with no LLM client: enough for the grading/frontier
@@ -1789,34 +1988,104 @@ mod tests {
     }
 
     #[test]
+    fn conversation_controls_override_runner_and_workspace_defaults() {
+        let controls = ConversationControls {
+            put_temperature: Some(0.2),
+            put_max_tokens: Some(111),
+            sim_temperature: Some(0.3),
+            sim_max_tokens: Some(222),
+            sim_max_repair_attempts: Some(4),
+            max_workspace_turns: Some(5),
+            workspace_max_read_lines: Some(6),
+            workspace_max_grep_matches: Some(7),
+            workspace_max_line_len: Some(8),
+        };
+        let (runner, workspace, resolved) = resolved_conversation_controls(&controls);
+        assert_eq!(runner.put_temperature, Some(0.2));
+        assert_eq!(runner.put_max_tokens, Some(111));
+        assert_eq!(runner.simulator.temperature, Some(0.3));
+        assert_eq!(runner.simulator.max_tokens, Some(222));
+        assert_eq!(runner.simulator.max_repair_attempts, 4);
+        assert_eq!(runner.simulator.max_workspace_turns, 5);
+        assert_eq!(workspace.max_read_lines, 6);
+        assert_eq!(workspace.max_grep_matches, 7);
+        assert_eq!(workspace.max_line_len, 8);
+        assert_eq!(resolved.workspace_max_line_len, 8);
+        assert!(conversation_controls_problem(&controls).is_none());
+
+        let invalid = ConversationControls {
+            put_max_tokens: Some(0),
+            sim_max_repair_attempts: Some(0),
+            ..ConversationControls::default()
+        };
+        let problem = conversation_controls_problem(&invalid).unwrap();
+        assert!(problem.contains("put_max_tokens"));
+        assert!(problem.contains("sim_max_repair_attempts"));
+    }
+
+    #[test]
     fn thinking_level_problem_checks_each_role_independently() {
-        let req = |model: &str, sim_model: Option<&str>, put_level: Option<ThinkingLevel>,
+        let req = |model: &str,
+                   sim_model: Option<&str>,
+                   put_level: Option<ThinkingLevel>,
                    sim_level: Option<ThinkingLevel>| {
             InvestigateRequest {
                 investigation: Investigation {
                     reason: None,
-                    budget: Budget { max_steps_per_trace: 2, max_tokens: None },
+                    budget: Budget {
+                        max_steps_per_trace: 2,
+                        max_tokens: None,
+                    },
                 },
                 put: put("x"),
-                model: Some(model.into()),
+                put_model: Some(model.into()),
                 sim_model: sim_model.map(Into::into),
                 put_thinking_level: put_level,
                 sim_thinking_level: sim_level,
+                conversation_controls: ConversationControls::default(),
                 scenarios: vec![],
             }
         };
+        let (put_model, sim_model) =
+            resolved_models(&req("open_router::custom-put", None, None, None));
+        assert_eq!(put_model, "open_router::custom-put");
+        assert_eq!(sim_model, MODEL, "put_model must not select the simulator");
+
         // No levels set: never a problem, whatever the models.
-        assert!(thinking_level_problem(&req("bedrock_sigv4::global.openai.gpt-5.6-luna", None, None, None), "zai").is_none());
+        assert!(
+            thinking_level_problem(
+                &req(
+                    "bedrock_sigv4::global.openai.gpt-5.6-luna",
+                    None,
+                    None,
+                    None
+                ),
+                "zai"
+            )
+            .is_none()
+        );
         // OpenRouter PUT + zai sim: both mappable.
-        assert!(thinking_level_problem(
-            &req("open_router::openai/gpt-5.6-luna", Some("zai_coding::glm-5.3"), Some(ThinkingLevel::High), Some(ThinkingLevel::None)),
-            "zai"
-        )
-        .is_none());
+        assert!(
+            thinking_level_problem(
+                &req(
+                    "open_router::openai/gpt-5.6-luna",
+                    Some("zai_coding::glm-5.3"),
+                    Some(ThinkingLevel::High),
+                    Some(ThinkingLevel::None)
+                ),
+                "zai"
+            )
+            .is_none()
+        );
         // GPT-5.6 on Bedrock: rejected for the PUT role, naming the model.
         let err = thinking_level_problem(
-            &req("bedrock_sigv4::global.openai.gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
-            "zai"
+            &req(
+                "bedrock_sigv4::global.openai.gpt-5.6-luna",
+                None,
+                Some(ThinkingLevel::High),
+                None,
+            ),
+            "zai",
         )
         .expect("openai publisher on bedrock must be rejected");
         assert!(err.contains("put_thinking_level"), "{err}");
@@ -1824,22 +2093,34 @@ mod tests {
         // Sim role on a different provider is checked against ITS model:
         // PUT fine on open_router, sim rejected on bedrock meta.*.
         let err = thinking_level_problem(
-            &req("open_router::openai/gpt-5.6-luna", Some("bedrock_sigv4::global.meta.llama3-1-70b"), Some(ThinkingLevel::Low), Some(ThinkingLevel::Low)),
-            "zai"
+            &req(
+                "open_router::openai/gpt-5.6-luna",
+                Some("bedrock_sigv4::global.meta.llama3-1-70b"),
+                Some(ThinkingLevel::Low),
+                Some(ThinkingLevel::Low),
+            ),
+            "zai",
         )
         .expect("sim on unsupported bedrock model must be rejected");
         assert!(err.contains("sim_thinking_level"), "{err}");
         // Bedrock anthropic profile ids are supported (genai maps them
         // to a thinking budget).
-        assert!(thinking_level_problem(
-            &req("bedrock_sigv4::global.anthropic.claude-opus-5", Some("bedrock_sigv4::eu.anthropic.claude-sonnet-5"), Some(ThinkingLevel::Medium), Some(ThinkingLevel::None)),
-            "zai"
-        )
-        .is_none());
+        assert!(
+            thinking_level_problem(
+                &req(
+                    "bedrock_sigv4::global.anthropic.claude-opus-5",
+                    Some("bedrock_sigv4::eu.anthropic.claude-sonnet-5"),
+                    Some(ThinkingLevel::Medium),
+                    Some(ThinkingLevel::None)
+                ),
+                "zai"
+            )
+            .is_none()
+        );
         // A bare name qualifies through the server's default provider.
         let err = thinking_level_problem(
             &req("gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
-            "bedrock"
+            "bedrock",
         )
         .expect("bare name under bedrock default must be checked as bedrock");
         assert!(err.contains("bedrock"), "{err}");
@@ -1865,7 +2146,7 @@ mod tests {
             "investigation": {"budget": {"max_steps_per_trace": 2}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
             "scenarios": [],
-            "model": "bedrock_sigv4::global.openai.gpt-5.6-luna",
+            "put_model": "bedrock_sigv4::global.openai.gpt-5.6-luna",
             "put_thinking_level": "high"
         });
         let res = app
@@ -1879,7 +2160,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let err = v["error"].as_str().unwrap();
         assert!(err.contains("put_thinking_level"), "{err}");
@@ -1974,10 +2257,11 @@ mod tests {
                 put: put("cancel-bot"),
                 grades: BTreeMap::new(),
                 scenarios: vec![],
-                model: "zai_coding::glm-5.2".into(),
+                put_model: "zai_coding::glm-5.2".into(),
                 sim_model: "zai_coding::glm-5.2".into(),
                 put_thinking_level: None,
                 sim_thinking_level: None,
+                conversation_controls: ResolvedConversationControls::default(),
                 workspace_files: 0,
             },
         );

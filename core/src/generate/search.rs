@@ -16,7 +16,7 @@ use crate::llm::LlmClient;
 use crate::model::input::{Investigation, PromptUnderTest};
 use crate::model::output::{RunResult, RunStatus, ScenarioFailure};
 use crate::model::simulation::Scenario;
-use crate::simulate::{Runner, Workspace};
+use crate::simulate::{Runner, RunnerOptions, Workspace};
 
 /// One LLM client + model name, reused across runner roles.
 #[derive(Clone)]
@@ -36,9 +36,8 @@ pub struct Investigator {
     /// per trace so every scenario run gets an isolated workspace; the
     /// seed itself is shared by `Arc` so a large upload is paid for once.
     pub workspace_seed: Workspace,
-    /// Max workspace tool turns per simulator response (default 100,
-    /// configurable via `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS`).
-    pub max_workspace_turns: usize,
+    /// Controls for every LLM conversation in a trace.
+    pub runner_options: RunnerOptions,
 }
 
 pub struct InvestigateOutcome {
@@ -65,7 +64,7 @@ enum RunOne {
 impl Investigator {
     /// Run exactly the given scenarios against the PUT. All of them —
     /// an explicit list is a contract. If `progress` is given, it's
-    /// populated live (steps as simulated, states as tasks finish) for
+    /// populated live (model turns as simulated, states as tasks finish) for
     /// polling/UI. The investigation's `reason` is advisory framing
     /// for the caller; nothing here is judged against it.
     pub async fn investigate(
@@ -81,7 +80,7 @@ impl Investigator {
                     .iter()
                     .map(|s| crate::model::simulation::ScenarioProgress {
                         state: crate::model::simulation::ScenarioState::Running,
-                        steps: Vec::new(),
+                        turns: Vec::new(),
                         user_message: s.user_message.clone(),
                         resolved_inputs: Default::default(),
                     })
@@ -185,7 +184,7 @@ impl Investigator {
         let workspace_seed = self.workspace_seed.clone();
         let put_template = put.template.clone();
         let put_tools = put.tools.clone();
-        let max_workspace_turns = self.max_workspace_turns;
+        let runner_options = self.runner_options.clone();
         tasks.spawn(async move {
             let runner = Runner::new(
                 put_role.client,
@@ -195,7 +194,7 @@ impl Investigator {
                 &sim_role.model,
                 sim_role.thinking_level,
                 workspace_seed,
-                max_workspace_turns,
+                runner_options,
             );
 
             // A lightweight PUT view for the runner (design_goals are

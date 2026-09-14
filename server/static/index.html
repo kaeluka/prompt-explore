@@ -10,10 +10,31 @@
 <title>prompt-explore · jobs</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #171a21; --panel-2: #1d212b; --border: #2a2f3b;
-    --text: #e6e8ec; --text-dim: #9aa3b2; --accent: #7c6cff; --accent-2: #5a4bd6;
-    --red: #ff6b6b; --green: #51cf8a; --amber: #f5b556;
+    color-scheme: light;
+    /* Solarized: role/difference hues have matched perceptual lightness;
+       red/green/yellow are reserved for outcome labels. */
+    --bg: #fdf6e3; --panel: #eee8d5; --panel-2: #fdf6e3; --border: #93a1a1;
+    --text: #586e75; --text-dim: #657b83; --accent: #268bd2; --accent-2: #2176b5;
+    --accent-text: #268bd2; --accent-soft: rgba(38,139,210,0.10); --accent-border: rgba(38,139,210,0.38);
+    --put: #268bd2; --put-soft: rgba(38,139,210,0.10); --put-border: rgba(38,139,210,0.38);
+    --sim: #6c71c4; --sim-soft: rgba(108,113,196,0.10); --sim-border: rgba(108,113,196,0.38);
+    --workspace: #2aa198; --workspace-soft: rgba(42,161,152,0.10); --workspace-border: rgba(42,161,152,0.38);
+    --red: #dc322f; --red-soft: rgba(220,50,47,0.10); --red-border: rgba(220,50,47,0.38);
+    --green: #859900; --green-soft: rgba(133,153,0,0.10); --green-border: rgba(133,153,0,0.38);
+    --amber: #b58900; --amber-soft: rgba(181,137,0,0.10); --amber-border: rgba(181,137,0,0.38);
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #002b36; --panel: #073642; --panel-2: #002b36; --border: #586e75;
+    --text: #93a1a1; --text-dim: #839496; --accent: #268bd2; --accent-2: #2f9ee9;
+    --accent-text: #268bd2; --accent-soft: rgba(38,139,210,0.14); --accent-border: rgba(38,139,210,0.45);
+    --put: #268bd2; --put-soft: rgba(38,139,210,0.14); --put-border: rgba(38,139,210,0.45);
+    --sim: #6c71c4; --sim-soft: rgba(108,113,196,0.14); --sim-border: rgba(108,113,196,0.45);
+    --workspace: #2aa198; --workspace-soft: rgba(42,161,152,0.14); --workspace-border: rgba(42,161,152,0.45);
+    --red: #dc322f; --red-soft: rgba(220,50,47,0.14); --red-border: rgba(220,50,47,0.45);
+    --green: #859900; --green-soft: rgba(133,153,0,0.14); --green-border: rgba(133,153,0,0.45);
+    --amber: #b58900; --amber-soft: rgba(181,137,0,0.14); --amber-border: rgba(181,137,0,0.45);
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -37,13 +58,14 @@
   .mono { font-family: var(--mono); }
   .badge { display: inline-block; font-size: 0.74rem; font-weight: 700;
     padding: 0.16rem 0.55rem; border-radius: 999px; letter-spacing: 0.02em; }
-  .badge.running { background: rgba(124,108,255,0.16); color: #b7aaff; border: 1px solid rgba(124,108,255,0.4); }
-  .badge.phase { background: rgba(154,163,178,0.10); color: var(--text-dim); border: 1px solid var(--border); font-weight: 500; }
-  .badge.done { background: rgba(81,207,138,0.12); color: var(--green); border: 1px solid rgba(81,207,138,0.35); }
-  .badge.failed { background: rgba(255,107,107,0.12); color: var(--red); border: 1px solid rgba(255,107,107,0.35); }
-  .badge.completed { background: rgba(81,207,138,0.12); color: var(--green); border: 1px solid rgba(81,207,138,0.35); }
-  .badge.partial { background: rgba(245,181,86,0.14); color: var(--amber); border: 1px solid rgba(245,181,86,0.35); }
-  .badge.error { background: rgba(255,107,107,0.14); color: var(--red); border: 1px solid rgba(255,107,107,0.4); }
+  .badge.running { background: var(--accent-soft); color: var(--accent-text); border: 1px solid var(--accent-border); }
+  .badge.phase { background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border); font-weight: 500; }
+  .badge.done { background: var(--green-soft); color: var(--green); border: 1px solid var(--green-border); }
+  .badge.job-done { background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border); }
+  .badge.failed { background: var(--red-soft); color: var(--red); border: 1px solid var(--red-border); }
+  .badge.completed { background: var(--green-soft); color: var(--green); border: 1px solid var(--green-border); }
+  .badge.partial { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber-border); }
+  .badge.error { background: var(--red-soft); color: var(--red); border: 1px solid var(--red-border); }
   .spinner { width: 13px; height: 13px; border-radius: 50%; display: inline-block;
     border: 2px solid var(--border); border-top-color: var(--accent);
     animation: spin 0.8s linear infinite; vertical-align: -2px; }
@@ -58,10 +80,19 @@
   .step { font-family: var(--mono); font-size: 0.76rem; color: var(--text-dim);
     margin: 0.25rem 0; padding: 0.3rem 0.45rem; background: var(--panel-2);
     border-radius: 5px; border-left: 2px solid var(--border); white-space: pre-wrap; word-break: break-word; max-height: 10em; overflow: auto; }
-  .chat { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem; }
+  .chat { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.4rem; }
+  /* One bordered element is one PUT model completion. Tool exchanges nested
+     inside it were requested together; the border makes that API boundary
+     visible instead of presenting sibling calls as separate agent turns. */
+  .turn { border: 1px solid var(--put-border); border-radius: 9px; padding: 0.5rem;
+    background: var(--panel-2); display: flex; flex-direction: column; gap: 0.38rem; }
+  .turn-head { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+  .exchange { border-top: 1px solid var(--border); padding-top: 0.42rem;
+    display: flex; flex-direction: column; gap: 0.3rem; }
+  .exchange-head { font-family: var(--mono); font-size: 0.68rem; color: var(--text-dim); }
   .bubble { max-width: 82%; padding: 0.4rem 0.6rem; border-radius: 9px; font-size: 0.8rem; }
-  .bubble.put { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); }
-  .bubble.sim { align-self: flex-end; background: rgba(124,108,255,0.10); border: 1px solid rgba(124,108,255,0.30); }
+  .bubble.put { align-self: flex-start; background: var(--put-soft); border: 1px solid var(--put-border); }
+  .bubble.sim { align-self: flex-end; background: var(--sim-soft); border: 1px solid var(--sim-border); }
   .bubble .role { font-size: 0.66rem; color: var(--text-dim); margin-bottom: 0.18rem; letter-spacing: 0.04em; }
   .bubble .body { white-space: pre-wrap; word-break: break-word; }
   .bubble .body.tool { font-family: var(--mono); font-size: 0.76rem; }
@@ -73,14 +104,14 @@
     border-radius: 6px; padding: 0.3rem 0.7rem; cursor: pointer; font-size: 0.8rem; }
   button:hover { border-color: var(--accent); }
   .toggle { font-size: 0.78rem; }
-  /* Per-role usage tags mirror the chat bubbles: PUT is neutral, SIM is purple. */
+  /* Solarized role hues distinguish sources without implying preference. */
   .usage-line { margin-top: 0.15rem; }
   .utag { display: inline-block; font-size: 0.66rem; font-weight: 700; padding: 0.06rem 0.4rem;
     border-radius: 4px; letter-spacing: 0.04em; margin-right: 0.35rem; vertical-align: 1px; font-family: var(--mono); }
-  .utag.put { background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border); }
-  .utag.sim { background: rgba(124,108,255,0.14); color: #b7aaff; border: 1px solid rgba(124,108,255,0.35); }
-  .utag.ws { background: rgba(46,170,160,0.14); color: #7fd9cf; border: 1px solid rgba(46,170,160,0.4); }
-  .wsops { margin: 0.15rem 0 0.15rem 1.4rem; border-left: 2px solid rgba(46,170,160,0.4); padding-left: 0.5rem; }
+  .utag.put { background: var(--put-soft); color: var(--put); border: 1px solid var(--put-border); }
+  .utag.sim { background: var(--sim-soft); color: var(--sim); border: 1px solid var(--sim-border); }
+  .utag.ws { background: var(--workspace-soft); color: var(--workspace); border: 1px solid var(--workspace-border); }
+  .wsops { margin: 0.15rem 0 0.15rem 1.4rem; border-left: 2px solid var(--workspace-border); padding-left: 0.5rem; }
   .wsop { margin: 0.2rem 0; }
   /* Grades editor + frontier panel */
   input[type=text], input[type=number], select {
@@ -92,7 +123,7 @@
   .grade-row .name { font-family: var(--mono); font-size: 0.78rem; color: var(--text); min-width: 11em; }
   .grade-row input { width: 7em; }
   .del { color: var(--text-dim); cursor: pointer; border: none; background: none; padding: 0 0.2rem; font-size: 0.9rem; }
-  .del:hover { color: var(--red); }
+  .del:hover { color: var(--accent); }
   .axis-grid { display: grid; grid-template-columns: 1fr auto auto auto; gap: 0.4rem 0.6rem; align-items: center; }
   .frontier-err { border-left: 2px solid var(--red); padding-left: 0.6rem; margin: 0.4rem 0; }
   .frontier-err .reason { font-family: var(--mono); font-size: 0.74rem; color: var(--red); }
@@ -107,6 +138,10 @@
   .clip-toggle { color: var(--accent); cursor: pointer; user-select: none; font-weight: 700; padding: 0 0.1rem; }
   .clip-toggle:hover { text-decoration: underline; }
 </style>
+<script>
+  // Light is the product default; remember an explicit dark-mode choice.
+  document.documentElement.dataset.theme = localStorage.getItem('pe_theme') || 'light';
+</script>
 </head>
 <body>
 <div class="wrap"><div id="root"></div></div>
@@ -126,6 +161,7 @@ const html = htm.bind(h);
 
 const API = id => `/api/investigations${id ? '/'+id : ''}`;
 const TOKEN_KEY = 'pe_api_token';
+const THEME_KEY = 'pe_theme';
 const authHeaders = token => token ? {'Authorization': 'Bearer '+token} : {};
 // Format one role's UsageTotals. `tool_calls` is only the simulated PUT
 // Estimated USD cost, only present for priced (e.g. OpenRouter) models.
@@ -181,6 +217,42 @@ function Thinking({ side, role, text }) {
   </div>`;
 }
 
+function ExchangeView({ exchange, index, total }) {
+  const a = exchange.call && exchange.call.args;
+  const args = typeof a === 'string' ? a : JSON.stringify(a);
+  const response = typeof exchange.response === 'string'
+    ? exchange.response
+    : JSON.stringify(exchange.response, null, 2);
+  return html`<div class="exchange">
+    <div class="exchange-head">tool exchange ${index + 1}${total > 1 ? ` of ${total}` : ''}</div>
+    <${Bubble} side="put" role="PUT · tool" tool=${true} body=${`🔧 ${exchange.call.name}(${args})`} />
+    ${exchange.workspace_ops && exchange.workspace_ops.length
+      ? html`<${WsOps} ops=${exchange.workspace_ops} />`
+      : null}
+    ${exchange.sim_thinking && exchange.sim_thinking.trim()
+      ? html`<${Thinking} side="sim" role="SIM" text=${exchange.sim_thinking} />`
+      : null}
+    <${Bubble} side="sim" role="SIM" body=${response} />
+  </div>`;
+}
+
+function TurnView({ turn, index }) {
+  const exchanges = turn.tool_exchanges || [];
+  const kind = exchanges.length
+    ? `${exchanges.length} tool call${exchanges.length === 1 ? '' : 's'}${exchanges.length > 1 ? ' · same completion' : ''}`
+    : 'text completion';
+  return html`<div class="turn">
+    <div class="turn-head"><span class="utag put">PUT turn ${index + 1}</span><span class="meta">${kind}</span></div>
+    ${turn.thinking && turn.thinking.trim()
+      ? html`<${Thinking} side="put" role="PUT" text=${turn.thinking} />`
+      : null}
+    ${turn.model_output && turn.model_output.trim()
+      ? html`<${Bubble} side="put" role="PUT" body=${turn.model_output} />`
+      : null}
+    ${exchanges.map((exchange, i) => html`<${ExchangeView} key=${i} exchange=${exchange} index=${i} total=${exchanges.length} />`)}
+  </div>`;
+}
+
 function Chat({ s }) {
   const out = [];
   // Resolved input bindings (sim agent's output) — first, SIM side.
@@ -199,25 +271,8 @@ function Chat({ s }) {
     out.push(html`<div class="bubble sim" key="ri"><div class="role">SIM</div><div class="body">${rows}</div></div>`);
   }
   if (s.user_message && s.user_message.trim()) out.push(html`<${Bubble} key="u" side="sim" role="USER" body=${s.user_message} />`);
-  (s.steps || []).forEach((st, i) => {
-    if (st.thinking && st.thinking.trim())
-      out.push(html`<${Thinking} key=${'pt'+i} side="put" role="PUT" text=${st.thinking} />`);
-    if (st.model_output && st.model_output.trim())
-      out.push(html`<${Bubble} key=${'o'+i} side="put" role="PUT" body=${st.model_output} />`);
-    if (st.tool_call) {
-      const a = st.tool_call.args;
-      const args = typeof a === 'string' ? a : JSON.stringify(a);
-      out.push(html`<${Bubble} key=${'t'+i} side="put" role="PUT · tool" tool=${true} body=${`🔧 ${st.tool_call.name}(${args})`} />`);
-    }
-    if (st.workspace_ops && st.workspace_ops.length) {
-      out.push(html`<${WsOps} key=${'w'+i} ops=${st.workspace_ops} />`);
-    }
-    if (st.sim_thinking && st.sim_thinking.trim())
-      out.push(html`<${Thinking} key=${'st'+i} side="sim" role="SIM" text=${st.sim_thinking} />`);
-    if (st.tool_response != null) {
-      const t = typeof st.tool_response === 'string' ? st.tool_response : JSON.stringify(st.tool_response, null, 2);
-      out.push(html`<${Bubble} key=${'r'+i} side="sim" role="SIM" body=${t} />`);
-    }
+  (s.turns || []).forEach((turn, i) => {
+    out.push(html`<${TurnView} key=${'turn'+i} turn=${turn} index=${i} />`);
   });
   return html`<div class="chat">${out.length ? out : html`<span class="meta">(no messages yet)</span>`}</div>`;
 }
@@ -241,7 +296,7 @@ function ScenarioPanel({ prog, input }) {
       <div class="scen-head">
         <span class="scen-id">${prog.scenario_id}</span>
         <${ScenBadge} s=${prog} />
-        <span class="meta">${(prog.steps||[]).length} turn(s)</span>
+        <span class="meta">${(prog.turns||[]).length} PUT turn(s) · ${(prog.turns||[]).reduce((n,t)=>n+(t.tool_exchanges||[]).length,0)} tool call(s)</span>
       </div>
       ${kind === 'failed' ? html`<div class="note" style="margin:0.3rem 0"><${ClipText} text=${st.error} /></div>` : null}
       ${input ? html`
@@ -518,13 +573,13 @@ function JobCard({ j, token, onDelete, leaving }) {
   return html`
     <div class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
       <h2>
-        <span class="badge ${j.status}">${j.status}</span>
+        <span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span>
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
         <span class="mono meta">${(j.id || '').slice(0,8)}</span>
         ${j.put && j.put.id ? html`<span class="meta" title="prompt under test id (caller-chosen name for this variant)"><b class="mono">${j.put.id}</b></span>` : null}
         <span class="meta">${'· ' + relTime(j.started_at)}</span>
-        ${(j.model || j.sim_model) ? html`<span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-          ${j.model ? html`<span class="utag put" title="prompt under test model">${j.model}</span>` : null}
+        ${(j.put_model || j.sim_model) ? html`<span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          ${j.put_model ? html`<span class="utag put" title="prompt under test model">${j.put_model}</span>` : null}
           ${j.put_thinking_level ? html`<span class="utag put" title="prompt under test thinking level (put_thinking_level)">think ${j.put_thinking_level}</span>` : null}
           ${j.sim_model ? html`<span class="utag sim" title="tool simulator model">${j.sim_model}</span>` : null}
           ${j.sim_thinking_level ? html`<span class="utag sim" title="tool simulator thinking level (sim_thinking_level)">think ${j.sim_thinking_level}</span>` : null}
@@ -550,6 +605,12 @@ function App() {
   const [draft, setDraft] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [authRequired, setAuthRequired] = useState(false);
   const [authError, setAuthError] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
 
   useEffect(() => {
     if (!auto) return;
@@ -624,6 +685,8 @@ function App() {
       <span class="auto">
         <label class="meta"><input type="checkbox" checked=${auto} onClick=${() => setAuto(!auto)} /> auto-refresh</label>
         <button class="toggle" onClick=${expandAll}>expand all logs</button>
+        <button class="toggle" onClick=${() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          title=${`switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>${theme === 'light' ? 'dark mode' : 'light mode'}</button>
         ${token ? html`<button class="toggle" onClick=${clearToken} title="forget the stored API token">clear token</button>` : null}
       </span>
     </header>

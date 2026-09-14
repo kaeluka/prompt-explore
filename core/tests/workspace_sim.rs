@@ -10,7 +10,7 @@ use serde_json::json;
 
 use prompt_explore::llm::{ChatResponse, MockLlmClient, ToolCallRequest};
 use prompt_explore::model::*;
-use prompt_explore::simulate::{Runner, Workspace, unpack_zip};
+use prompt_explore::simulate::{Runner, RunnerOptions, Workspace, unpack_zip};
 
 /// Build a zip entirely in memory and unpack it into a workspace seeded
 /// with `src/main.rs` -> "fn main() {}".
@@ -103,15 +103,14 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         "sim-model",
         None,
         seeded_workspace(),
-        100,
+        RunnerOptions::default(),
     );
     let trace = runner.run(&put, &scenario, &budget, 0, None).await.unwrap();
 
-    // First step is the tool call; it must carry the workspace read the
+    // The first turn's tool exchange must carry the workspace read the
     // simulator performed, with the REAL seeded content as the result.
-    let step = &trace.steps[0];
-    assert!(step.tool_call.is_some());
-    let read_op = step
+    let exchange = &trace.turns[0].tool_exchanges[0];
+    let read_op = exchange
         .workspace_ops
         .iter()
         .find(|o| o.tool == "read")
@@ -119,7 +118,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
     assert_eq!(read_op.args["path"], json!("src/main.rs"));
     assert_eq!(read_op.result["content"], json!("fn main() {}"));
     // The simulated tool response is the simulator's final answer.
-    assert_eq!(step.tool_response.as_ref().unwrap(), &json!("fn main() {}"));
+    assert_eq!(exchange.response, json!("fn main() {}"));
 }
 
 #[tokio::test]
@@ -177,13 +176,13 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
         "sim-model",
         None,
         Workspace::empty(),
-        100,
+        RunnerOptions::default(),
     );
     let trace = runner
         .run(&put, &scenario, &budget(), 0, None)
         .await
         .unwrap();
-    assert!(trace.steps[0].workspace_ops.is_empty());
+    assert!(trace.turns[0].tool_exchanges[0].workspace_ops.is_empty());
 }
 
 fn budget() -> Budget {

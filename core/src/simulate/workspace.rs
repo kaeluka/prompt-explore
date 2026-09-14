@@ -37,6 +37,32 @@ pub const DEFAULT_COMPRESSED_LIMIT: usize = 50 * 1024 * 1024;
 pub const DEFAULT_DECOMPRESSED_LIMIT: usize = 500 * 1024 * 1024;
 /// Hard cap on the number of files, to bound pathological archives.
 pub const MAX_FILES: usize = 100_000;
+/// Default maximum lines returned by one simulator workspace read.
+pub const DEFAULT_MAX_READ_LINES: usize = 5000;
+/// Default maximum matches returned by one simulator workspace grep.
+pub const DEFAULT_MAX_GREP_MATCHES: usize = 1000;
+/// Default maximum characters included from one grep result line.
+pub const DEFAULT_MAX_LINE_LEN: usize = 2000;
+
+/// Bounds on workspace tool output inserted into the simulator conversation.
+/// They are per-workspace so an investigation can override them without
+/// changing other concurrent runs.
+#[derive(Debug, Clone)]
+pub struct WorkspaceToolLimits {
+    pub max_read_lines: usize,
+    pub max_grep_matches: usize,
+    pub max_line_len: usize,
+}
+
+impl Default for WorkspaceToolLimits {
+    fn default() -> Self {
+        Self {
+            max_read_lines: DEFAULT_MAX_READ_LINES,
+            max_grep_matches: DEFAULT_MAX_GREP_MATCHES,
+            max_line_len: DEFAULT_MAX_LINE_LEN,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
@@ -68,6 +94,7 @@ pub struct Workspace {
     /// A trace's own mutations. `Some(bytes)` overwrites the seed at a
     /// path; `None` is a tombstone (a delete) shadowing a seed path.
     overlay: HashMap<String, Option<Vec<u8>>>,
+    limits: WorkspaceToolLimits,
 }
 
 impl Workspace {
@@ -81,7 +108,14 @@ impl Workspace {
                 files: BTreeMap::new(),
             }),
             overlay: HashMap::new(),
+            limits: WorkspaceToolLimits::default(),
         }
+    }
+
+    /// Apply per-conversation output bounds for workspace tools.
+    pub fn with_tool_limits(mut self, limits: WorkspaceToolLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// How many files the seed contains (the uploaded count). Used for the
@@ -158,7 +192,9 @@ impl Workspace {
                 let start = usize_arg(args, "start_line").unwrap_or(1).max(1);
                 // Cap how many lines one read can return, so a single
                 // huge file cannot drown the simulator's context.
-                let cap_end = start.saturating_add(MAX_READ_LINES).saturating_sub(1);
+                let cap_end = start
+                    .saturating_add(self.limits.max_read_lines)
+                    .saturating_sub(1);
                 let requested_end = usize_arg(args, "end_line").unwrap_or(cap_end);
                 let end = requested_end.min(cap_end);
                 if end < start {
@@ -277,7 +313,9 @@ impl Workspace {
             if !in_scope(&p) {
                 continue;
             }
-            let Some(bytes) = self.content(&p) else { continue };
+            let Some(bytes) = self.content(&p) else {
+                continue;
+            };
             let text = String::from_utf8_lossy(&bytes);
             for (i, line) in text.split('\n').enumerate() {
                 let line = line.strip_suffix('\r').unwrap_or(line);
@@ -290,9 +328,9 @@ impl Workspace {
                     matches.push(json!({
                         "path": p,
                         "line": i + 1,
-                        "text": truncate_line(line),
+                        "text": truncate_line(line, self.limits.max_line_len),
                     }));
-                    if matches.len() >= MAX_GREP_MATCHES {
+                    if matches.len() >= self.limits.max_grep_matches {
                         truncated = true;
                         break 'outer;
                     }
@@ -329,7 +367,7 @@ impl Workspace {
     /// the chat request's `tools` field. Descriptions are written for the
     /// simulator: they explain how to use each tool, not the policy for
     /// when (that lives in the world narrative).
-    pub fn tool_defs() -> Vec<ToolDef> {
+    pub fn tool_defs(&self) -> Vec<ToolDef> {
         vec![
             ToolDef {
                 name: "list_dir".into(),
@@ -351,13 +389,15 @@ impl Workspace {
             },
             ToolDef {
                 name: "read".into(),
-                description: "Read up to 2000 lines of a file from your simulation workspace. \
-                              Returns {\"path\":..., \"content\":..., \"start_line\":..., \
-                              \"end_line\":..., \"total_lines\":..., \"truncated\":bool}, or \
-                              {\"path\":..., \"error\":\"not found\"}. Paths are relative to \
-                              the workspace root and use '/' separators. Use list_dir first if \
-                              you do not know the exact path."
-                    .into(),
+                description: format!(
+                    "Read up to {} lines of a file from your simulation workspace. \
+                     Returns {{\"path\":..., \"content\":..., \"start_line\":..., \
+                     \"end_line\":..., \"total_lines\":..., \"truncated\":bool}}, or \
+                     {{\"path\":..., \"error\":\"not found\"}}. Paths are relative to \
+                     the workspace root and use '/' separators. Use list_dir first if \
+                     you do not know the exact path.",
+                    self.limits.max_read_lines,
+                ),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -370,12 +410,14 @@ impl Workspace {
             },
             ToolDef {
                 name: "grep".into(),
-                description: "Search your simulation workspace for a literal substring. Returns \
-                              {\"pattern\":..., \"matches\":[{\"path\":..., \"line\":..., \
-                              \"text\":...}], \"truncated\":bool} (at most 200 matches). The \
-                              \"pattern\" is a LITERAL substring, not a regex. Use this to find \
-                              where something is defined or referenced."
-                    .into(),
+                description: format!(
+                    "Search your simulation workspace for a literal substring. Returns \
+                     {{\"pattern\":..., \"matches\":[{{\"path\":..., \"line\":..., \
+                     \"text\":...}}], \"truncated\":bool}} (at most {} matches). The \
+                     \"pattern\" is a LITERAL substring, not a regex. Use this to find \
+                     where something is defined or referenced.",
+                    self.limits.max_grep_matches,
+                ),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -407,15 +449,6 @@ impl Workspace {
     }
 }
 
-/// Max lines one `read` call may return, to keep the simulator's context
-/// bounded (its working set should scale with the trace, not the file).
-const MAX_READ_LINES: usize = 2000;
-/// Max matches one `grep` may return.
-const MAX_GREP_MATCHES: usize = 200;
-/// Max characters of a line included in grep output (long lines are
-/// truncated with a marker).
-const MAX_LINE_LEN: usize = 500;
-
 /// Decompress a zip entirely in memory and return a workspace seeded with
 /// its files. Nothing is written to disk. Hard caps (compressed and
 /// decompressed) and zip-slip rejection make a malicious or malformed
@@ -439,8 +472,7 @@ pub fn unpack_zip_with_limits(
         });
     }
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive =
-        ZipArchive::new(cursor).map_err(|e| WorkspaceError::BadZip(e.to_string()))?;
+    let mut archive = ZipArchive::new(cursor).map_err(|e| WorkspaceError::BadZip(e.to_string()))?;
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut total_decompressed: usize = 0;
     for i in 0..archive.len() {
@@ -459,8 +491,8 @@ pub fn unpack_zip_with_limits(
             continue;
         }
         let raw_name = entry.name().to_string();
-        let path = normalize(&raw_name)
-            .ok_or_else(|| WorkspaceError::PathTraversal(raw_name.clone()))?;
+        let path =
+            normalize(&raw_name).ok_or_else(|| WorkspaceError::PathTraversal(raw_name.clone()))?;
         // Read in bounded chunks: the running total defends against
         // decompression bombs regardless of the sizes the archive
         // declares. If total ever exceeds the cap, abort.
@@ -488,6 +520,7 @@ pub fn unpack_zip_with_limits(
     Ok(Workspace {
         seed: Arc::new(Seed { files }),
         overlay: HashMap::new(),
+        limits: WorkspaceToolLimits::default(),
     })
 }
 
@@ -537,11 +570,11 @@ fn bool_arg(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(|v| v.as_bool())
 }
 
-fn truncate_line(line: &str) -> String {
-    if line.chars().count() <= MAX_LINE_LEN {
+fn truncate_line(line: &str, max_line_len: usize) -> String {
+    if line.chars().count() <= max_line_len {
         return line.to_string();
     }
-    let head: String = line.chars().take(MAX_LINE_LEN).collect();
+    let head: String = line.chars().take(max_line_len).collect();
     format!("{head}… <truncated>")
 }
 
@@ -558,6 +591,7 @@ mod tests {
         Workspace {
             seed: Arc::new(Seed { files: map }),
             overlay: HashMap::new(),
+            limits: WorkspaceToolLimits::default(),
         }
     }
 
@@ -589,13 +623,13 @@ mod tests {
 
     #[test]
     fn read_caps_at_max_lines() {
-        let big = (0..MAX_READ_LINES + 50)
+        let big = (0..DEFAULT_MAX_READ_LINES + 50)
             .map(|i| format!("l{i}"))
             .collect::<Vec<_>>()
             .join("\n");
         let w = ws(&[("big.txt", &big)]);
         let r = w.exec_read(&json!({"path": "big.txt"}));
-        assert_eq!(r["end_line"], json!(MAX_READ_LINES));
+        assert_eq!(r["end_line"], json!(DEFAULT_MAX_READ_LINES));
         assert_eq!(r["truncated"], json!(true));
     }
 
@@ -636,6 +670,39 @@ mod tests {
         // Listing a file path errors.
         let err = w.exec_list_dir(&json!({"path": "README.md"}));
         assert_eq!(err["error"], json!("not a directory"));
+    }
+
+    #[test]
+    fn tool_output_limits_are_overridable_per_workspace() {
+        let w = ws(&[("a.txt", "one\ntwo\nthree")]).with_tool_limits(WorkspaceToolLimits {
+            max_read_lines: 1,
+            max_grep_matches: 1,
+            max_line_len: 2,
+        });
+        let read = w.exec_read(&json!({"path": "a.txt"}));
+        assert_eq!(read["content"], json!("one"));
+        assert_eq!(read["truncated"], json!(true));
+
+        let grep = w.exec_grep(&json!({"pattern": "t"}));
+        assert_eq!(grep["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(grep["matches"][0]["text"], json!("tw… <truncated>"));
+        assert_eq!(grep["truncated"], json!(true));
+
+        let defs = w.tool_defs();
+        assert!(
+            defs.iter()
+                .find(|d| d.name == "read")
+                .unwrap()
+                .description
+                .contains("up to 1 lines")
+        );
+        assert!(
+            defs.iter()
+                .find(|d| d.name == "grep")
+                .unwrap()
+                .description
+                .contains("at most 1 matches")
+        );
     }
 
     #[test]
@@ -698,8 +765,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let opts =
-                zip::write::SimpleFileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             zw.start_file("hello.txt", opts).unwrap();
             zw.write_all(b"hi there").unwrap();
             zw.start_file("src/main.rs", opts).unwrap();

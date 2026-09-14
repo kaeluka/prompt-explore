@@ -254,7 +254,7 @@ fn compute_demo_campaign_dominance() {
     assert_eq!(by["33333333-balanced"].label, "cancel-bot#3");
     assert_eq!(by["44444444-verbose"].label, "v4-verbose");
     // Default colors from the palette by index; values resolve per axis.
-    assert_eq!(by["11111111-terse"].color, "#1f77b4");
+    assert_eq!(by["11111111-terse"].color, "#268bd2");
     assert_eq!(by["11111111-terse"].values["put_output_tokens"], 1450.0);
     assert_eq!(by["11111111-terse"].values["tone_of_voice"], 0.4);
 }

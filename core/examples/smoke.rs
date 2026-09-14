@@ -5,11 +5,23 @@
 //!   OPENROUTER_API_KEY=... cargo run --example smoke -- openrouter openai/gpt-4o-mini
 //!   (after `gcloud auth application-default login`)
 //!                          cargo run --example smoke -- gemini gemini-2.5-flash
+//! Optional request controls: `PROMPT_EXPLORE_SMOKE_TEMPERATURE` (default
+//! 0.7) and `PROMPT_EXPLORE_SMOKE_MAX_TOKENS` (default 512).
 //!
 //! Sends a chat request with a tool defined; prints the model's
 //! response and whether it called the tool.
 
 use prompt_explore::llm::{ChatRequest, LlmClient, Message, ProviderClient, ToolDef};
+
+const DEFAULT_TEMPERATURE: f32 = 0.7;
+const DEFAULT_MAX_TOKENS: u32 = 512;
+
+fn env_number<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
 
 #[tokio::main]
 async fn main() {
@@ -51,8 +63,14 @@ async fn main() {
                 "required": ["order_id"]
             }),
         }],
-        temperature: Some(0.7),
-        max_tokens: Some(512),
+        temperature: Some(env_number(
+            "PROMPT_EXPLORE_SMOKE_TEMPERATURE",
+            DEFAULT_TEMPERATURE,
+        )),
+        max_tokens: Some(env_number(
+            "PROMPT_EXPLORE_SMOKE_MAX_TOKENS",
+            DEFAULT_MAX_TOKENS,
+        )),
         thinking_level: None,
     };
 

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional free-form `reason` justifying the run. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of steps. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each trace step records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries are rejected.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
+    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional free-form `reason` justifying the run. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of model turns. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries are rejected.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -120,7 +120,7 @@
       "post": {
         "tags": [],
         "summary": "Start an investigation: run every given scenario against the PUT and\nsurface the resulting traces. There is no judge — the caller reads\nthe traces and judges. Runs in the background; poll the returned id.\nThe result includes every attempt (scenario + trace) and token usage.",
-        "description": "Two request shapes are accepted:\n- `application/json` — the body is an `InvestigateRequest` (no workspace).\n- `multipart/form-data` — TWO parts: a `request` part whose body is the\n  `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body\n  is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never\n  written to disk) and seeds the SIMULATION WORKSPACE — an in-memory\n  filesystem the tool SIMULATOR consults with four tools (read, write,\n  list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and\n  decompress to ≤ 500 MB total (overridable via\n  PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the\n  request is rejected. Zip entries\n  that escape the workspace root (zip-slip) are rejected.\n\nThe workspace is the simulator's CAPABILITY, not a policy. The harness\ntells the simulator the workspace exists, how many files it contains,\nand that it is ephemeral (per-trace: every scenario run gets a fresh\ncopy; the agent under test NEVER sees it — only tool responses). WHEN\nand WHETHER the simulator uses it — including tactics like persisting\ngenerated content — is the WORLD NARRATIVE's job: say in the scenario's\n`world` what the zip contains, where things live, and its completeness\nstance (\"these are ALL the files; anything else is not found\" vs \"these\nare SOME files; simulate the rest\"). The harness enforces none of that;\nthe simulator's workspace operations appear in each trace step\n(`workspace_ops`) so you can judge whether an answer was grounded in the\nuploaded files or invented.",
+        "description": "Two request shapes are accepted:\n- `application/json` — the body is an `InvestigateRequest` (no workspace).\n- `multipart/form-data` — TWO parts: a `request` part whose body is the\n  `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body\n  is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never\n  written to disk) and seeds the SIMULATION WORKSPACE — an in-memory\n  filesystem the tool SIMULATOR consults with four tools (read, write,\n  list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and\n  decompress to ≤ 500 MB total (overridable via\n  PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the\n  request is rejected. Zip entries\n  that escape the workspace root (zip-slip) are rejected.\n\nThe workspace is the simulator's CAPABILITY, not a policy. The harness\ntells the simulator the workspace exists, how many files it contains,\nand that it is ephemeral (per-trace: every scenario run gets a fresh\ncopy; the agent under test NEVER sees it — only tool responses). WHEN\nand WHETHER the simulator uses it — including tactics like persisting\ngenerated content — is the WORLD NARRATIVE's job: say in the scenario's\n`world` what the zip contains, where things live, and its completeness\nstance (\"these are ALL the files; anything else is not found\" vs \"these\nare SOME files; simulate the rest\"). The harness enforces none of that;\nthe simulator's workspace operations appear in each trace tool exchange\n(`workspace_ops`) so you can judge whether an answer was grounded in the\nuploaded files or invented.",
         "operationId": "create_investigation",
         "requestBody": {
           "description": "Send as `application/json` (no workspace), OR as `multipart/form-data` with a `request` part (this JSON) and an optional `workspace` part (a .zip that seeds the simulator's in-memory filesystem). See the endpoint description.",
@@ -188,7 +188,7 @@
             }
           },
           "400": {
-            "description": "Malformed request body, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"
+            "description": "Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level the provider layer cannot honor (e.g. on a Bedrock model whose publisher the adapter maps no reasoning fields for — the error names the model and the reason)"
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -204,7 +204,7 @@
     "/api/investigations/{id}": {
       "get": {
         "tags": [],
-        "summary": "Poll an investigation job. `progress` is always present (live steps\nwhile running, frozen when done); `result` is present once done.",
+        "summary": "Poll an investigation job. `progress` is always present (live model turns\nwhile running, frozen when done); `result` is present once done.",
         "operationId": "get_investigation",
         "parameters": [
           {
@@ -373,7 +373,7 @@
         "type": "object",
         "required": [
           "scenario",
-          "steps",
+          "turns",
           "final_world_state",
           "tool_calls"
         ],
@@ -398,17 +398,17 @@
             "$ref": "#/components/schemas/Scenario",
             "description": "The scenario this attempt ran, BY VALUE (no id) — the attempt is\nself-describing: here is the world, the input domain, the opening\nturn, and the trace they produced."
           },
-          "steps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/TraceStep"
-            },
-            "description": "Structured steps, rendered as HTML by the UI."
-          },
           "tool_calls": {
             "type": "integer",
             "description": "Number of tool calls the simulated PUT made in this trace.",
             "minimum": 0
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceTurn"
+            },
+            "description": "Structured PUT model turns, rendered as whole turn objects by the UI.\nTool calls requested by one completion are nested together."
           }
         }
       },
@@ -429,7 +429,7 @@
           "max_steps_per_trace": {
             "type": "integer",
             "format": "int32",
-            "description": "Max steps per trace. A STEP is one tool call OR one final\ncompletion (the turn with no tool call that ends the trace). A\ncompletion that requests several tool calls counts as several\nsteps. The main cost dial for tool-loop PUTs.",
+            "description": "Max steps per trace. A STEP is one tool call OR one final\ncompletion (the turn with no tool call that ends the trace). A\ncompletion that requests several tool calls counts as several\nsteps but is an atomic batch: every sibling call is simulated, so\none accepted batch may cross this cap. No later PUT turn then runs.\nThe main cost dial for tool-loop PUTs.",
             "minimum": 0
           },
           "max_tokens": {
@@ -440,6 +440,88 @@
             "format": "int64",
             "description": "Optional per-trace token cap (input+output, summed across turns).",
             "minimum": 0
+          }
+        }
+      },
+      "ConversationControls": {
+        "type": "object",
+        "description": "Caller-selected limits and sampling controls for an investigation's LLM\nconversations. Defaults: temperature 0.7; PUT/simulator output limits\n32768 tokens each; five JSON-repair attempts; 250 workspace turns;\n5000 read lines, 1000 grep matches, and 2000 characters per grep line.",
+        "properties": {
+          "max_workspace_turns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Workspace tool calls per simulator response before a final-answer nudge.",
+            "minimum": 0
+          },
+          "put_max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum output tokens per PUT completion; omit for the documented default.",
+            "minimum": 1
+          },
+          "put_temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "PUT sampling temperature; omit for the documented default.",
+            "minimum": 0
+          },
+          "sim_max_repair_attempts": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Total attempts for malformed simulator JSON, including the initial reply.",
+            "minimum": 1
+          },
+          "sim_max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum output tokens per simulator completion; omit for the documented default.",
+            "minimum": 1
+          },
+          "sim_temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Simulator sampling temperature; omit for the documented default.",
+            "minimum": 0
+          },
+          "workspace_max_grep_matches": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Matches one simulator workspace `grep` may return.",
+            "minimum": 1
+          },
+          "workspace_max_line_len": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Characters retained from each simulator workspace grep-result line.",
+            "minimum": 1
+          },
+          "workspace_max_read_lines": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Lines one simulator workspace `read` may return.",
+            "minimum": 1
           }
         }
       },
@@ -710,18 +792,22 @@
           "scenarios"
         ],
         "properties": {
+          "conversation_controls": {
+            "$ref": "#/components/schemas/ConversationControls",
+            "description": "Per-investigation overrides for LLM conversation controls. Omit a\nfield to use its documented server default. These controls are recorded\nresolved on the job view so traces remain reproducible."
+          },
           "investigation": {
             "$ref": "#/components/schemas/Investigation"
           },
-          "model": {
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest"
+          },
+          "put_model": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Model for every LLM role (the PUT runner and the tool\nsimulator). Omit to use the server default (`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,\n`vertex::gemini-2.5-pro`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT runs in the same simulated environment."
-          },
-          "put": {
-            "$ref": "#/components/schemas/PromptUnderTest"
+            "description": "Model for the prompt under test. Omit to use the server default\n(`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,\n`vertex::gemini-2.5-pro`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT runs in the same simulated environment."
           },
           "put_thinking_level": {
             "oneOf": [
@@ -746,7 +832,7 @@
               "string",
               "null"
             ],
-            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Defaults to `model`.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `model`, not this). You\n   are comparing candidate PUTs; the environment must stay fixed\n   so differences in the traces come from the PUT, not from a\n   shifting simulation.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
+            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Omit to use the server default independently of\n`put_model`; setting `put_model` never changes the simulator.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `put_model`, not this). You\n   are comparing candidate PUTs; the environment must stay fixed\n   so differences in the traces come from the PUT, not from a\n   shifting simulation.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
           },
           "sim_thinking_level": {
             "oneOf": [
@@ -863,8 +949,9 @@
           "status",
           "phase",
           "started_at",
-          "model",
+          "put_model",
           "sim_model",
+          "conversation_controls",
           "workspace_files",
           "grades",
           "put",
@@ -872,6 +959,10 @@
           "progress"
         ],
         "properties": {
+          "conversation_controls": {
+            "$ref": "#/components/schemas/ResolvedConversationControls",
+            "description": "Resolved controls for the PUT and simulator conversations."
+          },
           "error": {
             "type": [
               "string",
@@ -893,21 +984,21 @@
             "type": "string",
             "description": "The job's id (same value as the `{id}` path segment and the id in\n`JobSummary`). Echoed in the body so a consumer holding only this\nrepresentation knows which job it is — without it, a dashboard that\nreconciles a list of views by key has nothing stable to key on and\nsilently falls back to positional matching (which leaks per-item\nUI state such as an unfolded conversation to whatever job sorts\ninto that slot next)."
           },
-          "model": {
-            "type": "string",
-            "description": "The resolved model name that ran the prompt under test (the `model`\nfrom the request, or the server default). Echoed RESOLVED so a\nreader knows exactly what produced the traces — including the\ndefault, which the request leaves implicit."
-          },
           "phase": {
             "$ref": "#/components/schemas/RunPhase",
             "description": "Which LLM phase the investigation is currently in (see RunPhase:\nscenarios). This is the observable status of the job's LLM work.\nMirrors `progress.phase`."
           },
           "progress": {
             "$ref": "#/components/schemas/RunProgress",
-            "description": "Live progress — per-scenario state + steps simulated so far.\nPopulated while running; frozen (all scenarios done/failed) when\nthe job finishes. Lets a dashboard show a tool-call log as it\nhappens."
+            "description": "Live progress — per-scenario state + PUT model turns simulated so far.\nPopulated while running; frozen (all scenarios done/failed) when\nthe job finishes. Lets a dashboard show a tool-call log as it\nhappens."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest",
             "description": "The prompt under test."
+          },
+          "put_model": {
+            "type": "string",
+            "description": "The resolved model name that ran the prompt under test (the `put_model`\nfrom the request, or the server default). Echoed RESOLVED so a\nreader knows exactly what produced the traces — including the\ndefault, which the request leaves implicit."
           },
           "put_thinking_level": {
             "oneOf": [
@@ -946,7 +1037,7 @@
           },
           "sim_model": {
             "type": "string",
-            "description": "The resolved model name that ran the tool simulator (the `sim_model`\nfrom the request, defaulting to the PUT model, then the server\ndefault). The simulator is the test ENVIRONMENT; a reader needs to\nsee it to judge whether it was powerful enough to render the\nworld believably."
+            "description": "The resolved model name that ran the tool simulator (the `sim_model`\nfrom the request, or the server default), resolved independently of\n`put_model`. The simulator is the test ENVIRONMENT; a reader needs to\nsee it to judge whether it was powerful enough to render the\nworld believably."
           },
           "sim_thinking_level": {
             "oneOf": [
@@ -976,7 +1067,7 @@
       },
       "ModelEntry": {
         "type": "object",
-        "description": "One model the caller can put in a request's `model` field. `name` is\nthe full namespaced, pastable string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`).",
+        "description": "One model the caller can put in a request's `put_model` or `sim_model` field. `name` is\nthe full namespaced, pastable string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`).",
         "required": [
           "name"
         ],
@@ -1001,7 +1092,7 @@
       },
       "ModelsResponse": {
         "type": "object",
-        "description": "Models available to put in a request's `model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each\nprovider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
+        "description": "Models available to put in a request's `put_model` or `sim_model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each\nprovider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
         "required": [
           "server_default_model",
           "server_default_provider",
@@ -1019,7 +1110,7 @@
           },
           "server_default_model": {
             "type": "string",
-            "description": "Model used when a request omits `model` (a bare name; the server\nresolves it via `server_default_provider`)."
+            "description": "Model used when a request omits `put_model` (a bare name; the server\nresolves it via `server_default_provider`)."
           },
           "server_default_provider": {
             "type": "string",
@@ -1114,6 +1205,69 @@
         ],
         "description": "A provider's listing result."
       },
+      "ResolvedConversationControls": {
+        "type": "object",
+        "description": "Actual controls after request and server defaults have been resolved.",
+        "required": [
+          "sim_max_repair_attempts",
+          "max_workspace_turns",
+          "workspace_max_read_lines",
+          "workspace_max_grep_matches",
+          "workspace_max_line_len"
+        ],
+        "properties": {
+          "max_workspace_turns": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "put_max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "put_temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "sim_max_repair_attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sim_max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "sim_temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "workspace_max_grep_matches": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "workspace_max_line_len": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "workspace_max_read_lines": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "RunPhase": {
         "type": "string",
         "description": "The LLM phase an investigation is currently in. Exposed so a reader can\nsee what the job is doing while it runs — never just a bare \"running\".\nSee the API description: every LLM phase is an observable status.",
@@ -1123,7 +1277,7 @@
       },
       "RunProgress": {
         "type": "object",
-        "description": "Live progress of a run, exposed while it's in flight: one entry per\nscenario (positional — index = position in the submitted list), with\nits steps accumulated as they are simulated. The runner pushes; the\nserver/UI poll and render.",
+        "description": "Live progress of a run, exposed while it's in flight: one entry per\nscenario (positional — index = position in the submitted list), with\nits PUT model turns accumulated as they are simulated. The runner pushes;\nthe server/UI poll and render.",
         "required": [
           "phase",
           "scenarios"
@@ -1248,7 +1402,7 @@
         "description": "One scenario's progress within a run. Positional: index in the parent\n`scenarios` vec = the scenario's position in the submitted list.",
         "required": [
           "state",
-          "steps"
+          "turns"
         ],
         "properties": {
           "resolved_inputs": {
@@ -1262,12 +1416,12 @@
           "state": {
             "$ref": "#/components/schemas/ScenarioState"
           },
-          "steps": {
+          "turns": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/TraceStep"
+              "$ref": "#/components/schemas/TraceTurn"
             },
-            "description": "Steps simulated so far (tool calls + responses + model output)."
+            "description": "PUT model turns simulated so far. Each turn is one model completion;\nall tool calls requested by that completion are nested together in\n`tool_exchanges` rather than flattened into misleading sequential turns."
           },
           "user_message": {
             "type": [
@@ -1368,6 +1522,48 @@
           }
         }
       },
+      "ToolExchange": {
+        "type": "object",
+        "description": "One tool request and its simulated result within a PUT model turn.",
+        "required": [
+          "call",
+          "response"
+        ],
+        "properties": {
+          "call": {
+            "$ref": "#/components/schemas/ToolCall",
+            "description": "The tool request emitted by the PUT."
+          },
+          "response": {
+            "description": "The response rendered by the simulator and returned to the PUT."
+          },
+          "sim_thinking": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SIMULATOR model's visible reasoning while rendering this response\n(its whole inner drive: lookups and final answer). Transparency only."
+          },
+          "workspace_ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceOp"
+            },
+            "description": "Workspace operations the SIMULATOR performed while rendering this\nresponse. Empty when it answered without consulting the workspace."
+          },
+          "world_state_after": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Present for write tools: world state after this exchange's patch was\napplied. Sibling exchanges are simulated in list order.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ToolSchema": {
         "type": "object",
         "required": [
@@ -1398,61 +1594,31 @@
           }
         }
       },
-      "TraceStep": {
+      "TraceTurn": {
         "type": "object",
+        "description": "One PUT model completion. Text, thinking, and every tool request emitted\nby that completion stay together, preserving the model's actual turn\nboundary. An empty `tool_exchanges` list is a text-only/final completion.",
         "required": [
-          "model_output"
+          "model_output",
+          "tool_exchanges"
         ],
         "properties": {
           "model_output": {
             "type": "string",
-            "description": "The model's text output for this turn (empty on non-first tool\ncalls within one completion)."
-          },
-          "sim_thinking": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The SIMULATOR model's visible reasoning while rendering this\nstep's tool response (its whole inner drive: lookups and final\nanswer). Transparency only; `None` when the simulator model\nreports no reasoning."
+            "description": "The model's text output for this completion, or empty when it emitted\nonly tool calls."
           },
           "thinking": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The PUT model's visible reasoning (\"thinking\") for this\ncompletion, when the provider reports it. Transparency only —\nit is never fed back into the conversation. Present on the\nfirst step produced by a completion (same rule as\n`model_output`)."
+            "description": "The PUT model's visible reasoning (\"thinking\") for this completion,\nwhen the provider reports it. Transparency only — it is never fed back\ninto the conversation."
           },
-          "tool_call": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ToolCall",
-                "description": "The tool the model asked to call, if any. A completion that\nrequests N tool calls becomes N steps."
-              }
-            ]
-          },
-          "tool_response": {
-            "description": "The simulated tool response."
-          },
-          "workspace_ops": {
+          "tool_exchanges": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/WorkspaceOp"
+              "$ref": "#/components/schemas/ToolExchange"
             },
-            "description": "Workspace operations the SIMULATOR performed while rendering this\nstep's tool response — e.g. it read or grepped the simulation\nworkspace before answering. Lets the caller see whether the\nresponse was grounded in the uploaded files or invented. Empty\nwhen the simulator answered without consulting the workspace."
-          },
-          "world_state_after": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Present on write-tool steps: world state after the patch applied.",
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
+            "description": "All tool calls requested together by this single model completion,\npaired with their simulated responses. Exchanges retain provider order\nand are simulated in that order; they are one batch, not separate PUT\nturns."
           }
         }
       },

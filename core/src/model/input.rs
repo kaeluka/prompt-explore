@@ -97,7 +97,9 @@ pub struct Budget {
     /// Max steps per trace. A STEP is one tool call OR one final
     /// completion (the turn with no tool call that ends the trace). A
     /// completion that requests several tool calls counts as several
-    /// steps. The main cost dial for tool-loop PUTs.
+    /// steps but is an atomic batch: every sibling call is simulated, so
+    /// one accepted batch may cross this cap. No later PUT turn then runs.
+    /// The main cost dial for tool-loop PUTs.
     pub max_steps_per_trace: u32,
     /// Optional per-trace token cap (input+output, summed across turns).
     pub max_tokens: Option<u64>,

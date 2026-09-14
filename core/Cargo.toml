@@ -9,11 +9,12 @@ description = "Property-based testing for agent behavior: state a behavioral que
 async-trait = "0.1.91"
 # AWS Bedrock control-plane listing (ListFoundationModels /
 # ListInferenceProfiles) for GET /api/models — reads the same default
-# credential chain (env/profile/SSO/IMDS) that genai's bedrock-sigv4
-# adapter signs generation requests with. aws-config is already a
-# transitive dep of genai's bedrock-sigv4 feature; making it direct
-# adds no new crates to the build beyond aws-sdk-bedrock.
-aws-config = "1"
+# credential chain (env/profile/SSO/aws-login/IMDS) that genai's
+# bedrock-sigv4 adapter signs generation requests with. `credentials-login`
+# lets the SDK consume temporary credentials created by AWS CLI `aws login`.
+# aws-config is already a transitive dep of genai's bedrock-sigv4 feature;
+# making it direct also unifies this feature into that dependency.
+aws-config = { version = "1", features = ["credentials-login"] }
 aws-sdk-bedrock = "1"
 # Multi-provider LLM client (OpenAI-format: z.ai/OpenRouter; native: Bedrock
 # Converse+SigV4). `bedrock-sigv4` pulls aws-config (heavy) for the default

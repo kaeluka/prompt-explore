@@ -48,11 +48,17 @@ pub const RESERVED_AXES: &[(&str, BetterDirection)] = &[
 pub const RESERVED_AXES_COMPACT: &str = "put_/sim_input_tokens, put_/sim_output_tokens, \
      put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_{avg,min,max,stdev}";
 
-/// The categorical palette for default point colors (deterministic by
-/// investigation index; caller-supplied colors override).
+/// Solarized categorical hues for preference-neutral differences. Their
+/// matched perceptual lightness keeps one prompt variant from looking more
+/// important than another; red and green stay reserved for failure/success.
+/// Deterministic by investigation index; caller-supplied colors override.
 pub const PALETTE: &[&str] = &[
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-    "#bcbd22", "#17becf",
+    "#268bd2", // blue
+    "#6c71c4", // violet
+    "#2aa198", // cyan
+    "#d33682", // magenta
+    "#cb4b16", // orange
+    "#b58900", // yellow
 ];
 
 /// Whether lower or higher values are better on an axis. Supplied by

@@ -39,8 +39,36 @@ use super::workspace::Workspace;
 /// must produce a final answer for one request. Generous enough to
 /// list → grep → read several files; bounded so a stuck model cannot loop
 /// forever. Default is 100, configurable via the
-/// `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS` environment variable (default 100).
-pub const DEFAULT_MAX_WORKSPACE_TURNS: usize = 100;
+/// `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS` environment variable (default 250).
+pub const DEFAULT_MAX_WORKSPACE_TURNS: usize = 250;
+/// Default sampling temperature for simulator completions.
+pub const DEFAULT_SIMULATOR_TEMPERATURE: f32 = 0.7;
+/// Default output-token limit for each simulator completion.
+pub const DEFAULT_SIMULATOR_MAX_TOKENS: u32 = 32 * 1024;
+/// Default number of total attempts for a malformed simulator reply
+/// (the initial reply plus repairs).
+pub const DEFAULT_SIMULATOR_REPAIR_ATTEMPTS: usize = 5;
+
+/// Controls for the simulator's LLM conversation. Supply these at the
+/// runner boundary rather than embedding policy in the conversation loop.
+#[derive(Debug, Clone)]
+pub struct SimulatorOptions {
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub max_repair_attempts: usize,
+    pub max_workspace_turns: usize,
+}
+
+impl Default for SimulatorOptions {
+    fn default() -> Self {
+        Self {
+            temperature: Some(DEFAULT_SIMULATOR_TEMPERATURE),
+            max_tokens: Some(DEFAULT_SIMULATOR_MAX_TOKENS),
+            max_repair_attempts: DEFAULT_SIMULATOR_REPAIR_ATTEMPTS,
+            max_workspace_turns: DEFAULT_MAX_WORKSPACE_TURNS,
+        }
+    }
+}
 
 pub struct ToolSimulator {
     client: Arc<dyn LlmClient>,
@@ -52,9 +80,7 @@ pub struct ToolSimulator {
     /// trace (the seed is shared by `Arc`; only the per-trace overlay is
     /// copied), so every scenario run gets an isolated workspace.
     workspace_seed: Workspace,
-    /// Max workspace tool turns per simulator response (default 100,
-    /// configurable via `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS`).
-    max_workspace_turns: usize,
+    options: SimulatorOptions,
 }
 
 /// What the simulator decided for one tool call.
@@ -80,9 +106,7 @@ pub struct SimSession {
     model: String,
     thinking_level: Option<ThinkingLevel>,
     messages: Vec<Message>,
-    /// How many workspace lookups the simulator may make before the
-    /// harness nudges it to produce a final answer.
-    max_workspace_turns: usize,
+    options: SimulatorOptions,
     /// This trace's workspace: a clone of the seed with its own overlay.
     workspace: Workspace,
     /// Workspace ops accumulated since the last drain (used to attach
@@ -99,14 +123,14 @@ impl ToolSimulator {
         model: impl Into<String>,
         thinking_level: Option<ThinkingLevel>,
         workspace_seed: Workspace,
-        max_workspace_turns: usize,
+        options: SimulatorOptions,
     ) -> Self {
         Self {
             client,
             model: model.into(),
             thinking_level,
             workspace_seed,
-            max_workspace_turns,
+            options,
         }
     }
 
@@ -124,7 +148,7 @@ impl ToolSimulator {
             thinking_level: self.thinking_level,
             messages: vec![Message::System { content: system }],
             workspace: self.workspace_seed.clone(),
-            max_workspace_turns: self.max_workspace_turns,
+            options: self.options.clone(),
             workspace_ops: Vec::new(),
             thinking: Vec::new(),
         }
@@ -241,8 +265,8 @@ impl SimSession {
     /// loop): each round with tool calls is executed against the workspace
     /// and fed back; a round with NO tool calls is the terminal candidate,
     /// parsed as the answer. On an unusable terminal reply (empty or wrong
-    /// shape), a repair note is appended and the whole drive is retried,
-    /// up to two repair turns, then it fails loudly with the raw reply
+    /// shape), a repair note is appended and the whole drive is retried up
+    /// to the configured attempt limit, then fails loudly with the raw reply
     /// preserved. `shape` describes the required JSON for the repair note.
     async fn ask_json<T: DeserializeOwned>(
         &mut self,
@@ -250,10 +274,10 @@ impl SimSession {
         shape: &str,
     ) -> Result<T, LlmError> {
         self.messages.push(Message::User { content: user });
-        let tools = Workspace::tool_defs();
+        let tools = self.workspace.tool_defs();
         let mut last_failure = String::new();
         let mut last_raw = String::new();
-        for attempt in 0..3 {
+        for attempt in 0..self.options.max_repair_attempts {
             if attempt > 0 {
                 // NOTE: interleaved system messages are fine on
                 // OpenAI-compatible providers (z.ai, OpenRouter). On
@@ -310,13 +334,13 @@ impl SimSession {
     async fn run_workspace_loop(&mut self, tools: &[ToolDef]) -> Result<Option<String>, LlmError> {
         let mut turns = 0;
         loop {
-            if turns >= self.max_workspace_turns {
+            if turns >= self.options.max_workspace_turns {
                 // Graceful fallback: nudge the simulator to produce its
                 // final answer from what it has already seen. Only
                 // escalate to an error if it still calls tools after
                 // this nudge — the caller can then raise the cap via
                 // PROMPT_EXPLORE_MAX_WORKSPACE_TURNS.
-                let max = self.max_workspace_turns;
+                let max = self.options.max_workspace_turns;
                 self.messages.push(Message::System {
                     content: format!(
                         "You have used your {max} workspace lookups for this response. \
@@ -330,8 +354,8 @@ impl SimSession {
                         model: self.model.clone(),
                         messages: self.messages.clone(),
                         tools: tools.to_vec(),
-                        temperature: Some(0.7),
-                        max_tokens: Some(8192),
+                        temperature: self.options.temperature,
+                        max_tokens: self.options.max_tokens,
                         thinking_level: self.thinking_level,
                     })
                     .await
@@ -362,10 +386,10 @@ impl SimSession {
                     model: self.model.clone(),
                     messages: self.messages.clone(),
                     tools: tools.to_vec(),
-                    temperature: Some(0.7),
+                    temperature: self.options.temperature,
                     // Reasoning-style models can burn a small budget on
                     // hidden reasoning and return empty content.
-                    max_tokens: Some(8192),
+                    max_tokens: self.options.max_tokens,
                     thinking_level: self.thinking_level,
                 })
                 .await

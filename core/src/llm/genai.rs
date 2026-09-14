@@ -32,6 +32,16 @@ use serde_json::Value;
 // listing Client without adding genai as a direct dependency.
 pub use genai::Client as GenaiClient;
 
+/// Default retry count for transient provider rate limits. Override with
+/// `PROMPT_EXPLORE_MAX_RETRIES` (set 0 to disable retries).
+pub const DEFAULT_MAX_RETRIES: u32 = 20;
+/// Default initial linear-backoff interval in milliseconds. Override with
+/// `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS`.
+pub const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 5_000;
+/// Default maximum positive retry jitter percentage. Override with
+/// `PROMPT_EXPLORE_RETRY_JITTER_PERCENT`.
+pub const DEFAULT_RETRY_JITTER_PERCENT: u64 = 10;
+
 use super::client::{LlmClient, LlmError};
 use super::types::{
     ChatRequest, ChatResponse, Message, ThinkingLevel, ToolCallRequest, ToolDef, Usage,
@@ -267,14 +277,15 @@ impl LlmClient for ProviderClient {
         // Retry transient 429 rate limits (z.ai code 1302 "Rate limit
         // reached for requests", OpenRouter's upstream shared-pool 429
         // "temporarily rate-limited upstream. Please retry shortly") with a
-        // linear backoff: 5s, 10s, 15s, 20s, … up to 10 retries (~4.5 min
-        // worst case). A QUOTA-window 429 (z.ai code 1308 "Usage limit
+        // linear backoff. The retry count, base interval, and jitter are
+        // process-level controls exposed through PROMPT_EXPLORE_* env vars.
+        // A QUOTA-window 429 (z.ai code 1308 "Usage limit
         // reached for 5 hour", OpenAI "You exceeded your current quota")
         // is NOT retried — backoff won't help, so fail fast. Providers
         // don't surface a usable Retry-After here (the body has no duration
         // and genai flattens response headers into the error string), so we
         // back off ourselves.
-        const MAX_RETRIES: u32 = 10;
+        let retry = RetrySettings::from_env();
         let mut retries: u32 = 0;
         loop {
             match self
@@ -285,8 +296,11 @@ impl LlmClient for ProviderClient {
                 Ok(resp) => return Ok(convert_response(resp)),
                 Err(e) => {
                     let msg = e.to_string();
-                    if retries < MAX_RETRIES && is_retryable_429(&msg) {
-                        let backoff = jittered(retry_delay(retries + 1));
+                    if retries < retry.max_retries && is_retryable_429(&msg) {
+                        let backoff = jittered(
+                            retry_delay(retries + 1, retry.base_delay_ms),
+                            retry.jitter_percent,
+                        );
                         tokio::time::sleep(backoff).await;
                         retries += 1;
                         continue;
@@ -306,7 +320,7 @@ impl LlmClient for ProviderClient {
 /// offers no signal for which models accept it, so the whole namespace
 /// loses the field and the model's own default applies. This was the
 /// server's bug, not genai's: the adapter omits `temperature` when unset
-/// (issue #3), but the runner and simulator always passed `Some(0.7)`.
+/// (issue #3), but the runner and simulator historically always passed 0.7.
 /// Every other provider passes the requested value through unchanged.
 fn effective_temperature(model: &str, requested: Option<f32>) -> Option<f32> {
     if model.starts_with("bedrock_sigv4::") {
@@ -418,26 +432,64 @@ fn is_retryable_429(err: &str) -> bool {
     // ("quota" also covers `insufficient_quota` absent a retry hint, e.g.
     // OpenAI's "You exceeded your current quota, please check your plan and
     // billing details".)
-    let hard_quota = ["usage limit", "5 hour", "quota"];
+    let hard_quota = [
+        "usage limit",
+        "5 hour",
+        "quota",
+        "insufficient balance",
+        "no resource package",
+        "please recharge",
+    ];
     !hard_quota.iter().any(|q| lower.contains(q))
 }
 
-/// Linear backoff for retry n: 5s, 10s, 15s, 20s, … (5s × n).
-fn retry_delay(retry: u32) -> std::time::Duration {
-    std::time::Duration::from_secs(5 * u64::from(retry))
+#[derive(Debug, Clone, Copy)]
+struct RetrySettings {
+    max_retries: u32,
+    base_delay_ms: u64,
+    jitter_percent: u64,
 }
 
-/// Up to ~10% jitter on top of the base delay, so N concurrent retries
-/// (e.g. a 10-scenario run hitting a rate limit at once) don't all fire on
-/// the same tick and re-trigger it. Poor-man's jitter from wall-clock
-/// nanos (no rand dep).
-fn jittered(base: std::time::Duration) -> std::time::Duration {
+impl RetrySettings {
+    fn from_env() -> Self {
+        Self {
+            max_retries: env_number("PROMPT_EXPLORE_MAX_RETRIES", DEFAULT_MAX_RETRIES),
+            base_delay_ms: env_number(
+                "PROMPT_EXPLORE_RETRY_BASE_DELAY_MS",
+                DEFAULT_RETRY_BASE_DELAY_MS,
+            ),
+            jitter_percent: env_number(
+                "PROMPT_EXPLORE_RETRY_JITTER_PERCENT",
+                DEFAULT_RETRY_JITTER_PERCENT,
+            ),
+        }
+    }
+}
+
+fn env_number<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Linear backoff for retry n, in caller-configured millisecond steps.
+fn retry_delay(retry: u32, base_delay_ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(base_delay_ms.saturating_mul(u64::from(retry)))
+}
+
+/// Positive jitter on top of the base delay, so concurrent retries do not
+/// all fire on the same tick. Poor-man's jitter from wall-clock nanos (no
+/// rand dep).
+fn jittered(base: std::time::Duration, jitter_percent: u64) -> std::time::Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() as u64)
         .unwrap_or(0);
-    let jitter_ms = base.as_millis() as u64 * (nanos % 11) / 100; // 0..=10%
-    base + std::time::Duration::from_millis(jitter_ms)
+    let sampled_percent = nanos % jitter_percent.saturating_add(1).max(1);
+    let jitter_ms =
+        (base.as_millis() * u128::from(sampled_percent) / 100).min(u128::from(u64::MAX)) as u64;
+    base.saturating_add(std::time::Duration::from_millis(jitter_ms))
 }
 
 #[cfg(test)]
@@ -604,19 +656,34 @@ mod tests {
     #[test]
     fn thinking_level_maps_one_to_one_to_genai_effort() {
         use genai::chat::ReasoningEffort;
-        assert!(matches!(genai_reasoning_effort(ThinkingLevel::None), ReasoningEffort::Zero));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::None),
+            ReasoningEffort::Zero
+        ));
         assert!(matches!(
             genai_reasoning_effort(ThinkingLevel::Minimal),
             ReasoningEffort::Minimal
         ));
-        assert!(matches!(genai_reasoning_effort(ThinkingLevel::Low), ReasoningEffort::Low));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::Low),
+            ReasoningEffort::Low
+        ));
         assert!(matches!(
             genai_reasoning_effort(ThinkingLevel::Medium),
             ReasoningEffort::Medium
         ));
-        assert!(matches!(genai_reasoning_effort(ThinkingLevel::High), ReasoningEffort::High));
-        assert!(matches!(genai_reasoning_effort(ThinkingLevel::Xhigh), ReasoningEffort::XHigh));
-        assert!(matches!(genai_reasoning_effort(ThinkingLevel::Max), ReasoningEffort::Max));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::High),
+            ReasoningEffort::High
+        ));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::Xhigh),
+            ReasoningEffort::XHigh
+        ));
+        assert!(matches!(
+            genai_reasoning_effort(ThinkingLevel::Max),
+            ReasoningEffort::Max
+        ));
     }
 
     #[test]
@@ -643,9 +710,7 @@ mod tests {
             .expect_err("openai publisher on bedrock must be rejected");
         assert!(err.contains("not supported"), "{err}");
         assert!(err.contains("openai"), "names the publisher: {err}");
-        assert!(
-            thinking_level_supported("bedrock_sigv4::global.meta.llama3-1-70b").is_err()
-        );
+        assert!(thinking_level_supported("bedrock_sigv4::global.meta.llama3-1-70b").is_err());
     }
 
     #[test]
@@ -684,6 +749,12 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_subscription_balance_429_is_not_retryable() {
+        let err = "Web call failed. Cause: statusCode=429, body: {\"error\":{\"code\":\"1113\",\"message\":\"Insufficient balance or no resource package. Please recharge.\"}}";
+        assert!(!is_retryable_429(err));
+    }
+
+    #[test]
     fn billing_quota_429_is_not_retryable() {
         // OpenAI billing limit — `insufficient_quota` without a retry hint.
         let err = "Web call failed. Cause: statusCode=429, body: {\"error\":{\"message\":\"You exceeded your current quota, please check your plan and billing details\",\"type\":\"insufficient_quota\"}}";
@@ -700,13 +771,30 @@ mod tests {
 
     #[test]
     fn backoff_is_linear_five_second_steps() {
-        assert_eq!(retry_delay(1), std::time::Duration::from_secs(5));
-        assert_eq!(retry_delay(2), std::time::Duration::from_secs(10));
-        assert_eq!(retry_delay(3), std::time::Duration::from_secs(15));
-        assert_eq!(retry_delay(10), std::time::Duration::from_secs(50));
+        assert_eq!(
+            retry_delay(1, DEFAULT_RETRY_BASE_DELAY_MS),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            retry_delay(2, DEFAULT_RETRY_BASE_DELAY_MS),
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            retry_delay(3, DEFAULT_RETRY_BASE_DELAY_MS),
+            std::time::Duration::from_secs(15)
+        );
+        assert_eq!(
+            retry_delay(10, DEFAULT_RETRY_BASE_DELAY_MS),
+            std::time::Duration::from_secs(50)
+        );
         // Jitter only ever adds, never subtracts.
-        for n in 1..=10u32 {
-            assert!(jittered(retry_delay(n)) >= retry_delay(n));
+        for n in 1..=DEFAULT_MAX_RETRIES {
+            assert!(
+                jittered(
+                    retry_delay(n, DEFAULT_RETRY_BASE_DELAY_MS),
+                    DEFAULT_RETRY_JITTER_PERCENT
+                ) >= retry_delay(n, DEFAULT_RETRY_BASE_DELAY_MS)
+            );
         }
     }
 }

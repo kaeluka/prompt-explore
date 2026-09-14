@@ -1,7 +1,7 @@
 //! Listing available models per provider, for `GET /models`.
 //!
 //! Returns, per provider, either its models (each in the full namespaced
-//! form you'd paste into a request's `model` field) or an `error`
+//! form you'd paste into a request's `put_model` or `sim_model` field) or an `error`
 //! explaining why the provider can't be used (no auth, unresolvable
 //! credentials, region-gated, …). Listing is best-effort and
 //! per-provider: one provider failing never breaks the others.
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use super::gcloud;
 
-/// One model the caller can put in a request's `model` field. `name` is
+/// One model the caller can put in a request's `put_model` or `sim_model` field. `name` is
 /// the full namespaced, pastable string (e.g.
 /// `open_router::deepseek/deepseek-v4-flash-0731`).
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -71,7 +71,7 @@ pub enum ProviderModels {
 }
 
 /// Stable, ordered set of providers reported by `GET /models`. Each key
-/// is the namespace prefix used in the request `model` field.
+/// is the namespace prefix used in request `put_model` and `sim_model` fields.
 pub async fn list_all(client: &Client) -> Vec<(String, ProviderModels)> {
     vec![
         // z.ai coding-plan endpoint (our default); auth falls back to
@@ -186,7 +186,7 @@ pub(crate) fn bedrock_listing_result(listing: Result<Vec<ModelEntry>, String>) -
                  listing and invocation are separate IAM actions. Pass any \
                  `bedrock_sigv4::<model-id>` (cross-region profile ids like \
                  `bedrock_sigv4::global.anthropic.claude-opus-5` are what most \
-                 accounts can invoke) in the request's `model` field; the list \
+                 accounts can invoke) in the request's `put_model` or `sim_model` field; the list \
                  above is advisory, not a gate"
             )),
         },
@@ -382,7 +382,7 @@ pub(crate) fn vertex_listing_result(listing: Result<Vec<ModelEntry>, String>) ->
             note: Some(format!(
                 "catalog listing unavailable ({list_err}) — generation still works: \n\
                  pass any `vertex::<model-id>` (e.g. vertex::gemini-2.5-pro) in the \n\
-                 request's `model` field; the list above is advisory, not a gate"
+                 request's `put_model` or `sim_model` field; the list above is advisory, not a gate"
             )),
         },
     }
@@ -681,7 +681,7 @@ pub async fn list_all_map(client: &Client) -> BTreeMap<String, ProviderModels> {
 /// Build a `model name → pricing` map from a provider catalog, keeping
 /// only entries that report per-token pricing. Keys are the full
 /// namespaced model names — the same strings callers paste into a
-/// request's `model` field — so a job's stored model name can be looked
+/// request's `put_model` or `sim_model` field — so a job's stored model name can be looked
 /// up directly.
 pub fn catalog_pricing_map(
     providers: &BTreeMap<String, ProviderModels>,

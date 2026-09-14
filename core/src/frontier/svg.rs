@@ -38,13 +38,16 @@ const R: f64 = 28.0; // right margin
 const T: f64 = 36.0; // top margin (titles)
 const B: f64 = 64.0; // bottom margin (x ticks + title)
 
-const TICK_COLOR: &str = "#8a919e";
-const LABEL_COLOR: &str = "#c8cdd6";
-const DIM_LABEL_COLOR: &str = "#7c8593";
-const GRID_COLOR: &str = "#232734";
-const PANEL_BG: &str = "#0f1115";
-const PAGE_BG: &str = "#16181d";
-const FRONTIER_STROKE: &str = "#7c6cff";
+// Solarized Light: neutral bases for structure and a preference-neutral
+// violet for the frontier. Point hues come from the equal-lightness
+// categorical palette in `frontier::PALETTE`.
+const TICK_COLOR: &str = "#657b83";
+const LABEL_COLOR: &str = "#586e75";
+const DIM_LABEL_COLOR: &str = "#93a1a1";
+const GRID_COLOR: &str = "#93a1a1";
+const PANEL_BG: &str = "#fdf6e3";
+const PAGE_BG: &str = "#eee8d5";
+const FRONTIER_STROKE: &str = "#6c71c4";
 
 /// XML-escape a text run. & < > " ' — the five predefined entities.
 fn esc(s: &str) -> String {
@@ -286,7 +289,11 @@ pub fn render(points: &[FrontierPoint], x: &PlotAxis, y: &PlotAxis) -> String {
         };
         // Near the top edge an above-point label would collide with the
         // corner hint / title row, so drop it below the point instead.
-        let ly = if cy - 20.0 < T + 8.0 { cy + 20.0 } else { cy - 9.0 };
+        let ly = if cy - 20.0 < T + 8.0 {
+            cy + 20.0
+        } else {
+            cy - 9.0
+        };
         s.push_str(&format!(
             r#"<text x="{lx:.1}" y="{ly:.1}" font-size="11" fill="{fill}" text-anchor="{anchor}">{}</text>"#,
             esc(&p.label)

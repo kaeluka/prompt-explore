@@ -10,7 +10,7 @@ use serde_json::json;
 
 use prompt_explore::llm::ProviderClient;
 use prompt_explore::model::*;
-use prompt_explore::simulate::Runner;
+use prompt_explore::simulate::{Runner, RunnerOptions};
 
 const MODEL: &str = "glm-5.2";
 
@@ -96,7 +96,7 @@ async fn main() {
         MODEL,
         None,
         prompt_explore::simulate::Workspace::empty(),
-        100,
+        RunnerOptions::default(),
     );
     let trace = runner
         .run(&put, &scenario, &budget, 0, None)
@@ -104,19 +104,23 @@ async fn main() {
         .expect("run failed");
 
     println!("=== trace ===");
-    for (i, step) in trace.steps.iter().enumerate() {
-        println!("--- step {i} ---");
-        if !step.model_output.is_empty() {
-            println!("model: {}", step.model_output);
+    for (i, turn) in trace.turns.iter().enumerate() {
+        println!("--- PUT turn {} ---", i + 1);
+        if !turn.model_output.is_empty() {
+            println!("model: {}", turn.model_output);
         }
-        if let Some(tc) = &step.tool_call {
-            println!("tool_call: {}({})", tc.name, tc.args);
-        }
-        if let Some(resp) = &step.tool_response {
-            println!("tool_response: {resp}");
-        }
-        if let Some(state) = &step.world_state_after {
-            println!("world_state: {}", serde_json::to_string(state).unwrap());
+        for (j, exchange) in turn.tool_exchanges.iter().enumerate() {
+            println!(
+                "tool_call {}/{}: {}({})",
+                j + 1,
+                turn.tool_exchanges.len(),
+                exchange.call.name,
+                exchange.call.args
+            );
+            println!("tool_response: {}", exchange.response);
+            if let Some(state) = &exchange.world_state_after {
+                println!("world_state: {}", serde_json::to_string(state).unwrap());
+            }
         }
     }
 }

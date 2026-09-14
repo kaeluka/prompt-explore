@@ -8,7 +8,7 @@ Guidance for AI agents (and humans) working in this repository.
 supplies scenarios (author-supplied world narratives) and a prompt under
 test (PUT); the tool runs every scenario inside its simulated world and
 returns the complete evidence — the world, the input domain, the resolved
-inputs, and the full trace of steps. **The caller is the judge:** there
+inputs, and the full trace of model turns. **The caller is the judge:** there
 is no in-harness verdict. The user may also state a free-form `reason`
 for the run (what it aims to accomplish, what changed compared to runs
 before, what a reader should know — no strict standard), but it is
@@ -155,12 +155,16 @@ Cargo workspace:
   layers never depend on a concrete provider; tests use `MockLlmClient` with
   scripted responses — keep tests deterministic, no network.
 - **The caller is the judge.** The harness runs scenarios and surfaces traces
-  (world, input domain, resolved inputs, full steps); it produces no verdict.
+  (world, input domain, resolved inputs, full model turns); it produces no verdict.
   Nothing is judged against the (optional) `reason` — it is advisory framing
   for whoever reads the traces. `design_goals` on the PUT are documentation
   the caller reads, not something enforced during a run.
 - Negative results are first-class: surface what was tried (scenarios, traces,
   failures), never just "nothing found".
+- **LLM conversations need overridable controls.** Do not bury magic constants
+  (for example, temperature, token limits, retry counts, or turn budgets) in
+  an LLM request or conversation loop. Give each such control a named,
+  documented override at the appropriate boundary, with any default explicit.
 - The OpenAPI spec is generated, not hand-written: handlers and
   request/response types carry `utoipa` annotations, and `openapi.json` is
   compiled from them. **Whenever the API changes** (endpoints, request or

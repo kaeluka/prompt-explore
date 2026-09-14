@@ -11,7 +11,7 @@ use serde_json::json;
 use prompt_explore::generate::{InvestigateOutcome, Investigator, LlmRole};
 use prompt_explore::llm::ProviderClient;
 use prompt_explore::model::*;
-use prompt_explore::simulate::render_transcript;
+use prompt_explore::simulate::{RunnerOptions, render_transcript};
 
 const MODEL: &str = "glm-5.2";
 
@@ -98,7 +98,7 @@ async fn main() {
         runner_put: role.clone(),
         runner_sim: role.clone(),
         workspace_seed: prompt_explore::simulate::Workspace::empty(),
-        max_workspace_turns: 100,
+        runner_options: RunnerOptions::default(),
     };
 
     let InvestigateOutcome {
