@@ -133,6 +133,29 @@ just field names: what a scenario IS (a test case: a world spec plus a
 protagonist) and what it is FOR. When you change the API, write for that
 reader.
 
+## Experimental Lua simulation (feature branch)
+
+`feature/lua-tool-simulation` deliberately explores an **optional performance
+backend**, not deterministic enforcement of narrative fidelity. Enable it with
+`conversation_controls.lua_simulation: {}` (omit/null keeps LLM-only behavior).
+The simulator authors ordinary Lua in `.prompt-explore/tools.lua`, initially
+fallback-only. A handler may call `PleaseSimulateException` for selected inputs;
+missing handlers also delegate. Computed and LLM responses enter the SAME
+conversation. Runtime errors are distinct evidence, not simulated tool errors:
+staged workspace writes are rolled back before LLM fallback. No code is an
+oracle: the caller judges the generated source and traces against the narrative.
+Do not generalize this into automatic caching or a narrative-enforcement DSL.
+
+The source/revisions and setup work are trace artifacts, visible beside resolved
+inputs. Each Lua attempt names its revision and computed/fallback/error outcome.
+Each scenario reports input-resolution / tool-preparation / PUT-loop phase, since
+concurrent scenarios can be in different phases. Execution limits are explicit,
+validated, hard-ceilinged controls; workspace results are byte-bounded before
+construction; the VM exposes only existing in-memory workspace operations.
+Randomness/time capabilities are deferred. The in-process sandbox has cooperative
+CPU deadlines, not OS process isolation; native operations cannot be preempted
+mid-call. Keep the backend experimental while assessing semantics and speed.
+
 ## Repo layout
 
 Cargo workspace:

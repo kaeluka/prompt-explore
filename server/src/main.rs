@@ -36,7 +36,8 @@ use prompt_explore::llm::{
 };
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunResult;
-use prompt_explore::model::simulation::{RunProgress, Scenario, TraceTurn};
+use prompt_explore::model::simulation::{RunProgress, Scenario, SimulationProgram, TraceTurn};
+use prompt_explore::simulate::lua::LuaOptions;
 use prompt_explore::simulate::{
     DEFAULT_MAX_WORKSPACE_TURNS, RunnerOptions, Workspace, WorkspaceToolLimits,
     unpack_zip_with_limits,
@@ -47,6 +48,32 @@ use utoipa::Modify;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 const MODEL: &str = "glm-5.2";
+/// Preserve the investigation route's previous JSON-body allowance while also
+/// allowing the separately configured compressed workspace maximum.
+const INVESTIGATION_JSON_ALLOWANCE: usize = 8 * 1024 * 1024;
+/// Multipart boundaries and part headers are outside both payloads. Keep an
+/// explicit allowance so an archive exactly at its documented cap is accepted.
+const MULTIPART_FRAMING_ALLOWANCE: usize = 1024 * 1024;
+
+fn workspace_compressed_limit() -> usize {
+    std::env::var("PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_COMPRESSED_LIMIT)
+}
+
+fn workspace_decompressed_limit() -> usize {
+    std::env::var("PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_DECOMPRESSED_LIMIT)
+}
+
+fn investigation_body_limit() -> usize {
+    workspace_compressed_limit()
+        .saturating_add(INVESTIGATION_JSON_ALLOWANCE)
+        .saturating_add(MULTIPART_FRAMING_ALLOWANCE)
+}
 
 struct AppState {
     client: Option<Arc<ProviderClient>>,
@@ -203,9 +230,24 @@ struct InvestigateRequest {
 /// Caller-selected limits and sampling controls for an investigation's LLM
 /// conversations. Defaults: temperature 0.7; PUT/simulator output limits
 /// 32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;
-/// 5000 read lines, 1000 grep matches, and 2000 characters per grep line.
+/// 5000 read lines, 1000 grep matches, 2000 characters per grep line,
+/// and 1 MiB constructed output per workspace tool call.
 #[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 struct ConversationControls {
+    /// Experimental hybrid simulation: omit/null to keep today's LLM-only path;
+    /// {} enables it with bounded defaults. Per trace, the simulator prepares
+    /// .prompt-explore/tools.lua in its private workspace, initially a valid
+    /// fallback-only module. It may specialize only selected inputs or tools.
+    /// Missing handlers and PleaseSimulateException delegate to the LLM.
+    /// Crashes/limits also delegate, with a distinct error record; staged Lua
+    /// writes are rolled back before fallback. Computed replies enter the SAME
+    /// simulator conversation without another LLM call. No random/time/host IO.
+    /// Inspect simulation_program beside resolved_inputs on attempts and live
+    /// progress, and each tool_exchanges[].lua_execution for exact revision,
+    /// computed/fallback/error outcome and discarded operations. Generated code
+    /// is unverified simulation evidence, not ground truth or a verdict.
+    #[serde(default)]
+    lua_simulation: Option<LuaOptions>,
     /// PUT sampling temperature; omit for the documented default.
     #[serde(default)]
     #[schema(minimum = 0)]
@@ -244,11 +286,19 @@ struct ConversationControls {
     #[serde(default)]
     #[schema(minimum = 1)]
     workspace_max_line_len: Option<usize>,
+    /// Byte budget used while constructing one simulator workspace tool result.
+    /// This prevents a huge single-line file or directory from being copied in
+    /// full before downstream token/Lua limits can reject it.
+    #[serde(default)]
+    #[schema(minimum = 1, maximum = 4194304)]
+    workspace_max_output_bytes: Option<usize>,
 }
 
 /// Actual controls after request and server defaults have been resolved.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 struct ResolvedConversationControls {
+    /// Null means disabled; otherwise the actual Lua sandbox limits used.
+    lua_simulation: Option<LuaOptions>,
     put_temperature: Option<f32>,
     put_max_tokens: Option<u32>,
     sim_temperature: Option<f32>,
@@ -258,6 +308,7 @@ struct ResolvedConversationControls {
     workspace_max_read_lines: usize,
     workspace_max_grep_matches: usize,
     workspace_max_line_len: usize,
+    workspace_max_output_bytes: usize,
 }
 
 impl Default for ResolvedConversationControls {
@@ -269,11 +320,13 @@ impl Default for ResolvedConversationControls {
             put_max_tokens: runner.put_max_tokens,
             sim_temperature: runner.simulator.temperature,
             sim_max_tokens: runner.simulator.max_tokens,
+            lua_simulation: runner.simulator.lua_simulation,
             sim_max_repair_attempts: runner.simulator.max_repair_attempts,
             max_workspace_turns: runner.simulator.max_workspace_turns,
             workspace_max_read_lines: workspace.max_read_lines,
             workspace_max_grep_matches: workspace.max_grep_matches,
             workspace_max_line_len: workspace.max_line_len,
+            workspace_max_output_bytes: workspace.max_output_bytes,
         }
     }
 }
@@ -313,6 +366,11 @@ struct AttemptView {
     /// exact input that produced this trace, for reproduction.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     resolved_inputs: HashMap<String, Value>,
+    /// Generated program source/revisions and setup evidence (experimental).
+    /// Present when conversation_controls.lua_simulation is enabled and this
+    /// PUT has tools; revision indices match tool_exchanges[].lua_execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    simulation_program: Option<SimulationProgram>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -433,13 +491,23 @@ struct JobSummary {
                        materialized, so a narrative (prose) is the only mechanism that \
                        generalizes. This is why a scenario is a spec, not a fixture.
  \
-                       • Tool responses are SIMULATED by an LLM from the narrative, not \
-                       scripted. Deterministic / pinned responses (e.g. a `when_called_with` \
-                       override) are a deliberate NON-GOAL: any fixture or DSL you build \
-                       fails to express a realistic case, and making the harness own \
-                       simulation fidelity just swaps LLM flakiness (already accepted) for \
-                       harness bugs (now your problem). `example_responses` are realism \
-                       hints for the simulator, NOT pinned outputs.
+                       • Tool responses are SIMULATED from the narrative. By default every \
+                       response is rendered by the LLM. Experimental opt-in \
+                       conversation_controls.lua_simulation={} lets that same simulator \
+                       specialize optional Lua tool implementations before the PUT loop and \
+                       during later fallbacks. This accelerates computations, NOT a cache or \
+                       a semantic correctness guarantee. Unimplemented inputs delegate through \
+                       PleaseSimulateException; runtime errors delegate with explicit error \
+                       evidence and rolled-back Lua writes. The generated source and revision \
+                       history are visible in simulation_program, beside resolved_inputs, on \
+                       both progress.scenarios[] and result.attempts[]. Each exchange records \
+                       lua_execution when tried. All computed/LLM responses enter the same \
+                       simulator conversation. Each progress scenario reports its phase: \
+                       resolving_inputs, preparing_tools, or put_loop (scenarios can be in \
+                       different phases concurrently). Lua has only bounded workspace \
+                       capabilities, no host IO, randomness, or clock. The caller judges code \
+                       and traces against the narrative; example_responses remain realism \
+                       hints, NOT pinned outputs.
  \
                        • The answer to simulation unreliability is TRANSPARENCY, not \
                        enforcement. Every tool response is in the trace and the caller sees \
@@ -603,7 +671,10 @@ fn build_app(state: Arc<AppState>) -> Router {
             "/api/investigations",
             get(list_investigations)
                 .post(create_investigation)
-                .route_layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+                // The archive itself is checked again by
+                // `unpack_zip_with_limits`; this outer cap must leave room for
+                // the documented compressed maximum plus JSON and framing.
+                .route_layer(DefaultBodyLimit::max(investigation_body_limit())),
         )
         .route(
             "/api/investigations/{id}",
@@ -656,6 +727,7 @@ fn fabricate_done_job(
             final_world_state: HashMap::new(),
             tool_calls: 0,
             resolved_inputs: HashMap::new(),
+            simulation_program: None,
         })
         .collect();
     let usage = UsageByRole {
@@ -1162,6 +1234,11 @@ fn thinking_level_problem(req: &InvestigateRequest, default_provider: &str) -> O
 }
 
 fn conversation_controls_problem(controls: &ConversationControls) -> Option<String> {
+    if let Some(lua) = &controls.lua_simulation {
+        if let Err(error) = lua.validate() {
+            return Some(format!("conversation_controls.lua_simulation: {error}"));
+        }
+    }
     let mut problems = Vec::new();
     for (name, value) in [
         ("put_temperature", controls.put_temperature),
@@ -1192,12 +1269,25 @@ fn conversation_controls_problem(controls: &ConversationControls) -> Option<Stri
             "workspace_max_line_len",
             controls.workspace_max_line_len.map(|v| v as u64),
         ),
+        (
+            "workspace_max_output_bytes",
+            controls.workspace_max_output_bytes.map(|v| v as u64),
+        ),
     ] {
         if value == Some(0) {
             problems.push(format!(
                 "conversation_controls.{name} must be greater than zero"
             ));
         }
+    }
+    if controls
+        .workspace_max_output_bytes
+        .is_some_and(|value| value > prompt_explore::simulate::workspace::MAX_OUTPUT_BYTES)
+    {
+        problems.push(format!(
+            "conversation_controls.workspace_max_output_bytes must not exceed {}",
+            prompt_explore::simulate::workspace::MAX_OUTPUT_BYTES
+        ));
     }
     (!problems.is_empty()).then(|| problems.join("; "))
 }
@@ -1237,15 +1327,8 @@ async fn parse_multipart_request(
                     .bytes()
                     .await
                     .map_err(|e| format!("could not read 'workspace' part: {e}"))?;
-                let compressed_limit = std::env::var("PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_COMPRESSED_LIMIT);
-                let decompressed_limit =
-                    std::env::var("PROMPT_EXPLORE_WORKSPACE_DECOMPRESSED_LIMIT")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(prompt_explore::simulate::workspace::DEFAULT_DECOMPRESSED_LIMIT);
+                let compressed_limit = workspace_compressed_limit();
+                let decompressed_limit = workspace_decompressed_limit();
                 // unpack_zip_with_limits enforces the compressed/decompressed
                 // caps and zip-slip rejection; nothing is written to disk.
                 workspace = unpack_zip_with_limits(&bytes, compressed_limit, decompressed_limit)
@@ -1278,6 +1361,7 @@ fn resolved_conversation_controls(
     let mut workspace = WorkspaceToolLimits::default();
     runner.put_temperature = controls.put_temperature.or(runner.put_temperature);
     runner.put_max_tokens = controls.put_max_tokens.or(runner.put_max_tokens);
+    runner.simulator.lua_simulation = controls.lua_simulation.clone();
     runner.simulator.temperature = controls.sim_temperature.or(runner.simulator.temperature);
     runner.simulator.max_tokens = controls.sim_max_tokens.or(runner.simulator.max_tokens);
     runner.simulator.max_repair_attempts = controls
@@ -1298,16 +1382,21 @@ fn resolved_conversation_controls(
     workspace.max_line_len = controls
         .workspace_max_line_len
         .unwrap_or(workspace.max_line_len);
+    workspace.max_output_bytes = controls
+        .workspace_max_output_bytes
+        .unwrap_or(workspace.max_output_bytes);
     let resolved = ResolvedConversationControls {
         put_temperature: runner.put_temperature,
         put_max_tokens: runner.put_max_tokens,
         sim_temperature: runner.simulator.temperature,
         sim_max_tokens: runner.simulator.max_tokens,
+        lua_simulation: runner.simulator.lua_simulation.clone(),
         sim_max_repair_attempts: runner.simulator.max_repair_attempts,
         max_workspace_turns: runner.simulator.max_workspace_turns,
         workspace_max_read_lines: workspace.max_read_lines,
         workspace_max_grep_matches: workspace.max_grep_matches,
         workspace_max_line_len: workspace.max_line_len,
+        workspace_max_output_bytes: workspace.max_output_bytes,
     };
     (runner, workspace, resolved)
 }
@@ -1402,6 +1491,7 @@ fn spawn_investigation(
                 final_world_state: a.trace.final_world_state.clone(),
                 tool_calls: a.trace.tool_call_count(),
                 resolved_inputs: a.trace.resolved_inputs.clone(),
+                simulation_program: a.trace.simulation_program.clone(),
             })
             .collect();
 
@@ -1865,6 +1955,7 @@ mod tests {
     use crate::INDEX_HTML;
     use axum::http::Request as HttpRequest;
     use prompt_explore::model::Budget;
+    use std::io::Write;
     use tower::ServiceExt; // oneshot against the REAL router
 
     /// A state with no LLM client: enough for the grading/frontier
@@ -2000,6 +2091,46 @@ mod tests {
     }
 
     #[test]
+    fn lua_controls_are_opt_in_resolved_and_positive() {
+        let off: ConversationControls = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(
+            resolved_conversation_controls(&off)
+                .0
+                .simulator
+                .lua_simulation
+                .is_none()
+        );
+        let on: ConversationControls = serde_json::from_value(
+            serde_json::json!({"lua_simulation":{"max_instructions":12345}}),
+        )
+        .unwrap();
+        let (runner, _, resolved) = resolved_conversation_controls(&on);
+        assert_eq!(
+            runner.simulator.lua_simulation.unwrap().max_instructions,
+            12345
+        );
+        assert_eq!(
+            serde_json::to_value(resolved).unwrap()["lua_simulation"]["max_instructions"],
+            12345
+        );
+        assert!(conversation_controls_problem(&on).is_none());
+        let bad: ConversationControls =
+            serde_json::from_value(serde_json::json!({"lua_simulation":{"max_memory_bytes":0}}))
+                .unwrap();
+        assert!(
+            conversation_controls_problem(&bad)
+                .unwrap()
+                .contains("max_memory_bytes")
+        );
+        let unbounded: ConversationControls =
+            serde_json::from_value(serde_json::json!({"lua_simulation":{"max_duration_ms":10001}}))
+                .unwrap();
+        let error = conversation_controls_problem(&unbounded).unwrap();
+        assert!(error.contains("max_duration_ms"), "{error}");
+        assert!(error.contains("must not exceed"), "{error}");
+    }
+
+    #[test]
     fn default_repair_budget_is_resolved_and_reported() {
         let controls: ConversationControls = serde_json::from_value(serde_json::json!({})).unwrap();
         let (runner, _, resolved) = resolved_conversation_controls(&controls);
@@ -2013,6 +2144,7 @@ mod tests {
     #[test]
     fn conversation_controls_override_runner_and_workspace_defaults() {
         let controls = ConversationControls {
+            lua_simulation: None,
             put_temperature: Some(0.2),
             put_max_tokens: Some(111),
             sim_temperature: Some(0.3),
@@ -2022,6 +2154,7 @@ mod tests {
             workspace_max_read_lines: Some(6),
             workspace_max_grep_matches: Some(7),
             workspace_max_line_len: Some(8),
+            workspace_max_output_bytes: Some(9),
         };
         let (runner, workspace, resolved) = resolved_conversation_controls(&controls);
         assert_eq!(runner.put_temperature, Some(0.2));
@@ -2033,7 +2166,9 @@ mod tests {
         assert_eq!(workspace.max_read_lines, 6);
         assert_eq!(workspace.max_grep_matches, 7);
         assert_eq!(workspace.max_line_len, 8);
+        assert_eq!(workspace.max_output_bytes, 9);
         assert_eq!(resolved.workspace_max_line_len, 8);
+        assert_eq!(resolved.workspace_max_output_bytes, 9);
         assert!(conversation_controls_problem(&controls).is_none());
 
         let invalid = ConversationControls {
@@ -2044,6 +2179,18 @@ mod tests {
         let problem = conversation_controls_problem(&invalid).unwrap();
         assert!(problem.contains("put_max_tokens"));
         assert!(problem.contains("sim_max_repair_attempts"));
+
+        let too_large = ConversationControls {
+            workspace_max_output_bytes: Some(
+                prompt_explore::simulate::workspace::MAX_OUTPUT_BYTES + 1,
+            ),
+            ..ConversationControls::default()
+        };
+        assert!(
+            conversation_controls_problem(&too_large)
+                .unwrap()
+                .contains("workspace_max_output_bytes")
+        );
     }
 
     #[test]
@@ -2241,6 +2388,68 @@ mod tests {
                 .unwrap();
             assert_eq!(res.status(), StatusCode::ACCEPTED, "{model}");
         }
+    }
+
+    #[tokio::test]
+    async fn multipart_workspace_larger_than_old_8_mib_route_cap_is_parsed() {
+        // Regression: the endpoint documented a 50 MiB compressed workspace
+        // cap, but an unrelated 8 MiB DefaultBodyLimit rejected larger valid
+        // archives before the zip-specific checks could run.
+        let mut archive = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("large.bin", options).unwrap();
+            writer.write_all(&vec![b'x'; 9 * 1024 * 1024]).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(archive.len() > 8 * 1024 * 1024);
+        assert!(archive.len() < workspace_compressed_limit());
+
+        // An unsupported thinking mapping deliberately makes the handler
+        // return 400 *after* multipart and zip parsing, without spawning an
+        // investigation that would need a live provider client.
+        let request = serde_json::json!({
+            "investigation": {"budget": {"max_steps_per_trace": 0}},
+            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "scenarios": [],
+            "put_model": "bedrock_sigv4::global.meta.llama3-1-70b",
+            "put_thinking_level": "high"
+        })
+        .to_string();
+        let boundary = "prompt-explore-large-workspace-test";
+        let mut body = Vec::with_capacity(request.len() + archive.len() + 1024);
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"request\"\r\nContent-Type: application/json\r\n\r\n{request}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"workspace\"; filename=\"workspace.zip\"\r\nContent-Type: application/zip\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&archive);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        assert!(body.len() > 8 * 1024 * 1024);
+
+        let res = build_app(test_state())
+            .oneshot(
+                HttpRequest::post("/api/investigations")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let error = response["error"].as_str().unwrap();
+        assert!(error.contains("put_thinking_level"), "{error}");
+        assert!(!error.contains("multipart"), "{error}");
     }
 
     #[tokio::test]

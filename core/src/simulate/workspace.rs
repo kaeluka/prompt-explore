@@ -18,7 +18,7 @@
 //! look, what to return); the workspace only stores bytes and answers
 //! queries truthfully.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::sync::Arc;
 
@@ -43,6 +43,10 @@ pub const DEFAULT_MAX_READ_LINES: usize = 5000;
 pub const DEFAULT_MAX_GREP_MATCHES: usize = 1000;
 /// Default maximum characters included from one grep result line.
 pub const DEFAULT_MAX_LINE_LEN: usize = 2000;
+/// Default byte budget used while constructing one workspace tool result.
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+/// Process-safety ceiling even for direct library callers or API overrides.
+pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Bounds on workspace tool output inserted into the simulator conversation.
 /// They are per-workspace so an investigation can override them without
@@ -52,6 +56,7 @@ pub struct WorkspaceToolLimits {
     pub max_read_lines: usize,
     pub max_grep_matches: usize,
     pub max_line_len: usize,
+    pub max_output_bytes: usize,
 }
 
 impl Default for WorkspaceToolLimits {
@@ -60,6 +65,7 @@ impl Default for WorkspaceToolLimits {
             max_read_lines: DEFAULT_MAX_READ_LINES,
             max_grep_matches: DEFAULT_MAX_GREP_MATCHES,
             max_line_len: DEFAULT_MAX_LINE_LEN,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
         }
     }
 }
@@ -136,28 +142,57 @@ impl Workspace {
         self.seed.files.keys().cloned().collect()
     }
 
-    /// Resolve a path to its current bytes: the trace's overlay (write or
-    /// tombstone) takes precedence, then the shared seed. Returns a clone
-    /// so callers need not fight lifetimes across the two stores.
-    fn content(&self, path: &str) -> Option<Vec<u8>> {
+    /// Internal bounded consumers (e.g. the Lua loader) can check size before
+    /// copying a file. Unlike the read tool this returns the whole file, not a
+    /// line-limited rendering, and never touches the host filesystem.
+    pub(crate) fn file_bytes(&self, path: &str) -> Option<&[u8]> {
         if let Some(v) = self.overlay.get(path) {
-            return v.clone();
+            return v.as_deref();
         }
-        self.seed.files.get(path).cloned()
+        self.seed.files.get(path).map(Vec::as_slice)
     }
 
-    /// All currently-existing paths (seed ∪ overlay writes, minus
-    /// tombstones), sorted. Drives list_dir and grep.
-    fn known_paths(&self) -> Vec<String> {
-        let mut set: BTreeSet<String> = self.seed.files.keys().cloned().collect();
-        for (k, v) in &self.overlay {
-            if v.is_some() {
-                set.insert(k.clone());
-            } else {
-                set.remove(k);
+    /// Visit currently-existing paths (seed ∪ overlay writes, minus
+    /// tombstones) in sorted order without cloning the seed's path strings.
+    /// Returning false stops immediately, so byte-bounded list/grep calls do
+    /// not first materialize a potentially huge path inventory.
+    fn visit_known_paths(&self, mut visitor: impl FnMut(&str) -> bool) {
+        let mut seed = self.seed.files.keys().peekable();
+        // Overlay keys are normally tiny (writes made during one trace). Sort
+        // borrowed references so we can merge them with the seed deterministically.
+        let mut overlay_keys: Vec<&String> = self.overlay.keys().collect();
+        overlay_keys.sort_unstable();
+        let mut overlay = overlay_keys.into_iter().peekable();
+
+        loop {
+            let next = match (seed.peek(), overlay.peek()) {
+                (Some(seed_path), Some(overlay_path)) => {
+                    match seed_path.as_str().cmp(overlay_path.as_str()) {
+                        std::cmp::Ordering::Less => Some(seed.next().unwrap().as_str()),
+                        std::cmp::Ordering::Greater => {
+                            let path = overlay.next().unwrap();
+                            self.overlay[path].as_ref().map(|_| path.as_str())
+                        }
+                        std::cmp::Ordering::Equal => {
+                            let path = overlay.next().unwrap();
+                            seed.next();
+                            self.overlay[path].as_ref().map(|_| path.as_str())
+                        }
+                    }
+                }
+                (Some(_), None) => Some(seed.next().unwrap().as_str()),
+                (None, Some(_)) => {
+                    let path = overlay.next().unwrap();
+                    self.overlay[path].as_ref().map(|_| path.as_str())
+                }
+                (None, None) => break,
+            };
+            if let Some(path) = next
+                && !visitor(path)
+            {
+                break;
             }
         }
-        set.into_iter().collect()
     }
 
     /// Dispatch one tool call from the simulator against the workspace.
@@ -165,16 +200,37 @@ impl Workspace {
     /// (`{"error": "..."}`) so the simulator can see them and react,
     /// exactly as a real tool framework feeds errors back to an agent.
     pub fn exec(&mut self, tool: &str, args: &Value) -> Value {
+        self.exec_bounded(tool, args, self.limits.max_output_bytes)
+    }
+
+    /// Execute while imposing a tighter caller-specific result-construction
+    /// budget (the Lua bridge uses its remaining host/result budget here).
+    /// The hard ceiling applies even if a direct caller constructs permissive
+    /// `WorkspaceToolLimits` manually.
+    pub(crate) fn exec_bounded(
+        &mut self,
+        tool: &str,
+        args: &Value,
+        max_output_bytes: usize,
+    ) -> Value {
+        let max_output_bytes = max_output_bytes
+            .min(self.limits.max_output_bytes)
+            .min(MAX_OUTPUT_BYTES);
         match tool {
-            "read" => self.exec_read(args),
-            "list_dir" => self.exec_list_dir(args),
-            "grep" => self.exec_grep(args),
+            "read" => self.exec_read_bounded(args, max_output_bytes),
+            "list_dir" => self.exec_list_dir_bounded(args, max_output_bytes),
+            "grep" => self.exec_grep_bounded(args, max_output_bytes),
             "write" => self.exec_write(args),
             other => json!({ "error": format!("unknown workspace tool '{other}'") }),
         }
     }
 
+    #[cfg(test)]
     fn exec_read(&self, args: &Value) -> Value {
+        self.exec_read_bounded(args, self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES))
+    }
+
+    fn exec_read_bounded(&self, args: &Value, max_output_bytes: usize) -> Value {
         let raw_path = match str_arg(args, "path") {
             Some(p) => p,
             None => return json!({ "error": "missing required argument 'path'" }),
@@ -183,15 +239,14 @@ impl Workspace {
             Some(p) => p,
             None => return json!({ "path": raw_path, "error": "invalid path" }),
         };
-        match self.content(&path) {
+        match self.file_bytes(&path) {
             None => json!({ "path": raw_path, "error": "not found" }),
             Some(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
-                let lines: Vec<&str> = text.split('\n').collect();
-                let total = lines.len();
+                // Count and slice borrowed byte lines; never clone or decode the
+                // whole file before applying the byte budget. Invalid UTF-8 is
+                // rendered lossily only after the selected bytes are bounded.
+                let total = bytes.split(|byte| *byte == b'\n').count();
                 let start = usize_arg(args, "start_line").unwrap_or(1).max(1);
-                // Cap how many lines one read can return, so a single
-                // huge file cannot drown the simulator's context.
                 let cap_end = start
                     .saturating_add(self.limits.max_read_lines)
                     .saturating_sub(1);
@@ -214,26 +269,53 @@ impl Workspace {
                         "note": "start_line is beyond the end of the file"
                     });
                 }
+
                 let last = end.min(total);
-                let slice: Vec<String> = lines[(start - 1)..last]
-                    .iter()
-                    .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
-                    .collect();
-                let actual_end = start + slice.len() - 1;
-                let content = slice.join("\n");
+                let mut selected = Vec::with_capacity(max_output_bytes.min(8192));
+                let mut actual_end = start - 1;
+                let mut byte_truncated = false;
+                for (index, raw_line) in bytes
+                    .split(|byte| *byte == b'\n')
+                    .enumerate()
+                    .skip(start - 1)
+                    .take(last - start + 1)
+                {
+                    let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+                    if actual_end >= start {
+                        if selected.len() == max_output_bytes {
+                            byte_truncated = true;
+                            break;
+                        }
+                        selected.push(b'\n');
+                    }
+                    let remaining = max_output_bytes.saturating_sub(selected.len());
+                    let take = line.len().min(remaining);
+                    selected.extend_from_slice(&line[..take]);
+                    actual_end = index + 1;
+                    if take < line.len() {
+                        byte_truncated = true;
+                        break;
+                    }
+                }
+                let content = bounded_lossy(&selected, max_output_bytes);
                 json!({
                     "path": raw_path,
                     "content": content,
                     "start_line": start,
                     "end_line": actual_end,
                     "total_lines": total,
-                    "truncated": actual_end < total,
+                    "truncated": byte_truncated || actual_end < total,
                 })
             }
         }
     }
 
+    #[cfg(test)]
     fn exec_list_dir(&self, args: &Value) -> Value {
+        self.exec_list_dir_bounded(args, self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES))
+    }
+
+    fn exec_list_dir_bounded(&self, args: &Value, max_output_bytes: usize) -> Value {
         let raw = str_arg(args, "path").unwrap_or("");
         // The root is the empty string; normalize any other path.
         let dir = if raw.trim().is_empty() {
@@ -245,7 +327,7 @@ impl Workspace {
             }
         };
         // If the path is itself a file, it is not a directory.
-        if !dir.is_empty() && self.content(&dir).is_some() {
+        if !dir.is_empty() && self.file_bytes(&dir).is_some() {
             return json!({ "path": raw, "error": "not a directory" });
         }
         let prefix = if dir.is_empty() {
@@ -255,13 +337,15 @@ impl Workspace {
         };
         // name -> kind; a name shown as a directory by any path wins.
         let mut entries: BTreeMap<String, &'static str> = BTreeMap::new();
-        for p in self.known_paths() {
+        let mut output_bytes = raw.len().saturating_add(64);
+        let mut truncated = false;
+        self.visit_known_paths(|p| {
             let rel = if prefix.is_empty() {
-                p.as_str()
+                p
             } else {
                 match p.strip_prefix(&prefix) {
                     Some(r) => r,
-                    None => continue,
+                    None => return true,
                 }
             };
             let (first, rest) = match rel.find('/') {
@@ -269,25 +353,40 @@ impl Workspace {
                 None => (rel, ""),
             };
             if first.is_empty() {
-                continue;
+                return true;
             }
             let kind = if rest.is_empty() { "file" } else { "dir" };
-            let slot = entries.entry(first.to_string()).or_insert("file");
-            if kind == "dir" {
-                *slot = "dir";
+            if let Some(slot) = entries.get_mut(first) {
+                if kind == "dir" {
+                    *slot = "dir";
+                }
+                return true;
             }
-        }
-        if !dir.is_empty() && entries.is_empty() {
+            let entry_bytes = first.len().saturating_add(32);
+            if entry_bytes > max_output_bytes.saturating_sub(output_bytes) {
+                truncated = true;
+                return false;
+            }
+            output_bytes += entry_bytes;
+            entries.insert(first.to_string(), kind);
+            true
+        });
+        if !dir.is_empty() && entries.is_empty() && !truncated {
             return json!({ "path": raw, "error": "not found" });
         }
         let arr: Vec<Value> = entries
             .iter()
             .map(|(n, k)| json!({ "name": n, "kind": k }))
             .collect();
-        json!({ "path": raw, "entries": arr })
+        json!({ "path": raw, "entries": arr, "truncated": truncated })
     }
 
+    #[cfg(test)]
     fn exec_grep(&self, args: &Value) -> Value {
+        self.exec_grep_bounded(args, self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES))
+    }
+
+    fn exec_grep_bounded(&self, args: &Value, max_output_bytes: usize) -> Value {
         let pattern = match str_arg(args, "pattern") {
             Some(p) => p.to_string(),
             None => return json!({ "error": "missing required argument 'pattern'" }),
@@ -308,35 +407,49 @@ impl Workspace {
             pattern.clone()
         };
         let mut matches: Vec<Value> = Vec::new();
+        let mut output_bytes = pattern.len().saturating_add(64);
         let mut truncated = false;
-        'outer: for p in self.known_paths() {
-            if !in_scope(&p) {
-                continue;
+        self.visit_known_paths(|p| {
+            if !in_scope(p) {
+                return true;
             }
-            let Some(bytes) = self.content(&p) else {
-                continue;
+            let Some(bytes) = self.file_bytes(p) else {
+                return true;
             };
-            let text = String::from_utf8_lossy(&bytes);
-            for (i, line) in text.split('\n').enumerate() {
-                let line = line.strip_suffix('\r').unwrap_or(line);
+            for (i, raw_line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+                let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
                 let hit = if case_insensitive {
-                    line.to_lowercase().contains(&needle)
+                    contains_unicode_case_insensitive(line, &needle)
                 } else {
-                    line.contains(needle.as_str())
+                    contains_bytes(line, needle.as_bytes())
                 };
                 if hit {
+                    let fixed_bytes = p.len().saturating_add(48);
+                    let remaining = max_output_bytes.saturating_sub(output_bytes);
+                    if fixed_bytes >= remaining {
+                        truncated = true;
+                        return false;
+                    }
+                    let text = truncate_line_bytes(
+                        line,
+                        self.limits.max_line_len,
+                        remaining - fixed_bytes,
+                    );
+                    let match_bytes = fixed_bytes.saturating_add(text.len());
+                    output_bytes += match_bytes;
                     matches.push(json!({
                         "path": p,
                         "line": i + 1,
-                        "text": truncate_line(line, self.limits.max_line_len),
+                        "text": text,
                     }));
                     if matches.len() >= self.limits.max_grep_matches {
                         truncated = true;
-                        break 'outer;
+                        return false;
                     }
                 }
             }
-        }
+            true
+        });
         json!({
             "pattern": pattern,
             "matches": matches,
@@ -373,7 +486,7 @@ impl Workspace {
                 name: "list_dir".into(),
                 description: "List the direct children of a directory in your simulation \
                               workspace. Returns {\"path\":..., \"entries\":[{\"name\":..., \
-                              \"kind\":\"file\"|\"dir\"}]}, or {\"error\":\"not found\"}. \
+                              \"kind\":\"file\"|\"dir\"}], \"truncated\":bool}, or {\"error\":\"not found\"}. \
                               Omit \"path\" (or pass \"\") for the workspace root. Use this \
                               to discover structure before reading."
                     .into(),
@@ -394,7 +507,7 @@ impl Workspace {
                      Returns {{\"path\":..., \"content\":..., \"start_line\":..., \
                      \"end_line\":..., \"total_lines\":..., \"truncated\":bool}}, or \
                      {{\"path\":..., \"error\":\"not found\"}}. Paths are relative to \
-                     the workspace root and use '/' separators. Use list_dir first if \
+                     the workspace root and use '/' separators. Construction is also byte-bounded. Use list_dir first if \
                      you do not know the exact path.",
                     self.limits.max_read_lines,
                 ),
@@ -413,7 +526,7 @@ impl Workspace {
                 description: format!(
                     "Search your simulation workspace for a literal substring. Returns \
                      {{\"pattern\":..., \"matches\":[{{\"path\":..., \"line\":..., \
-                     \"text\":...}}], \"truncated\":bool}} (at most {} matches). The \
+                     \"text\":...}}], \"truncated\":bool}} (at most {} matches; results are also byte-bounded). The \
                      \"pattern\" is a LITERAL substring, not a regex. Use this to find \
                      where something is defined or referenced.",
                     self.limits.max_grep_matches,
@@ -570,12 +683,91 @@ fn bool_arg(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(|v| v.as_bool())
 }
 
-fn truncate_line(line: &str, max_line_len: usize) -> String {
-    if line.chars().count() <= max_line_len {
-        return line.to_string();
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn contains_unicode_case_insensitive(haystack: &[u8], folded_needle: &str) -> bool {
+    let Ok(haystack) = std::str::from_utf8(haystack) else {
+        // Invalid UTF-8 has no well-defined Unicode case mapping. Preserve
+        // bounded, allocation-free behavior for its ASCII portions.
+        return contains_ascii_case_insensitive(haystack, folded_needle.as_bytes());
+    };
+    let needle: Vec<char> = folded_needle.chars().collect();
+    if needle.is_empty() {
+        return true;
     }
-    let head: String = line.chars().take(max_line_len).collect();
-    format!("{head}… <truncated>")
+
+    // KMP over streaming Unicode lowercase expansion preserves the previous
+    // Unicode-aware semantics without allocating a lowercased copy of a
+    // potentially enormous source line.
+    let mut prefix = vec![0usize; needle.len()];
+    let mut matched = 0usize;
+    for i in 1..needle.len() {
+        while matched > 0 && needle[i] != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if needle[i] == needle[matched] {
+            matched += 1;
+        }
+        prefix[i] = matched;
+    }
+    matched = 0;
+    for ch in haystack.chars().flat_map(char::to_lowercase) {
+        while matched > 0 && ch != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if ch == needle[matched] {
+            matched += 1;
+            if matched == needle.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn bounded_lossy(bytes: &[u8], max_bytes: usize) -> String {
+    let lossy = String::from_utf8_lossy(bytes);
+    truncate_utf8_bytes(&lossy, max_bytes).to_string()
+}
+
+fn truncate_line_bytes(line: &[u8], max_chars: usize, max_bytes: usize) -> String {
+    if max_chars == 0 || max_bytes == 0 {
+        return String::new();
+    }
+    // Bound potentially lossy decoding before it can allocate. Replacement
+    // characters can expand invalid bytes, so enforce the output byte cap too.
+    let input = &line[..line.len().min(max_bytes)];
+    let lossy = String::from_utf8_lossy(input);
+    let mut chars = lossy.chars();
+    let mut text: String = chars.by_ref().take(max_chars).collect();
+    let truncated = input.len() < line.len() || chars.next().is_some();
+    if truncated {
+        text.push_str("… <truncated>");
+    }
+    truncate_utf8_bytes(&text, max_bytes).to_string()
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 #[cfg(test)]
@@ -678,6 +870,7 @@ mod tests {
             max_read_lines: 1,
             max_grep_matches: 1,
             max_line_len: 2,
+            max_output_bytes: 1024,
         });
         let read = w.exec_read(&json!({"path": "a.txt"}));
         assert_eq!(read["content"], json!("one"));
@@ -706,10 +899,51 @@ mod tests {
     }
 
     #[test]
+    fn byte_budget_bounds_huge_single_lines_before_rendering() {
+        let huge = format!("{}NEEDLE", "x".repeat(8 * 1024 * 1024));
+        let mut w = ws(&[("huge.txt", &huge)]).with_tool_limits(WorkspaceToolLimits {
+            max_output_bytes: 1024,
+            ..WorkspaceToolLimits::default()
+        });
+
+        let read = w.exec("read", &json!({"path": "huge.txt"}));
+        assert!(read["content"].as_str().unwrap().len() <= 1024);
+        assert_eq!(read["truncated"], true);
+
+        // A tighter caller (the Lua bridge) wins over the workspace setting.
+        let tighter = w.exec_bounded("read", &json!({"path": "huge.txt"}), 64);
+        assert!(tighter["content"].as_str().unwrap().len() <= 64);
+        assert_eq!(tighter["truncated"], true);
+
+        // Grep searches borrowed bytes and only materializes a bounded preview,
+        // even when the match is at the end of one enormous line.
+        let grep = w.exec("grep", &json!({"pattern": "NEEDLE"}));
+        assert_eq!(grep["matches"].as_array().unwrap().len(), 1);
+        assert!(grep["matches"][0]["text"].as_str().unwrap().len() <= 1024);
+
+        let many: Vec<(String, String)> = (0..1000)
+            .map(|i| (format!("dir/{i:04}-{}", "n".repeat(80)), String::new()))
+            .collect();
+        let borrowed: Vec<(&str, &str)> = many
+            .iter()
+            .map(|(path, content)| (path.as_str(), content.as_str()))
+            .collect();
+        let listed = ws(&borrowed)
+            .with_tool_limits(WorkspaceToolLimits {
+                max_output_bytes: 1024,
+                ..WorkspaceToolLimits::default()
+            })
+            .exec_list_dir(&json!({"path": "dir"}));
+        assert_eq!(listed["truncated"], true);
+        assert!(listed["entries"].as_array().unwrap().len() < 1000);
+    }
+
+    #[test]
     fn grep_finds_substrings() {
         let w = ws(&[
             ("src/a.rs", "fn alpha() {}\nfn beta() {}\n"),
             ("src/b.rs", "alpha used here\n"),
+            ("src/unicode.rs", "Ärger\n"),
         ]);
         let r = w.exec_grep(&json!({"pattern": "alpha"}));
         let ms = r["matches"].as_array().unwrap();
@@ -725,6 +959,9 @@ mod tests {
         // Case-insensitive.
         let r = w.exec_grep(&json!({"pattern": "ALPHA", "case_insensitive": true}));
         assert_eq!(r["matches"].as_array().unwrap().len(), 2);
+        let r = w.exec_grep(&json!({"pattern": "ärGER", "case_insensitive": true}));
+        assert_eq!(r["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(r["matches"][0]["path"], "src/unicode.rs");
     }
 
     #[test]

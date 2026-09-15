@@ -96,6 +96,18 @@
   .bubble .role { font-size: 0.66rem; color: var(--text-dim); margin-bottom: 0.18rem; letter-spacing: 0.04em; }
   .bubble .body { white-space: pre-wrap; word-break: break-word; }
   .bubble .body.tool { font-family: var(--mono); font-size: 0.76rem; }
+  /* Lua is evidence from the simulator, not rendered HTML. Keep source
+     bounded until opened, scrollable, and copyable without losing its shape. */
+  .lua-program { margin: 0.15rem 0; align-self: flex-end; max-width: 100%; }
+  .lua-program > summary { color: var(--sim); }
+  .lua-current { margin: 0.45rem 0 0; }
+  .lua-revision { margin: 0.35rem 0 0.35rem 0.5rem; }
+  .lua-revision-meta, .lua-provenance { font-size: 0.75rem; color: var(--text-dim); }
+  .lua-diagnostic { margin: 0.22rem 0; padding-left: 0.45rem; border-left: 2px solid var(--sim-border); color: var(--text-dim); font-size: 0.78rem; }
+  .source-actions { display: flex; justify-content: flex-end; margin: 0.2rem 0; }
+  .source-code { margin: 0; padding: 0.5rem; max-height: 24em; overflow: auto; white-space: pre;
+    tab-size: 2; font: 0.76rem/1.45 var(--mono); background: var(--panel-2); border: 1px solid var(--sim-border); border-radius: 6px; }
+  .lua-provenance { display: flex; align-items: baseline; gap: 0.35rem; flex-wrap: wrap; margin: 0.05rem 0; }
   /* Thinking (visible reasoning) renders italic + dimmed so it reads as
      the model's inner voice, distinct from spoken output. */
   .bubble .body.think { font-style: italic; color: var(--text-dim); }
@@ -112,6 +124,7 @@
   .utag.sim { background: var(--sim-soft); color: var(--sim); border: 1px solid var(--sim-border); }
   .utag.ws { background: var(--workspace-soft); color: var(--workspace); border: 1px solid var(--workspace-border); }
   .wsops { margin: 0.15rem 0 0.15rem 1.4rem; border-left: 2px solid var(--workspace-border); padding-left: 0.5rem; }
+  .wsops.rolled-back { border-left-style: dashed; }
   .wsop { margin: 0.2rem 0; }
   /* Grades editor + frontier panel */
   input[type=text], input[type=number], select {
@@ -180,6 +193,11 @@ const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return 
 const fmtAxisVal = v => v == null ? '—' : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : +v.toFixed(3);
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({scenarios:'simulating scenarios'})[p] || p;
+const scenarioPhaseLabel = p => ({
+  resolving_inputs: 'resolving input variables',
+  preparing_tools: 'preparing tool simulation',
+  put_loop: 'running PUT tool loop',
+})[p] || p;
 
 // Failure texts (e.g. "simulator call failed: …" plus the whole provider
 // body) can run several screens long. Clip to the first `limit` chars and
@@ -217,22 +235,42 @@ function Thinking({ side, role, text }) {
   </div>`;
 }
 
+function LuaExecutionProvenance({ execution }) {
+  const outcome = execution.outcome || 'unknown';
+  const detailLabel = outcome === 'fallback' ? 'fallback reason'
+    : outcome === 'error' ? 'Lua error' : 'detail';
+  return html`<div class="lua-provenance">
+    <span class="utag sim">Lua revision ${execution.program_revision}</span>
+    <span>${outcome}</span>
+    ${execution.detail ? html`<span>· ${detailLabel}: ${execution.detail}</span>` : null}
+  </div>`;
+}
+
 function ExchangeView({ exchange, index, total }) {
   const a = exchange.call && exchange.call.args;
   const args = typeof a === 'string' ? a : JSON.stringify(a);
   const response = typeof exchange.response === 'string'
     ? exchange.response
     : JSON.stringify(exchange.response, null, 2);
+  const lua = exchange.lua_execution;
+  // A Lua runtime error is not a PUT tool error: the returned response below
+  // is the LLM fallback, while discarded operations are shown separately.
+  const simRole = lua ? (lua.outcome === 'computed' ? 'SIM · Lua' : 'SIM · LLM') : 'SIM';
   return html`<div class="exchange">
     <div class="exchange-head">tool exchange ${index + 1}${total > 1 ? ` of ${total}` : ''}</div>
     <${Bubble} side="put" role="PUT · tool" tool=${true} body=${`🔧 ${exchange.call.name}(${args})`} />
+    ${lua ? html`<${LuaExecutionProvenance} execution=${lua} />` : null}
     ${exchange.workspace_ops && exchange.workspace_ops.length
       ? html`<${WsOps} ops=${exchange.workspace_ops} />`
+      : null}
+    ${lua && lua.discarded_workspace_ops && lua.discarded_workspace_ops.length
+      ? html`<${WsOps} ops=${lua.discarded_workspace_ops} rolledBack=${true}
+          label="Lua workspace operations (not real world mutations)" />`
       : null}
     ${exchange.sim_thinking && exchange.sim_thinking.trim()
       ? html`<${Thinking} side="sim" role="SIM" text=${exchange.sim_thinking} />`
       : null}
-    <${Bubble} side="sim" role="SIM" body=${response} />
+    <${Bubble} side="sim" role=${simRole} body=${response} />
   </div>`;
 }
 
@@ -253,8 +291,75 @@ function TurnView({ turn, index }) {
   </div>`;
 }
 
+function copySource(source) {
+  if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(source);
+  // Clipboard access may be unavailable on an insecure origin. This is only
+  // a compatibility fallback; source itself is always rendered as text.
+  const area = document.createElement('textarea');
+  area.value = source;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand('copy');
+  area.remove();
+  return copied ? Promise.resolve() : Promise.reject(new Error('copy unavailable'));
+}
+
+function SourceCode({ source }) {
+  const [copied, setCopied] = useState('');
+  const text = source == null ? '' : String(source);
+  const copy = async () => {
+    try { await copySource(text); setCopied('copied'); }
+    catch { setCopied('copy unavailable'); }
+  };
+  return html`<div>
+    <div class="source-actions"><button class="toggle" onClick=${copy}>copy source</button>${copied ? html`<span class="meta" style="margin-left:0.35rem">${copied}</span>` : null}</div>
+    <pre class="source-code" tabindex="0"><code>${text}</code></pre>
+  </div>`;
+}
+
+function LuaRevision({ revision, index, current }) {
+  const diagnostic = revision.error == null ? '' : String(revision.error);
+  const content = html`<div class=${current ? 'lua-current' : 'lua-revision'}>
+    <div class="lua-revision-meta"><span class="mono">revision ${index}</span>${current ? ' · current' : ''}</div>
+    ${diagnostic ? html`<div class="lua-diagnostic">not executable: ${diagnostic}</div>` : null}
+    <${SourceCode} source=${revision.source} />
+  </div>`;
+  return current ? content : html`<details class="lua-revision"><summary><span class="mono">revision ${index}</span>${diagnostic ? ' · not executable' : ''}</summary>${content}</details>`;
+}
+
+function SetupEvidence({ program }) {
+  const ops = program.setup_workspace_ops || [];
+  const thinking = program.setup_thinking;
+  if (!ops.length && !(thinking && thinking.trim())) return null;
+  return html`<details style="margin-top:0.45rem">
+    <summary>setup simulator evidence${ops.length ? ` · ${ops.length} workspace op${ops.length===1?'':'s'}` : ''}</summary>
+    ${ops.length ? html`<${WsOps} ops=${ops} label="setup simulator workspace" />` : null}
+    ${thinking && thinking.trim() ? html`<${Thinking} side="sim" role="SIM · setup" text=${thinking} />` : null}
+  </details>`;
+}
+
+function SimulationProgram({ program }) {
+  if (!program) return null;
+  const revisions = Array.isArray(program.revisions) ? program.revisions : [];
+  const current = revisions.length - 1;
+  return html`<details class="lua-program">
+    <summary>SIM · Lua · <span class="mono">${program.path || '(unnamed program)'}</span>${current >= 0 ? ` · current revision ${current}` : ' · no revisions recorded'}</summary>
+    ${current >= 0 ? html`<${LuaRevision} revision=${revisions[current]} index=${current} current=${true} />` : null}
+    ${current > 0 ? html`<details style="margin-top:0.5rem"><summary>earlier revisions · ${current}</summary>
+      ${revisions.slice(0, current).map((revision, index) => html`<${LuaRevision} key=${index} revision=${revision} index=${index} current=${false} />`)}
+    </details>` : null}
+    <${SetupEvidence} program=${program} />
+  </details>`;
+}
+
 function Chat({ s }) {
   const out = [];
+  // The simulator's setup artifact sits beside resolved inputs, before the
+  // protagonist and even when setup fails before the first PUT turn.
+  if (s.simulation_program) out.push(html`<${SimulationProgram} key="lua" program=${s.simulation_program} />`);
   // Resolved input bindings (sim agent's output) — first, SIM side.
   const ri = s.resolved_inputs;
   if (ri && Object.keys(ri).length) {
@@ -277,25 +382,28 @@ function Chat({ s }) {
   return html`<div class="chat">${out.length ? out : html`<span class="meta">(no messages yet)</span>`}</div>`;
 }
 
-function WsOps({ ops }) {
+function WsOps({ ops, label = 'simulator workspace', rolledBack = false }) {
   // The simulator's workspace lookups while rendering this step — so a
   // reader can see whether the answer was GROUNDED in the uploaded files
   // (real reads/greps) or INVENTED. Collapsible; each op shows tool(args)
-  // and the workspace's JSON result.
-  return html`<details class="wsops"><summary class="meta" style="cursor:pointer">🔍 simulator workspace · ${ops.length} op${ops.length===1?'':'s'}: ${ops.map(o=>o.tool).join(', ')}</summary><div>${ops.map((o,i)=>{
+  // and the workspace's JSON result. Rolled-back Lua operations are not
+  // presented as committed world changes.
+  const heading = `${rolledBack ? '↩ ROLLED BACK · ' : '🔍 '}${label} · ${ops.length} op${ops.length===1?'':'s'}: ${ops.map(o=>o.tool).join(', ')}`;
+  return html`<details class=${`wsops${rolledBack ? ' rolled-back' : ''}`}><summary class="meta" style="cursor:pointer">${heading}</summary><div>${ops.map((o,i)=>{
     const a = (o.args !== null && typeof o.args === 'object') ? JSON.stringify(o.args) : String(o.args);
     const r = (o.result !== null && typeof o.result === 'object') ? JSON.stringify(o.result, null, 2) : String(o.result);
     return html`<div class="wsop" key=${i}><span class="mono meta">${o.tool}(${a})</span><pre class="step" style="max-height:9em;overflow:auto;margin:0.2rem 0">${r}</pre></div>`;
   })}</div></details>`;
 }
 
-function ScenarioPanel({ prog, input }) {
+function ScenarioPanel({ prog, input, label }) {
   const st = prog.state || {}, kind = st.kind || 'running';
   return html`
-    <div class="scen" key=${prog.scenario_id}>
+    <div class="scen">
       <div class="scen-head">
-        <span class="scen-id">${prog.scenario_id}</span>
+        <span class="scen-id">${label || 'scenario'}</span>
         <${ScenBadge} s=${prog} />
+        ${kind === 'running' && prog.phase ? html`<span class="meta">${scenarioPhaseLabel(prog.phase)}</span>` : null}
         <span class="meta">${(prog.turns||[]).length} PUT turn(s) · ${(prog.turns||[]).reduce((n,t)=>n+(t.tool_exchanges||[]).length,0)} tool call(s)</span>
       </div>
       ${kind === 'failed' ? html`<div class="note" style="margin:0.3rem 0"><${ClipText} text=${st.error} /></div>` : null}
@@ -567,9 +675,45 @@ function FrontierPanel({ jobs, token }) {
     </div>`;
 }
 
+// Completed attempts are the durable trace view. Synthesize the same shape
+// that Chat consumes rather than relying on frozen live progress, and carry
+// the program explicitly: it is evidence just like resolved inputs.
+function progressFromAttempt(attempt) {
+  return {
+    state: { kind: 'done' },
+    turns: attempt.turns || [],
+    user_message: attempt.scenario && attempt.scenario.user_message,
+    resolved_inputs: attempt.resolved_inputs || {},
+    simulation_program: attempt.simulation_program,
+  };
+}
+
 function JobCard({ j, token, onDelete, leaving }) {
-  const inputById = {}; (j.scenarios || []).forEach(s => { inputById[s.id] = s; });
-  const progs = (j.progress && j.progress.scenarios) || [];
+  const liveProgs = (j.progress && j.progress.scenarios) || [];
+  const inputById = {}; (j.scenarios || []).forEach(s => { if (s.id != null) inputById[s.id] = s; });
+  // A completed result has attempts by value, not scenario ids. Keep failed
+  // live entries too: they have no AttemptView but can still contain setup
+  // evidence from a failed preparation phase.
+  const panels = j.status === 'done' && j.result
+    ? (j.result.attempts || []).map((attempt, index) => ({
+        key: `attempt-${index}`,
+        prog: progressFromAttempt(attempt),
+        input: attempt.scenario,
+        label: `scenario ${index + 1}`,
+      })).concat(liveProgs.map((prog, index) => ({ prog, index }))
+        .filter(({ prog }) => (prog.state || {}).kind === 'failed')
+        .map(({ prog, index }) => ({
+          key: `failed-${index}`,
+          prog,
+          input: inputById[prog.scenario_id] || (j.scenarios || [])[index],
+          label: `failed scenario ${index + 1}`,
+        })))
+    : liveProgs.map((prog, index) => ({
+        key: prog.scenario_id || `scenario-${index}`,
+        prog,
+        input: inputById[prog.scenario_id] || (j.scenarios || [])[index],
+        label: prog.scenario_id || `scenario ${index + 1}`,
+      }));
   return html`
     <div class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
       <h2>
@@ -593,7 +737,7 @@ function JobCard({ j, token, onDelete, leaving }) {
       <${GradesPanel} j=${j} token=${token} />
       <${ResultLine} j=${j} />
       <div class="scens" style="margin-top:0.5rem">
-        ${progs.map(p => html`<${ScenarioPanel} key=${p.scenario_id} prog=${p} input=${inputById[p.scenario_id]} />`)}
+        ${panels.map(panel => html`<${ScenarioPanel} key=${panel.key} prog=${panel.prog} input=${panel.input} label=${panel.label} />`)}
       </div>
     </div>`;
 }

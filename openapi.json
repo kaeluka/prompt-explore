@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional free-form `reason` justifying the run. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of model turns. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED by an LLM from the narrative, not scripted. Deterministic / pinned responses (e.g. a `when_called_with` override) are a deliberate NON-GOAL: any fixture or DSL you build fails to express a realistic case, and making the harness own simulation fidelity just swaps LLM flakiness (already accepted) for harness bugs (now your problem). `example_responses` are realism hints for the simulator, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries are rejected.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
+    "description": "Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional free-form `reason` justifying the run. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of model turns. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED from the narrative. By default every response is rendered by the LLM. Experimental opt-in conversation_controls.lua_simulation={} lets that same simulator specialize optional Lua tool implementations before the PUT loop and during later fallbacks. This accelerates computations, NOT a cache or a semantic correctness guarantee. Unimplemented inputs delegate through PleaseSimulateException; runtime errors delegate with explicit error evidence and rolled-back Lua writes. The generated source and revision history are visible in simulation_program, beside resolved_inputs, on both progress.scenarios[] and result.attempts[]. Each exchange records lua_execution when tried. All computed/LLM responses enter the same simulator conversation. Each progress scenario reports its phase: resolving_inputs, preparing_tools, or put_loop (scenarios can be in different phases concurrently). Lua has only bounded workspace capabilities, no host IO, randomness, or clock. The caller judges code and traces against the narrative; example_responses remain realism hints, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries are rejected.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -398,6 +398,17 @@
             "$ref": "#/components/schemas/Scenario",
             "description": "The scenario this attempt ran, BY VALUE (no id) — the attempt is\nself-describing: here is the world, the input domain, the opening\nturn, and the trace they produced."
           },
+          "simulation_program": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SimulationProgram",
+                "description": "Generated program source/revisions and setup evidence (experimental).\nPresent when conversation_controls.lua_simulation is enabled and this\nPUT has tools; revision indices match tool_exchanges[].lua_execution."
+              }
+            ]
+          },
           "tool_calls": {
             "type": "integer",
             "description": "Number of tool calls the simulated PUT made in this trace.",
@@ -445,8 +456,19 @@
       },
       "ConversationControls": {
         "type": "object",
-        "description": "Caller-selected limits and sampling controls for an investigation's LLM\nconversations. Defaults: temperature 0.7; PUT/simulator output limits\n32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;\n5000 read lines, 1000 grep matches, and 2000 characters per grep line.",
+        "description": "Caller-selected limits and sampling controls for an investigation's LLM\nconversations. Defaults: temperature 0.7; PUT/simulator output limits\n32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;\n5000 read lines, 1000 grep matches, 2000 characters per grep line,\nand 1 MiB constructed output per workspace tool call.",
         "properties": {
+          "lua_simulation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaOptions",
+                "description": "Experimental hybrid simulation: omit/null to keep today's LLM-only path;\n{} enables it with bounded defaults. Per trace, the simulator prepares\n.prompt-explore/tools.lua in its private workspace, initially a valid\nfallback-only module. It may specialize only selected inputs or tools.\nMissing handlers and PleaseSimulateException delegate to the LLM.\nCrashes/limits also delegate, with a distinct error record; staged Lua\nwrites are rolled back before fallback. Computed replies enter the SAME\nsimulator conversation without another LLM call. No random/time/host IO.\nInspect simulation_program beside resolved_inputs on attempts and live\nprogress, and each tool_exchanges[].lua_execution for exact revision,\ncomputed/fallback/error outcome and discarded operations. Generated code\nis unverified simulation evidence, not ground truth or a verdict."
+              }
+            ]
+          },
           "max_workspace_turns": {
             "type": [
               "integer",
@@ -513,6 +535,15 @@
               "null"
             ],
             "description": "Characters retained from each simulator workspace grep-result line.",
+            "minimum": 1
+          },
+          "workspace_max_output_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Byte budget used while constructing one simulator workspace tool result.\nThis prevents a huge single-line file or directory from being copied in\nfull before downstream token/Lua limits can reject it.",
+            "maximum": 4194304,
             "minimum": 1
           },
           "workspace_max_read_lines": {
@@ -1065,6 +1096,108 @@
           }
         }
       },
+      "LuaExecutionRecord": {
+        "type": "object",
+        "description": "Evidence of a Lua attempt before a tool response. A fallback or error is\nNOT the tool's return value: all staged mutations were discarded and the\nLLM rendered the actual response. Successful Lua operations appear in the\nexchange's ordinary workspace_ops instead.",
+        "required": [
+          "program_revision",
+          "outcome"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discarded_workspace_ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceOp"
+            }
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/LuaOutcome"
+          },
+          "program_revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "LuaOptions": {
+        "type": "object",
+        "description": "Resource controls for one Lua tool-handler invocation.\n\nAll fields are explicit, documented overrides. Zero is invalid even for\ndirect library callers. The duration limit is cooperative: it is checked by\nthe VM hook and around Rust/Lua conversion boundaries, but a single native\nLua C operation cannot be preempted until it returns.",
+        "properties": {
+          "max_duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cooperative wall-clock deadline for the whole invocation (default 2000 ms).",
+            "default": 2000,
+            "maximum": 10000,
+            "minimum": 1
+          },
+          "max_host_bytes": {
+            "type": "integer",
+            "description": "Cumulative serialized workspace capability argument/result traffic limit (default 8 MiB).",
+            "default": 8388608,
+            "maximum": 33554432,
+            "minimum": 1
+          },
+          "max_host_calls": {
+            "type": "integer",
+            "description": "Workspace capability-call limit (default 128).",
+            "default": 128,
+            "maximum": 1024,
+            "minimum": 1
+          },
+          "max_instructions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Shared VM/conversion work budget across initialization and handler execution (default 1 million).",
+            "default": 1000000,
+            "maximum": 10000000,
+            "minimum": 1
+          },
+          "max_memory_bytes": {
+            "type": "integer",
+            "description": "Lua allocator limit, including handler-created values (default 16 MiB).",
+            "default": 16777216,
+            "maximum": 67108864,
+            "minimum": 1
+          },
+          "max_result_bytes": {
+            "type": "integer",
+            "description": "Maximum serialized size per converted value, shared by response and state-patch values (default 1 MiB).",
+            "default": 1048576,
+            "maximum": 4194304,
+            "minimum": 1
+          },
+          "max_source_bytes": {
+            "type": "integer",
+            "description": "UTF-8 source limit before parsing; bytecode is never loaded (default 256 KiB).",
+            "default": 262144,
+            "maximum": 1048576,
+            "minimum": 1
+          },
+          "max_value_depth": {
+            "type": "integer",
+            "description": "Maximum JSON/Lua nesting depth (default 128; hard ceiling 128 for host stack safety).",
+            "default": 128,
+            "maximum": 128,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "LuaOutcome": {
+        "type": "string",
+        "enum": [
+          "computed",
+          "fallback",
+          "error"
+        ]
+      },
       "ModelEntry": {
         "type": "object",
         "description": "One model the caller can put in a request's `put_model` or `sim_model` field. `name` is\nthe full namespaced, pastable string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`).",
@@ -1115,6 +1248,24 @@
           "server_default_provider": {
             "type": "string",
             "description": "Provider applied to bare model names when no namespace is given\n(from PROMPT_EXPLORE_PROVIDER). Maps to a namespace prefix:\n`zai` -> `zai_coding::`, `zai_standard` -> `zai::`,\n`openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`,\n`gemini` -> `vertex::`."
+          }
+        }
+      },
+      "ProgramRevision": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "Lua source, displayed as data, never executed by the browser. If error\nreports an oversized/non-UTF8 file this is a bounded preview, not an\nexecutable replacement; that revision always falls back to the LLM."
           }
         }
       },
@@ -1213,9 +1364,21 @@
           "max_workspace_turns",
           "workspace_max_read_lines",
           "workspace_max_grep_matches",
-          "workspace_max_line_len"
+          "workspace_max_line_len",
+          "workspace_max_output_bytes"
         ],
         "properties": {
+          "lua_simulation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaOptions",
+                "description": "Null means disabled; otherwise the actual Lua sandbox limits used."
+              }
+            ]
+          },
           "max_workspace_turns": {
             "type": "integer",
             "minimum": 0
@@ -1259,6 +1422,10 @@
             "minimum": 0
           },
           "workspace_max_line_len": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "workspace_max_output_bytes": {
             "type": "integer",
             "minimum": 0
           },
@@ -1397,6 +1564,15 @@
           }
         }
       },
+      "ScenarioPhase": {
+        "type": "string",
+        "description": "Per-scenario phase: scenarios run concurrently, so one may still prepare\nits Lua module while another already executes PUT turns.",
+        "enum": [
+          "resolving_inputs",
+          "preparing_tools",
+          "put_loop"
+        ]
+      },
       "ScenarioProgress": {
         "type": "object",
         "description": "One scenario's progress within a run. Positional: index in the parent\n`scenarios` vec = the scenario's position in the submitted list.",
@@ -1405,6 +1581,10 @@
           "turns"
         ],
         "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/ScenarioPhase",
+            "description": "The scenario's current work, including optional Lua preparation."
+          },
           "resolved_inputs": {
             "type": "object",
             "description": "The concrete `{{variable}}` values the simulator generated from\nthe scenario's `input_domain` and rendered the PUT template with.\nPopulated as soon as the scenario starts running (before step 1),\nso it's visible live — the exact input this trace runs with.",
@@ -1412,6 +1592,16 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "simulation_program": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SimulationProgram"
+              }
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/ScenarioState"
@@ -1496,6 +1686,38 @@
           "write"
         ]
       },
+      "SimulationProgram": {
+        "type": "object",
+        "description": "A generated executable simulation, not an oracle. The narrative remains\nground truth; the caller judges whether this code implements it faithfully.\nCode may be specialized during setup or later LLM fallbacks. All revisions\nare retained so each exchange identifies the exact implementation it tried.",
+        "required": [
+          "path",
+          "revisions"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramRevision"
+            },
+            "description": "Zero-based revisions, including the initial fallback-only module."
+          },
+          "setup_thinking": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "setup_workspace_ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceOp"
+            }
+          }
+        }
+      },
       "ThinkingLevel": {
         "type": "string",
         "description": "Provider-neutral thinking/reasoning level for one LLM role. The\nvocabulary is deliberately small and shared across providers:\n`none` explicitly requests NO reasoning, `minimal`…`max` scale\neffort up. Omitting the field entirely means \"provider default\"\n— which is different from `none`. Defaults vary by model and\nendpoint; omitting the field does not imply medium or no reasoning.\n\nBedrock OpenAI keywords are passed through literally, without\ndowngrading unsupported levels. GPT-OSS uses flat `reasoning_effort`\nand supports low/medium/high; none/minimal/xhigh/max are rejected.\nGPT-5.6 Luna/Terra/Sol use nested\n`reasoning.effort` and support none/low/medium/high/xhigh/max.\nGPT-6 Astra uses the nested shape and supports low/medium/high/xhigh/max,\nbut not none. All these Bedrock models reject minimal.\n\nPOST rejects models for which the adapter has no reasoning mapping\n(for example Bedrock Meta models). Model-specific keyword support is\nchecked by the provider DURING execution, not prevalidated at POST.\nA 202 response therefore does not guarantee the level is supported:\npoll GET /api/investigations/{id} and inspect `result.result.failures`\nfor provider rejections, alongside the traces. Other providers may\nmap effort differently; do not assume that a level is portable.",
@@ -1533,6 +1755,17 @@
           "call": {
             "$ref": "#/components/schemas/ToolCall",
             "description": "The tool request emitted by the PUT."
+          },
+          "lua_execution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaExecutionRecord",
+                "description": "Present only when hybrid Lua simulation tried an implementation."
+              }
+            ]
           },
           "response": {
             "description": "The response rendered by the simulator and returned to the PUT."
@@ -1581,7 +1814,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Realism hints for the simulator LLM. These are anchors/examples,\nNOT pinned outputs — the simulator renders its own concrete\nresponses from the narrative (see the API description's DESIGN\nINTENT: scripted/pinned tool responses are a deliberate non-goal)."
+            "description": "Realism hints for the simulator LLM. These are anchors/examples,\nNOT pinned outputs — the simulator renders its own concrete\nresponses from the narrative (see the API description's DESIGN\nINTENT). In experimental hybrid mode it may generate executable Lua\nhandlers; these examples remain hints, not forced return values."
           },
           "name": {
             "type": "string"

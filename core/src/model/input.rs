@@ -55,7 +55,8 @@ pub struct ToolSchema {
     /// Realism hints for the simulator LLM. These are anchors/examples,
     /// NOT pinned outputs — the simulator renders its own concrete
     /// responses from the narrative (see the API description's DESIGN
-    /// INTENT: scripted/pinned tool responses are a deliberate non-goal).
+    /// INTENT). In experimental hybrid mode it may generate executable Lua
+    /// handlers; these examples remain hints, not forced return values.
     #[serde(default)]
     pub example_responses: Vec<String>,
 }

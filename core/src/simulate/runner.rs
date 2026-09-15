@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolDef};
-use crate::model::simulation::{RunProgress, Scenario, ToolCall, ToolExchange, Trace, TraceTurn};
+use crate::model::simulation::{
+    LuaExecutionRecord, RunProgress, Scenario, ScenarioPhase, ToolCall, ToolExchange, Trace,
+    TraceTurn,
+};
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
 use super::simulator::{SimSession, SimulatorOptions, ToolSimulator, apply_patch};
@@ -99,6 +102,7 @@ impl Runner {
         // this world-briefed conversation, so the picked values are
         // consistent with the world the tools will render against.
         let mut sim = self.simulator.session(&build_simulator_notes(scenario));
+        sim.set_progress(progress.clone(), index);
         let resolved_inputs = sim
             .resolve(&put.template, &scenario.input_domain)
             .await
@@ -108,6 +112,14 @@ impl Runner {
         if let Some(p) = &progress {
             if let Ok(mut g) = p.lock() {
                 g.set_resolved(index, resolved_inputs.clone());
+            }
+        }
+        sim.prepare_program(&put.tools)
+            .await
+            .map_err(RunnerError::Simulator)?;
+        if let Some(p) = &progress {
+            if let Ok(mut g) = p.lock() {
+                g.set_scenario_phase(index, ScenarioPhase::PutLoop);
             }
         }
         let mut messages = initial_messages(put, scenario, &resolved_inputs);
@@ -171,7 +183,7 @@ impl Runner {
             // without responses and produce a protocol-incoherent trace.
             let mut tool_exchanges = Vec::with_capacity(response.tool_calls.len());
             for tc in &response.tool_calls {
-                let (tool_response, state_after, workspace_ops, sim_thinking) = self
+                let (tool_response, state_after, workspace_ops, sim_thinking, lua_execution) = self
                     .handle_tool_call(put, tc, &mut world_state, &mut messages, &mut sim)
                     .await?;
 
@@ -182,6 +194,7 @@ impl Runner {
                             .unwrap_or(Value::String(tc.arguments.clone())),
                     },
                     response: tool_response,
+                    lua_execution,
                     sim_thinking,
                     world_state_after: state_after,
                     workspace_ops,
@@ -201,6 +214,7 @@ impl Runner {
         }
 
         Ok(Trace {
+            simulation_program: sim.simulation_program().cloned(),
             turns,
             final_world_state: world_state.into_iter().collect(),
             resolved_inputs,
@@ -223,12 +237,14 @@ impl Runner {
             Option<std::collections::HashMap<String, Value>>,
             Vec<crate::model::simulation::WorkspaceOp>,
             Option<String>,
+            Option<LuaExecutionRecord>,
         ),
         RunnerError,
     > {
         let tool = put.tools.iter().find(|t| t.name == tc.name);
         let mut workspace_ops = Vec::new();
         let mut sim_thinking = None;
+        let mut lua_execution = None;
 
         let outcome: Value = match tool {
             None => Value::String(format!("error: unknown tool '{}'", tc.name)),
@@ -252,6 +268,7 @@ impl Runner {
                     }
                     workspace_ops = sim_outcome.workspace_ops;
                     sim_thinking = sim_outcome.thinking;
+                    lua_execution = sim_outcome.lua_execution;
                     sim_outcome.response
                 }
             },
@@ -268,7 +285,13 @@ impl Runner {
             }
             _ => None,
         };
-        Ok((outcome, state_after, workspace_ops, sim_thinking))
+        Ok((
+            outcome,
+            state_after,
+            workspace_ops,
+            sim_thinking,
+            lua_execution,
+        ))
     }
 }
 

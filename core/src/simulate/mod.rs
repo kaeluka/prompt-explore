@@ -3,6 +3,7 @@
 //! state patches); code does the bookkeeping. The harness surfaces the
 //! traces; the caller is the judge.
 
+pub mod lua;
 pub mod runner;
 pub mod simulator;
 pub mod transcript;

@@ -30,6 +30,8 @@ gcp_auth = "0.12"
 # Parse provider Retry-After HTTP-date headers (already a transitive dependency).
 httpdate = "1"
 jsonschema = "0.49.3"
+# Sandboxed Lua 5.4 runtime for optional deterministic tool handlers.
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

@@ -21,7 +21,9 @@
 //! model's head.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+mod program;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -32,7 +34,11 @@ use crate::llm::{
     parse::parse_json_with_error,
 };
 use crate::model::ToolSchema;
-use crate::model::simulation::{ToolCall, WorkspaceOp};
+use crate::model::simulation::{
+    LuaExecutionRecord, RunProgress, SimulationProgram, ToolCall, WorkspaceOp,
+};
+
+use super::lua::LuaOptions;
 
 use super::workspace::Workspace;
 
@@ -60,6 +66,9 @@ pub struct SimulatorOptions {
     /// Applies to empty replies, invalid JSON, and schema mismatches.
     pub max_repair_attempts: usize,
     pub max_workspace_turns: usize,
+    /// Experimental executable simulation. None retains pure LLM simulation;
+    /// Some(default options) enables Lua setup and per-call computed/fallback routing.
+    pub lua_simulation: Option<LuaOptions>,
 }
 
 impl Default for SimulatorOptions {
@@ -69,6 +78,7 @@ impl Default for SimulatorOptions {
             max_tokens: Some(DEFAULT_SIMULATOR_MAX_TOKENS),
             max_repair_attempts: DEFAULT_SIMULATOR_REPAIR_ATTEMPTS,
             max_workspace_turns: DEFAULT_MAX_WORKSPACE_TURNS,
+            lua_simulation: None,
         }
     }
 }
@@ -88,6 +98,7 @@ pub struct ToolSimulator {
 
 /// What the simulator decided for one tool call.
 pub struct SimOutcome {
+    pub lua_execution: Option<LuaExecutionRecord>,
     /// The value returned to the PUT as the tool's response.
     pub response: Value,
     /// Shallow merge into world state (null deletes a key). Present
@@ -105,6 +116,8 @@ pub struct SimOutcome {
 /// One simulator conversation for one trace; owns the chat history and
 /// this trace's private workspace.
 pub struct SimSession {
+    simulation_program: Option<SimulationProgram>,
+    progress: Option<(Arc<Mutex<RunProgress>>, usize)>,
     client: Arc<dyn LlmClient>,
     model: String,
     thinking_level: Option<ThinkingLevel>,
@@ -146,6 +159,8 @@ impl ToolSimulator {
     pub fn session(&self, notes: &str) -> SimSession {
         let system = build_system_prompt(notes, self.workspace_seed.file_count());
         SimSession {
+            simulation_program: None,
+            progress: None,
             client: self.client.clone(),
             model: self.model.clone(),
             thinking_level: self.thinking_level,
@@ -228,12 +243,42 @@ impl SimSession {
         }))
         .map_err(|e| LlmError::MalformedResponse(e.to_string()))?;
 
-        let parsed: SimReply = self
-            .ask_json(
-                user,
+        let (computed, lua_execution) = self.try_lua(tool, call, world_state).await;
+        let parsed: SimReply = if let Some(parsed) = computed {
+            // Same user request / assistant completion shape as the LLM path.
+            // No model call: future fallbacks still see the entire established
+            // history, including computed responses and their provenance.
+            let mut request: Value = serde_json::from_str(&user).expect("generated JSON");
+            request["execution_backend"] = json!("lua");
+            self.messages.push(Message::User {
+                content: request.to_string(),
+            });
+            self.messages.push(Message::Assistant {
+                content: Some(serde_json::to_string(&parsed).expect("JSON simulator reply")),
+                tool_calls: vec![],
+            });
+            parsed
+        } else {
+            let mut request: Value = serde_json::from_str(&user).expect("generated JSON");
+            if let Some(record) = &lua_execution {
+                request["lua_attempt"] = serde_json::to_value(record).expect("JSON Lua record");
+                request["lua_instructions"] = json!(
+                    "The Lua attempt did not commit any workspace writes or world-state patch. \
+                     Render this response now from the world and established conversation. \
+                     You may use workspace tools to repair/specialize the program for later calls."
+                );
+            }
+            let request_content = if lua_execution.is_some() {
+                request.to_string()
+            } else {
+                user
+            };
+            self.ask_json(
+                request_content,
                 "{\"response\": <the tool's return value>, \"state_patch\": <write calls only>}",
             )
-            .await?;
+            .await?
+        };
         // Drain the workspace ops and simulator thinking accumulated for
         // THIS response (plus any left over from resolve, which had no step
         // to attach to).
@@ -243,6 +288,7 @@ impl SimSession {
             (!parts.is_empty()).then(|| parts.join("\n\n"))
         };
         Ok(SimOutcome {
+            lua_execution,
             response: parsed.response,
             state_patch: if is_write { parsed.state_patch } else { None },
             workspace_ops,
@@ -260,6 +306,7 @@ impl SimSession {
             args,
             result: result.clone(),
         });
+        self.capture_program();
         result
     }
 
@@ -438,7 +485,7 @@ impl SimSession {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct SimReply {
     response: Value,
     state_patch: Option<Map<String, Value>>,

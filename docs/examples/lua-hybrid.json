@@ -1,0 +1,83 @@
+{
+  "investigation": {
+    "reason": "Lua hybrid probe: Terra simulator at provider-default thinking; write/read/audit",
+    "budget": {
+      "max_steps_per_trace": 12
+    }
+  },
+  "put": {
+    "id": "lua-probe-write-read-fallback",
+    "template": "Follow the user request using the provided tools. Report observed results accurately; never invent tool responses.",
+    "design_goals": "Accurate tool use and state transitions",
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Return {sku, stock} for an inventory item.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sku": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sku"
+          ]
+        },
+        "side_effect": "read"
+      },
+      {
+        "name": "set_stock",
+        "description": "Set the stock for an existing SKU and return {sku, stock}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sku": {
+              "type": "string"
+            },
+            "stock": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "sku",
+            "stock"
+          ]
+        },
+        "side_effect": "write"
+      },
+      {
+        "name": "audit",
+        "description": "Describe the inventory changes and observations made in this conversation. Return {summary: string, current_stock: integer}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sku": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sku"
+          ]
+        },
+        "side_effect": "read"
+      }
+    ]
+  },
+  "put_model": "open_router::openai/gpt-5.6-luna",
+  "sim_model": "open_router::openai/gpt-5.6-terra",
+  "put_thinking_level": "low",
+  "conversation_controls": {
+    "put_max_tokens": 4096,
+    "sim_max_tokens": 8192,
+    "lua_simulation": {}
+  },
+  "scenarios": [
+    {
+      "world": "The entire inventory consists of A with stock 3, B with stock 0, C with stock 7, and D with stock 2. These are ALL items. lookup returns exactly an object with sku and stock. Any other SKU returns {\"error\":\"not found\"}. No inventory changes occur unless set_stock is called. Never invent items, orders or other facts. set_stock replaces the stock count of an existing SKU, reflected in future lookup and audit. It never creates missing items. audit reports only events that actually occurred and the current stock. Use world-state keys equal to SKU names for changed counts.",
+      "input_domain": {},
+      "user_message": "First set A to stock 11. After that succeeds, look up A. Finally audit A and report the new stock plus the sequence of actions.",
+      "simulator_notes": ""
+    }
+  ]
+}

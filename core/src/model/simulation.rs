@@ -22,6 +22,64 @@ pub struct WorkspaceOp {
     pub result: Value,
 }
 
+/// A generated executable simulation, not an oracle. The narrative remains
+/// ground truth; the caller judges whether this code implements it faithfully.
+/// Code may be specialized during setup or later LLM fallbacks. All revisions
+/// are retained so each exchange identifies the exact implementation it tried.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SimulationProgram {
+    pub path: String,
+    /// Zero-based revisions, including the initial fallback-only module.
+    pub revisions: Vec<ProgramRevision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup_workspace_ops: Vec<WorkspaceOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_thinking: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ProgramRevision {
+    /// Lua source, displayed as data, never executed by the browser. If error
+    /// reports an oversized/non-UTF8 file this is a bounded preview, not an
+    /// executable replacement; that revision always falls back to the LLM.
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Evidence of a Lua attempt before a tool response. A fallback or error is
+/// NOT the tool's return value: all staged mutations were discarded and the
+/// LLM rendered the actual response. Successful Lua operations appear in the
+/// exchange's ordinary workspace_ops instead.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct LuaExecutionRecord {
+    pub program_revision: usize,
+    pub outcome: LuaOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded_workspace_ops: Vec<WorkspaceOp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LuaOutcome {
+    Computed,
+    Fallback,
+    Error,
+}
+
+/// Per-scenario phase: scenarios run concurrently, so one may still prepare
+/// its Lua module while another already executes PUT turns.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioPhase {
+    #[default]
+    ResolvingInputs,
+    PreparingTools,
+    PutLoop,
+}
+
 /// The LLM phase an investigation is currently in. Exposed so a reader can
 /// see what the job is doing while it runs — never just a bare "running".
 /// See the API description: every LLM phase is an observable status.
@@ -52,6 +110,11 @@ pub struct RunProgress {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ScenarioProgress {
     pub state: ScenarioState,
+    /// The scenario's current work, including optional Lua preparation.
+    #[serde(default)]
+    pub phase: ScenarioPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation_program: Option<SimulationProgram>,
     /// PUT model turns simulated so far. Each turn is one model completion;
     /// all tool calls requested by that completion are nested together in
     /// `tool_exchanges` rather than flattened into misleading sequential turns.
@@ -93,6 +156,18 @@ impl RunProgress {
     pub fn set_state(&mut self, index: usize, state: ScenarioState) {
         if let Some(s) = self.scenarios.get_mut(index) {
             s.state = state;
+        }
+    }
+
+    pub fn set_scenario_phase(&mut self, index: usize, phase: ScenarioPhase) {
+        if let Some(s) = self.scenarios.get_mut(index) {
+            s.phase = phase;
+        }
+    }
+
+    pub fn set_program(&mut self, index: usize, program: SimulationProgram) {
+        if let Some(s) = self.scenarios.get_mut(index) {
+            s.simulation_program = Some(program);
         }
     }
 
@@ -246,6 +321,9 @@ pub struct ToolExchange {
     pub call: ToolCall,
     /// The response rendered by the simulator and returned to the PUT.
     pub response: Value,
+    /// Present only when hybrid Lua simulation tried an implementation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lua_execution: Option<LuaExecutionRecord>,
     /// The SIMULATOR model's visible reasoning while rendering this response
     /// (its whole inner drive: lookups and final answer). Transparency only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +346,9 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Trace {
+    /// Generated simulation code and its revision history, when enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation_program: Option<SimulationProgram>,
     /// The trace grouped by actual PUT model completion. Multi-tool calls are
     /// nested in one turn instead of appearing as several sequential turns.
     pub turns: Vec<TraceTurn>,

@@ -252,6 +252,24 @@ Override it per investigation with
 This setting does not change HTTP/transport retries. Failed investigations
 are not automatically resubmitted when either budget is exhausted.
 
+### Experimental Lua simulation (feature branch only)
+
+On `feature/lua-tool-simulation` (not the released v0.4.1 binary), add
+`"conversation_controls": {"lua_simulation": {}}` to an investigation to try
+hybrid execution. The simulator can specialize `.prompt-explore/tools.lua`
+using its workspace tools. Handlers compute suitable inputs and call
+`PleaseSimulateException("reason")` for others. Computed and LLM-rendered
+responses share one conversation; failed/delegated Lua writes are rolled back.
+Omit the option or use `null` for the existing LLM-only behavior.
+
+The UI shows the generated source, every revision, and setup work beside the
+resolved inputs. Exchanges identify Lua computation, intentional delegation,
+or Lua errors followed by LLM recovery. Lua controls have documented hard
+ceilings, and workspace result construction is byte-bounded before data enters
+the VM. **Generated code is unverified:** it can run successfully and still
+contradict the world. See
+[the prototype notes, limits, and live findings](docs/lua-simulation.md).
+
 ### 2. Setup with your coding agent
 
 Tell your coding agent to
@@ -346,3 +364,31 @@ values are not downgraded and can fail during execution after POST returns
 The Bedrock reasoning fix is temporarily supplied by a [revision-pinned
 genai fork](https://github.com/kaeluka/rust-genai/commit/849d657347429fe04753a487422ab06ab4e098db).
 The pin will be removed once an upstream crates.io release includes it.
+
+# Usage Advice
+
+It usually is a good idea to design an experiment up front:
+
+- Select or scenarios for evaluation. Make sure the scenarios are appropriately varied.
+- Define what success looks like:
+  - for hard to define or composite qualities, consider designing a rubric to optimize for up front. Write the rubric down.
+  - for classification problems: do you have reliable ground truth? Chances are, you can decide the ground truth and write a scenario to match it!
+- If you can't design an experiment up front, use prompt-explore to run a few investigations and see if there's some you like more than others. _Then_, design an experiment.
+
+Investigations can vary different parameters and it is usually a good idea to only change one at a time:
+
+ - Prompt (and the set of tools)
+ - Model
+ - Scenarios
+
+When you already have a running system: have your agent start with your current prompt. Let it read the tool implementation. Let it look at tool call logs. Give it the context it needs to faithfully model the system.
+
+Simulation quality matters: `prompt-explore` does _not_ evaluate simulation quality for you. A certain level of errors is expected. Whether or not these errors matter depends on the conclusions you want to draw. You can not draw conclusions without checking the investigation conversations carefully. Use a dedicated subagent for simulation quality assessment.
+
+Be wary of repeatability - a 'better' prompt may be a lucky nondeterministic output.
+
+LLMs are very bad about suggesting prompt updates. Frontier models are not necessarily going to suggest better improvements. Use your own sense. Read suggested prompt changes critically.
+
+ - Will they generalize?
+ - Are they accumulating long lists of do-nots, rather than explain the principle?
+ - Standard writing advice. Use it.

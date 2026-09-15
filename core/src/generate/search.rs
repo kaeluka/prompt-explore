@@ -80,6 +80,8 @@ impl Investigator {
                     .iter()
                     .map(|s| crate::model::simulation::ScenarioProgress {
                         state: crate::model::simulation::ScenarioState::Running,
+                        phase: Default::default(),
+                        simulation_program: None,
                         turns: Vec::new(),
                         user_message: s.user_message.clone(),
                         resolved_inputs: Default::default(),
