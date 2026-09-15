@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "prompt-explore"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "prompt-explore-server"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "prompt-explore",
