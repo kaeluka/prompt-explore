@@ -219,6 +219,39 @@ ENVIRONMENT:
                            contents (default: 524288000 = 500 MB).
 ```
 
+### Retry controls
+
+Long investigations should survive transient provider failures. Each PUT or
+simulator completion gets **20 retries after its initial attempt** by default:
+transient 429 rate limits, HTTP 408/server errors (except permanent 501/505),
+connection/timeouts, interrupted responses, and malformed HTTP response
+bodies. Authentication, request-validation, and billing/quota errors still
+fail promptly. Only the failed completion is retried, with the same request;
+completed tool calls and scenarios are not replayed.
+
+Process-level overrides:
+
+- `PROMPT_EXPLORE_MAX_RETRIES=20` — retries per completion; `0` disables them.
+- `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS=5000` — linear waits of 5s, 10s, …, 100s.
+- `PROMPT_EXPLORE_RETRY_JITTER_PERCENT=10` — adds up to 10% positive jitter.
+
+A longer provider `Retry-After` (seconds or HTTP-date) or `retry-after-ms`
+extends the wait. Retry number, delay, model, and failure category are logged
+without dumping request bodies or headers. Exhausting the default budget
+can take roughly 18–19 minutes in backoff alone, plus request time; retries
+are generous, not unlimited. A lost response may still have been generated
+and billed by the provider, so actual costs can exceed reported usage.
+
+Malformed **simulator content** has a separate repair budget: **20 total
+attempts, including the initial reply**, per JSON answer. Empty replies,
+invalid JSON, and schema mismatches are retried in the same conversation;
+repair feedback includes the parser diagnostic and location when available.
+Override it per investigation with
+`"conversation_controls": {"sim_max_repair_attempts": 30}`. The job view's
+`conversation_controls.sim_max_repair_attempts` reports the resolved value.
+This setting does not change HTTP/transport retries. Failed investigations
+are not automatically resubmitted when either budget is exhausted.
+
 ### 2. Setup with your coding agent
 
 Tell your coding agent to

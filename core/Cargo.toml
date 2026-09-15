@@ -27,6 +27,8 @@ genai = { git = "https://github.com/kaeluka/rust-genai.git", rev = "849d65734742
 # the GCP analog of aws-config: reads the ADC file written by
 # `gcloud auth application-default login`, caches + refreshes OAuth2 tokens.
 gcp_auth = "0.12"
+# Parse provider Retry-After HTTP-date headers (already a transitive dependency).
+httpdate = "1"
 jsonschema = "0.49.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }

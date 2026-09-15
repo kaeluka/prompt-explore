@@ -41,10 +41,18 @@ pub fn extract_json(s: &str) -> &str {
 /// backslashes outside valid escapes, so the repair is a no-op on
 /// well-formed input.
 pub fn parse_json<T: DeserializeOwned>(s: &str) -> Option<T> {
+    parse_json_with_error(s).ok()
+}
+
+/// Like [`parse_json`], but retain the original parse/schema diagnostic and
+/// its line/column in the extracted payload for the simulator's repair turn.
+/// An unsuccessful escape-repair pass must not replace the original location
+/// with a shifted location in a modified string.
+pub fn parse_json_with_error<T: DeserializeOwned>(s: &str) -> Result<T, serde_json::Error> {
     let extracted = extract_json(s);
-    serde_json::from_str(extracted)
-        .ok()
-        .or_else(|| serde_json::from_str(&repair_escapes(extracted)).ok())
+    serde_json::from_str(extracted).or_else(|original_error| {
+        serde_json::from_str(&repair_escapes(extracted)).map_err(|_| original_error)
+    })
 }
 
 /// Escape any `\` not followed by a valid JSON escape char
@@ -77,6 +85,43 @@ fn repair_escapes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detailed_parse_preserves_syntax_location_and_schema_errors() {
+        let error = parse_json_with_error::<serde_json::Value>("{\n\"response\": \"unterminated")
+            .unwrap_err();
+        assert!(error.is_eof());
+        assert_eq!(error.line(), 2);
+        assert!(error.column() > 0);
+        #[derive(Debug, serde::Deserialize)]
+        struct Reply {
+            #[allow(dead_code)]
+            response: String,
+        }
+        let error = parse_json_with_error::<Reply>(r#"{"result":"wrong field"}"#).unwrap_err();
+        assert!(error.to_string().contains("missing field `response`"));
+        let error = parse_json_with_error::<Reply>(r#"{"response":42}"#).unwrap_err();
+        assert!(error.to_string().contains("expected a string"));
+    }
+
+    #[test]
+    fn detailed_parse_keeps_existing_fence_and_escape_tolerance() {
+        let value: serde_json::Value =
+            parse_json_with_error("```json\n{\"response\": \"hello\"}\n```").unwrap();
+        assert_eq!(value["response"], "hello");
+        // Actual single backslashes in the model reply, not already-escaped JSON.
+        let value: serde_json::Value =
+            parse_json_with_error(r#"{"response":"C:\Users\someone"}"#).unwrap();
+        assert_eq!(value["response"], r"C:\Users\someone");
+        let raw = r#"{"response":"bad\q", "other": }"#;
+        let original = serde_json::from_str::<serde_json::Value>(raw).unwrap_err();
+        assert_eq!(
+            parse_json_with_error::<serde_json::Value>(raw)
+                .unwrap_err()
+                .to_string(),
+            original.to_string()
+        );
+    }
 
     #[test]
     fn plain_json() {

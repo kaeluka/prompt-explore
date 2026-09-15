@@ -202,7 +202,7 @@ struct InvestigateRequest {
 
 /// Caller-selected limits and sampling controls for an investigation's LLM
 /// conversations. Defaults: temperature 0.7; PUT/simulator output limits
-/// 32768 tokens each; five JSON-repair attempts; 250 workspace turns;
+/// 32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;
 /// 5000 read lines, 1000 grep matches, and 2000 characters per grep line.
 #[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 struct ConversationControls {
@@ -222,7 +222,10 @@ struct ConversationControls {
     #[serde(default)]
     #[schema(minimum = 1)]
     sim_max_tokens: Option<u32>,
-    /// Total attempts for malformed simulator JSON, including the initial reply.
+    /// Total attempts per simulator JSON reply, including the initial reply
+    /// (default 20). Empty replies, invalid JSON, and schema mismatches are
+    /// retried in the same conversation with repair feedback. This is separate
+    /// from process-level HTTP/transport retries, not a provider retry setting.
     #[serde(default)]
     #[schema(minimum = 1)]
     sim_max_repair_attempts: Option<usize>,
@@ -566,7 +569,14 @@ fn print_help() {
     println!("                           Default maximum workspace tool calls per simulator");
     println!("                           response (default: 250; request override available).");
     println!("    PROMPT_EXPLORE_MAX_RETRIES");
-    println!("                           Transient provider retries (default: 20; 0 disables).");
+    println!(
+        "                           Retries per provider completion (default: 20; 0 disables)."
+    );
+    println!(
+        "                           Covers transient 429s, 408/5xx, connection/response failures."
+    );
+    println!("                           Permanent auth/validation/quota errors fail fast.");
+    println!("                           Retry-After can extend the configured backoff.");
     println!("    PROMPT_EXPLORE_RETRY_BASE_DELAY_MS");
     println!("                           Linear retry backoff step in ms (default: 5000).");
     println!("    PROMPT_EXPLORE_RETRY_JITTER_PERCENT");
@@ -1987,6 +1997,17 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["grades"]["clarity"], 0.9);
+    }
+
+    #[test]
+    fn default_repair_budget_is_resolved_and_reported() {
+        let controls: ConversationControls = serde_json::from_value(serde_json::json!({})).unwrap();
+        let (runner, _, resolved) = resolved_conversation_controls(&controls);
+        assert_eq!(runner.simulator.max_repair_attempts, 20);
+        assert_eq!(
+            serde_json::to_value(resolved).unwrap()["sim_max_repair_attempts"],
+            20
+        );
     }
 
     #[test]

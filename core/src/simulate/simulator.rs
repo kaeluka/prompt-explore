@@ -28,7 +28,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 use crate::llm::{
-    ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolCallRequest, ToolDef, parse_json,
+    ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolCallRequest, ToolDef,
+    parse::parse_json_with_error,
 };
 use crate::model::ToolSchema;
 use crate::model::simulation::{ToolCall, WorkspaceOp};
@@ -38,7 +39,7 @@ use super::workspace::Workspace;
 /// Cap on how many workspace tool turns the simulator may take before it
 /// must produce a final answer for one request. Generous enough to
 /// list → grep → read several files; bounded so a stuck model cannot loop
-/// forever. Default is 100, configurable via the
+/// forever. Configurable via the
 /// `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS` environment variable (default 250).
 pub const DEFAULT_MAX_WORKSPACE_TURNS: usize = 250;
 /// Default sampling temperature for simulator completions.
@@ -47,7 +48,7 @@ pub const DEFAULT_SIMULATOR_TEMPERATURE: f32 = 0.7;
 pub const DEFAULT_SIMULATOR_MAX_TOKENS: u32 = 32 * 1024;
 /// Default number of total attempts for a malformed simulator reply
 /// (the initial reply plus repairs).
-pub const DEFAULT_SIMULATOR_REPAIR_ATTEMPTS: usize = 5;
+pub const DEFAULT_SIMULATOR_REPAIR_ATTEMPTS: usize = 20;
 
 /// Controls for the simulator's LLM conversation. Supply these at the
 /// runner boundary rather than embedding policy in the conversation loop.
@@ -55,6 +56,8 @@ pub const DEFAULT_SIMULATOR_REPAIR_ATTEMPTS: usize = 5;
 pub struct SimulatorOptions {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Total attempts per JSON reply (initial attempt included); default 20.
+    /// Applies to empty replies, invalid JSON, and schema mismatches.
     pub max_repair_attempts: usize,
     pub max_workspace_turns: usize,
 }
@@ -296,16 +299,19 @@ impl SimSession {
             // reply, executing any workspace lookups along the way.
             let terminal = self.run_workspace_loop(&tools).await?;
             match terminal {
-                None => last_failure = "reply was empty".into(),
-                Some(content) => match parse_json::<T>(&content) {
-                    Some(v) => {
+                None => {
+                    last_failure = "reply was empty".into();
+                    last_raw.clear();
+                }
+                Some(content) => match parse_json_with_error::<T>(&content) {
+                    Ok(v) => {
                         self.messages.push(Message::Assistant {
                             content: Some(content),
                             tool_calls: vec![],
                         });
                         return Ok(v);
                     }
-                    None => {
+                    Err(error) => {
                         // Keep the malformed reply visible so the repair
                         // turn can see exactly what went wrong.
                         self.messages.push(Message::Assistant {
@@ -313,14 +319,16 @@ impl SimSession {
                             tool_calls: vec![],
                         });
                         last_raw = content;
-                        last_failure =
-                            "reply was not a single JSON object of the required shape".into();
+                        last_failure = format!(
+                            "reply was not a single JSON object of the required shape: {error}"
+                        );
                     }
                 },
             }
         }
         Err(LlmError::MalformedResponse(format!(
-            "simulator reply unusable after repair attempts ({last_failure}): {last_raw}"
+            "simulator reply unusable after {} attempts ({last_failure}): {last_raw}",
+            self.options.max_repair_attempts,
         )))
     }
 

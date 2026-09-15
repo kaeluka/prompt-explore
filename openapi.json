@@ -445,7 +445,7 @@
       },
       "ConversationControls": {
         "type": "object",
-        "description": "Caller-selected limits and sampling controls for an investigation's LLM\nconversations. Defaults: temperature 0.7; PUT/simulator output limits\n32768 tokens each; five JSON-repair attempts; 250 workspace turns;\n5000 read lines, 1000 grep matches, and 2000 characters per grep line.",
+        "description": "Caller-selected limits and sampling controls for an investigation's LLM\nconversations. Defaults: temperature 0.7; PUT/simulator output limits\n32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;\n5000 read lines, 1000 grep matches, and 2000 characters per grep line.",
         "properties": {
           "max_workspace_turns": {
             "type": [
@@ -478,7 +478,7 @@
               "integer",
               "null"
             ],
-            "description": "Total attempts for malformed simulator JSON, including the initial reply.",
+            "description": "Total attempts per simulator JSON reply, including the initial reply\n(default 20). Empty replies, invalid JSON, and schema mismatches are\nretried in the same conversation with repair feedback. This is separate\nfrom process-level HTTP/transport retries, not a provider retry setting.",
             "minimum": 1
           },
           "sim_max_tokens": {

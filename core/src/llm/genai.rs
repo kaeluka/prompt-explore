@@ -32,8 +32,9 @@ use serde_json::Value;
 // listing Client without adding genai as a direct dependency.
 pub use genai::Client as GenaiClient;
 
-/// Default retry count for transient provider rate limits. Override with
-/// `PROMPT_EXPLORE_MAX_RETRIES` (set 0 to disable retries).
+/// Default retry count per completion for transient rate limits, HTTP
+/// timeouts/server errors, and transport failures (21 total attempts).
+/// Override with `PROMPT_EXPLORE_MAX_RETRIES` (set 0 to disable retries).
 pub const DEFAULT_MAX_RETRIES: u32 = 20;
 /// Default initial linear-backoff interval in milliseconds. Override with
 /// `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS`.
@@ -276,41 +277,15 @@ impl LlmClient for ProviderClient {
         // separate field, so thinking is captured uniformly.
         options.normalize_reasoning_content = Some(true);
 
-        // Retry transient 429 rate limits (z.ai code 1302 "Rate limit
-        // reached for requests", OpenRouter's upstream shared-pool 429
-        // "temporarily rate-limited upstream. Please retry shortly") with a
-        // linear backoff. The retry count, base interval, and jitter are
-        // process-level controls exposed through PROMPT_EXPLORE_* env vars.
-        // A QUOTA-window 429 (z.ai code 1308 "Usage limit
-        // reached for 5 hour", OpenAI "You exceeded your current quota")
-        // is NOT retried — backoff won't help, so fail fast. Providers
-        // don't surface a usable Retry-After here (the body has no duration
-        // and genai flattens response headers into the error string), so we
-        // back off ourselves.
-        let retry = RetrySettings::from_env();
-        let mut retries: u32 = 0;
-        loop {
-            match self
-                .client
+        // Retry only this completion, with identical messages/options. Tool
+        // execution is outside this boundary, so a network failure never
+        // replays an accepted tool batch or restarts the investigation.
+        retry_provider_call(&model, RetrySettings::from_env(), || {
+            self.client
                 .exec_chat(&model, chat_req.clone(), Some(&options))
-                .await
-            {
-                Ok(resp) => return Ok(convert_response(resp)),
-                Err(e) => {
-                    let msg = e.to_string();
-                    if retries < retry.max_retries && is_retryable_429(&msg) {
-                        let backoff = jittered(
-                            retry_delay(retries + 1, retry.base_delay_ms),
-                            retry.jitter_percent,
-                        );
-                        tokio::time::sleep(backoff).await;
-                        retries += 1;
-                        continue;
-                    }
-                    return Err(LlmError::Provider(msg));
-                }
-            }
-        }
+        })
+        .await
+        .map(convert_response)
     }
 }
 
@@ -408,6 +383,102 @@ pub fn qualify_model(model: &str, default_provider: &str) -> String {
     format!("{ns}::{model}")
 }
 
+/// Retry transient HTTP/transport failures with linear backoff and positive
+/// jitter, honoring a longer provider Retry-After. The budget is per completion,
+/// not per investigation; authentication, validation, and hard quota failures
+/// still fail fast. Keep raw prompts, responses, and headers out of retry logs.
+async fn retry_provider_call<T, F, Fut>(
+    model: &str,
+    retry: RetrySettings,
+    mut call: F,
+) -> Result<T, LlmError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = genai::Result<T>>,
+{
+    let mut retries = 0;
+    loop {
+        match call().await {
+            Ok(response) => return Ok(response),
+            Err(err) if retries < retry.max_retries && is_retryable(&err) => {
+                retries += 1;
+                let backoff = retry.backoff(retries, &err, std::time::SystemTime::now());
+                let kind = err.status().map_or_else(
+                    || "transport/response failure".to_string(),
+                    |status| format!("HTTP {status}"),
+                );
+                eprintln!(
+                    "LLM {model}: retry {retries}/{} in {:.3}s ({kind})",
+                    retry.max_retries,
+                    backoff.as_secs_f64(),
+                );
+                tokio::time::sleep(backoff).await;
+            }
+            Err(err) => return Err(LlmError::Provider(provider_error_message(&err))),
+        }
+    }
+}
+
+/// Use typed status/transport errors, never numbers or error-like text in a
+/// provider body (a validation error can quote a prompt containing "503").
+fn is_retryable(err: &genai::Error) -> bool {
+    if let Some(status) = err.status() {
+        return match status.as_u16() {
+            408 => true,
+            429 => is_retryable_429(&err.to_string()),
+            // Not Implemented / HTTP Version Not Supported require a client
+            // or endpoint change, not waiting for an overloaded server.
+            501 | 505 => false,
+            500..=599 => true,
+            _ => false,
+        };
+    }
+    match err {
+        genai::Error::WebModelCall { webc_error, .. }
+        | genai::Error::WebAdapterCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::Reqwest(err) => {
+                err.is_timeout()
+                    || err.is_connect()
+                    || err.is_request()
+                    || err.is_body()
+                    || err.is_decode()
+            }
+            // A gateway can return a truncated JSON envelope or an HTML error
+            // page with HTTP 200. These are transport responses, NOT malformed
+            // JSON in the model's content (the simulator repairs that itself).
+            genai::webc::Error::ResponseFailedInvalidJson { .. }
+            | genai::webc::Error::ResponseFailedNotJson { .. } => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// genai's Display stops at reqwest's outer message ("error sending request").
+/// Preserve the underlying timeout/reset/TLS cause when retries are exhausted,
+/// without dumping Debug payloads or request headers containing credentials.
+fn provider_error_message(err: &genai::Error) -> String {
+    use std::error::Error;
+    let mut message = err.to_string();
+    if let genai::Error::WebModelCall {
+        webc_error: genai::webc::Error::Reqwest(request_error),
+        ..
+    }
+    | genai::Error::WebAdapterCall {
+        webc_error: genai::webc::Error::Reqwest(request_error),
+        ..
+    } = err
+    {
+        let mut cause = request_error.source();
+        while let Some(error) = cause {
+            message.push_str(": ");
+            message.push_str(&error.to_string());
+            cause = error.source();
+        }
+    }
+    message
+}
+
 /// A 429 that's worth retrying: a transient per-request or shared-pool
 /// rate limit, NOT a long quota window or a billing limit. Detected from
 /// genai's flattened error string (which includes the HTTP status and the
@@ -448,6 +519,17 @@ struct RetrySettings {
 }
 
 impl RetrySettings {
+    fn backoff(
+        self,
+        attempt: u32,
+        err: &genai::Error,
+        now: std::time::SystemTime,
+    ) -> std::time::Duration {
+        let delay = retry_delay(attempt, self.base_delay_ms)
+            .max(provider_retry_after(err, now).unwrap_or_default());
+        jittered(delay, self.jitter_percent)
+    }
+
     fn from_env() -> Self {
         Self {
             max_retries: env_number("PROMPT_EXPLORE_MAX_RETRIES", DEFAULT_MAX_RETRIES),
@@ -461,6 +543,37 @@ impl RetrySettings {
             ),
         }
     }
+}
+
+/// Provider delays are minimum waits. Accept Retry-After seconds/HTTP-date
+/// and the millisecond variant; if both are present, respect the longer one.
+fn provider_retry_after(
+    err: &genai::Error,
+    now: std::time::SystemTime,
+) -> Option<std::time::Duration> {
+    use std::time::Duration;
+    let headers = err.headers()?;
+    let milliseconds = headers
+        .get("retry-after-ms")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_millis);
+    let standard = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.trim()
+                .parse::<u64>()
+                .ok()
+                .and_then(|seconds| seconds.checked_mul(1000))
+                .map(Duration::from_millis)
+                .or_else(|| {
+                    httpdate::parse_http_date(v)
+                        .ok()
+                        .map(|date| date.duration_since(now).unwrap_or_default())
+                })
+        });
+    milliseconds.max(standard)
 }
 
 fn env_number<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -488,6 +601,9 @@ fn jittered(base: std::time::Duration, jitter_percent: u64) -> std::time::Durati
         (base.as_millis() * u128::from(sampled_percent) / 100).min(u128::from(u64::MAX)) as u64;
     base.saturating_add(std::time::Duration::from_millis(jitter_ms))
 }
+
+#[cfg(test)]
+mod retry_tests;
 
 #[cfg(test)]
 mod tests {

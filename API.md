@@ -155,14 +155,14 @@ Values: `lower`, `higher`
 
 ### `ConversationControls`
 
-Caller-selected limits and sampling controls for an investigation's LLM conversations. Defaults: temperature 0.7; PUT/simulator output limits 32768 tokens each; five JSON-repair attempts; 250 workspace turns; 5000 read lines, 1000 grep matches, and 2000 characters per grep line.
+Caller-selected limits and sampling controls for an investigation's LLM conversations. Defaults: temperature 0.7; PUT/simulator output limits 32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns; 5000 read lines, 1000 grep matches, and 2000 characters per grep line.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `max_workspace_turns` | integer? | no | Workspace tool calls per simulator response before a final-answer nudge. |
 | `put_max_tokens` | integer? | no | Maximum output tokens per PUT completion; omit for the documented default. |
 | `put_temperature` | number? | no | PUT sampling temperature; omit for the documented default. |
-| `sim_max_repair_attempts` | integer? | no | Total attempts for malformed simulator JSON, including the initial reply. |
+| `sim_max_repair_attempts` | integer? | no | Total attempts per simulator JSON reply, including the initial reply (default 20). Empty replies, invalid JSON, and schema mismatches are retried in the same conversation with repair feedback. This is separate from process-level HTTP/transport retries, not a provider retry setting. |
 | `sim_max_tokens` | integer? | no | Maximum output tokens per simulator completion; omit for the documented default. |
 | `sim_temperature` | number? | no | Simulator sampling temperature; omit for the documented default. |
 | `workspace_max_grep_matches` | integer? | no | Matches one simulator workspace `grep` may return. |
