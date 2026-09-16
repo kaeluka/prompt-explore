@@ -139,6 +139,10 @@ points; hollow circles denote dominated points. Preliminary markers add reduced
 opacity and a dashed outer ring; this distinction is separate from dominance.
 Groups with no contributors are listed as pending without fake coordinates.
 The UI shows member counts and the missing-grade backlog beside the plot.
+Inline SVG surfaces, grid, text, and point outlines inherit the UI's light/dark
+theme via semantic CSS variables, so toggling needs no refetch. Point hues,
+dominance shapes, and preliminary markers stay unchanged. Standalone SVGs
+have explicit Solarized Light fallback colors.
 
 ## Architecture and durability
 

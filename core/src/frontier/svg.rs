@@ -39,15 +39,16 @@ const R: f64 = 28.0; // right margin
 const T: f64 = 36.0; // top margin (titles)
 const B: f64 = 64.0; // bottom margin (x ticks + title)
 
-// Solarized Light: neutral bases for structure and a preference-neutral
-// violet for the frontier. Point hues come from the equal-lightness
-// categorical palette in `frontier::PALETTE`.
-const TICK_COLOR: &str = "#657b83";
-const LABEL_COLOR: &str = "#586e75";
-const DIM_LABEL_COLOR: &str = "#93a1a1";
-const GRID_COLOR: &str = "#93a1a1";
-const PANEL_BG: &str = "#fdf6e3";
-const PAGE_BG: &str = "#eee8d5";
+// Inline plots inherit these semantic CSS variables from the UI, so switching
+// theme updates existing SVGs immediately, without a refetch. Standalone SVGs
+// have explicit Solarized Light fallbacks. Categorical point hues and the
+// preference-neutral violet frontier stay identical across themes.
+const TICK_COLOR: &str = "var(--frontier-tick, #657b83)";
+const LABEL_COLOR: &str = "var(--frontier-label, #586e75)";
+const DIM_LABEL_COLOR: &str = "var(--frontier-dim-label, #93a1a1)";
+const GRID_COLOR: &str = "var(--frontier-grid, #93a1a1)";
+const PANEL_BG: &str = "var(--frontier-panel, #fdf6e3)";
+const PAGE_BG: &str = "var(--frontier-page, #eee8d5)";
 const FRONTIER_STROKE: &str = "#6c71c4";
 
 /// XML-escape a text run and discard XML-forbidden control code points. Tags
@@ -745,6 +746,19 @@ mod tests {
             &PlotAxis::new("y", BetterDirection::Higher),
         );
         assert!(svg.contains("up &amp; right is better"));
+        // Structural colors, including filled-point outlines, inherit the UI
+        // theme. Point identity colors and preliminary semantics do not change.
+        for color in [
+            PAGE_BG,
+            PANEL_BG,
+            GRID_COLOR,
+            LABEL_COLOR,
+            TICK_COLOR,
+            DIM_LABEL_COLOR,
+        ] {
+            assert!(svg.contains(color), "missing theme role: {color}");
+        }
+        assert!(svg.contains(r##"fill="#268bd2""##));
         assert!(svg.contains("rotate(-90)"));
         assert!(svg.contains("<path d=\"M ")); // staircase
         assert!(svg.contains("<g opacity=\"0.48\""));

@@ -153,7 +153,14 @@
   .ptable .group-label { min-width: 14em; }
   .ptable .dom { color: var(--text-dim); }
   .ptable .nd { color: var(--green); font-weight: 700; }
-  .frontier-svg { margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
+  .frontier-svg {
+    /* Inherited by the inline SVG; no server request needed on theme changes.
+       Keep point hues stable while adapting surfaces, text, grid and outlines. */
+    --frontier-page: var(--panel); --frontier-panel: var(--panel-2);
+    --frontier-label: var(--text); --frontier-tick: var(--text-dim);
+    --frontier-dim-label: var(--text-dim); --frontier-grid: var(--border);
+    margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto;
+  }
   .frontier-svg svg { display: block; }
   /* Long failure texts (e.g. full provider error bodies) are clipped to one
      line-length; the "…" / "⌃" marker toggles the rest. */
