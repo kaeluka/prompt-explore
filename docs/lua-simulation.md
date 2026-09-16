@@ -1,7 +1,8 @@
 # Experimental hybrid Lua simulation
 
-Feature branch: `feature/lua-tool-simulation`. This is a prototype, not part of
-the v0.4.1 release. No automatic cache and no in-harness semantic judge.
+Experimental prototype, opt-in, and not part of a stable release's tested
+surface. No automatic cache and no in-harness semantic judge. The backend may
+change while its semantics and speed are assessed.
 
 ## Using it
 

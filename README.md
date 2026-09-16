@@ -252,15 +252,16 @@ Override it per investigation with
 This setting does not change HTTP/transport retries. Failed investigations
 are not automatically resubmitted when either budget is exhausted.
 
-### Experimental Lua simulation (feature branch only)
+### Experimental Lua simulation
 
-On `feature/lua-tool-simulation` (not the released v0.4.1 binary), add
-`"conversation_controls": {"lua_simulation": {}}` to an investigation to try
-hybrid execution. The simulator can specialize `.prompt-explore/tools.lua`
+Add `"conversation_controls": {"lua_simulation": {}}` to an investigation to try
+hybrid execution. This backend is experimental and may change while its
+semantics and speed are assessed; it is opt-in, and omitting the option (or
+sending `null`) keeps the existing LLM-only behavior. The simulator can
+specialize `.prompt-explore/tools.lua`
 using its workspace tools. Handlers compute suitable inputs and call
 `PleaseSimulateException("reason")` for others. Computed and LLM-rendered
 responses share one conversation; failed/delegated Lua writes are rolled back.
-Omit the option or use `null` for the existing LLM-only behavior.
 
 The UI shows the generated source, every revision, and setup work beside the
 resolved inputs. Exchanges identify Lua computation, intentional delegation,

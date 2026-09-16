@@ -133,10 +133,11 @@ just field names: what a scenario IS (a test case: a world spec plus a
 protagonist) and what it is FOR. When you change the API, write for that
 reader.
 
-## Experimental Lua simulation (feature branch)
+## Experimental Lua simulation
 
-`feature/lua-tool-simulation` deliberately explores an **optional performance
-backend**, not deterministic enforcement of narrative fidelity. Enable it with
+`conversation_controls.lua_simulation` deliberately explores an **optional
+performance backend**, not deterministic enforcement of narrative fidelity.
+Enable it with
 `conversation_controls.lua_simulation: {}` (omit/null keeps LLM-only behavior).
 The simulator authors ordinary Lua in `.prompt-explore/tools.lua`, initially
 fallback-only. A handler may call `PleaseSimulateException` for selected inputs;
