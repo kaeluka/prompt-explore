@@ -630,7 +630,10 @@ function FrontierPanel({ jobs, token }) {
   const [dirs, setDirs] = useState({});
   const [plot, setPlot] = useState(null);
   const [err, setErr] = useState(null);
-  const knownTagKeys = [...new Set(allJobs.flatMap(j => Object.keys(jobTags(j))))].sort();
+  // System provenance keys always exist on real jobs; include them even before
+  // the first job arrives. Caller tags appear as soon as any investigation
+  // carries them. Grouping is deliberately selected, never free-typed.
+  const knownTagKeys = [...new Set([...SYSTEM_TAG_KEYS, ...allJobs.flatMap(j => Object.keys(jobTags(j)))])].sort();
   const gradedNames = [...new Set(allJobs.flatMap(j => Object.keys(j.grades || {})))];
   const options = RESERVED_AXES.map(([n]) => n).concat(gradedNames.filter(n => !reservedDir(n)));
   const names = [];
@@ -707,6 +710,9 @@ function FrontierPanel({ jobs, token }) {
       <button class="del" title="remove this axis" disabled=${axes.length <= 1} onClick=${() => setAxes(axes.filter((_, x) => x !== i))}>✕</button>
     </div>`;
   };
+  const groupOptionsFor = i => knownTagKeys.filter(k => groupBy[i] === k || !groupBy.some((selected, x) => x !== i && selected === k));
+  const unusedTagKeys = knownTagKeys.filter(k => !groupBy.includes(k));
+  const addGroupingTag = () => { if (unusedTagKeys.length) setGroupBy(groupBy.concat([unusedTagKeys[0]])); };
   const counts = point => (point.excluded || []).reduce((out, e) => ({ ...out, [e.status]: (out[e.status] || 0) + 1 }), {});
   const groupTagText = point => groupBy.length
     ? groupBy.map(k => `${k}=${point.tags && point.tags[k] != null ? point.tags[k] : 'null'}`).join(' · ')
@@ -718,9 +724,13 @@ function FrontierPanel({ jobs, token }) {
     <div class="meta" style="margin:0.4rem 0">Matching tag values become one point. Every coordinate is a mean over the same completed, fully graded investigations. Preliminary points are faded with a dashed ring; groups with no usable members stay pending without coordinates. All excluded members remain in the backlog. Delete unwanted investigations to remove them from the comparison.</div>
     <div style="margin:0.45rem 0">
       <div class="meta">group by tags <span style="opacity:0.7">(empty = one group; missing values are grouped as null)</span></div>
-      ${groupBy.map((key, i) => html`<div class="grow" key=${i} style="margin:0.2rem 0"><input type="text" list="frontier-tag-keys" value=${key} placeholder="tag name" onInput=${e => setGroupBy(groupBy.map((k, x) => x === i ? e.target.value : k))} /><button class="del" title="remove grouping tag" onClick=${() => setGroupBy(groupBy.filter((_, x) => x !== i))}>✕</button></div>`)}
-      <datalist id="frontier-tag-keys">${knownTagKeys.map(k => html`<option value=${k} key=${k} />`)}</datalist>
-      <button class="toggle" onClick=${() => setGroupBy(groupBy.concat(['']))}>+ grouping tag</button>
+      ${groupBy.map((key, i) => html`<div class="grow" key=${i} style="margin:0.2rem 0">
+        <select aria-label=${`grouping tag ${i + 1}`} value=${key} onChange=${e => setGroupBy(groupBy.map((k, x) => x === i ? e.target.value : k))}>
+          ${groupOptionsFor(i).map(k => html`<option value=${k} key=${k}>${k}</option>`)}
+        </select>
+        <button class="del" title="remove grouping tag" onClick=${() => setGroupBy(groupBy.filter((_, x) => x !== i))}>✕</button>
+      </div>`)}
+      <button class="toggle" disabled=${!unusedTagKeys.length} title=${unusedTagKeys.length ? 'add another grouping dimension' : 'all available tag keys are already selected'} onClick=${addGroupingTag}>+ grouping tag</button>
     </div>
     <div style="margin:0.45rem 0">${axes.map((_, i) => axisRow(i))}
       <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="dominance supports N axes; SVG is two-axis only">+ axis</button>
