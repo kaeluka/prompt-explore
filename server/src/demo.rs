@@ -82,9 +82,10 @@ pub async fn run() {
     for (job_id, put_id, template, out, steps) in campaign {
         let (id, mut job): (String, Job) = fabricate_done_job(job_id, put_id, template, out, steps);
         // `prompt_hash` is system-derived from each distinct template; label
-        // is the caller-owned, editable display tag used by grouped points.
-        job.tags.insert("label".into(), job_id.replace('-', " "));
-        job.tags
+        // is the caller-owned, editable display attribute used by grouped points.
+        job.attributes
+            .insert("label".into(), job_id.replace('-', " "));
+        job.attributes
             .insert("campaign".into(), "cancel_tone_sweep".into());
         state.jobs.lock().unwrap().insert(id, job);
     }

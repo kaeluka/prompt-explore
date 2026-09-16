@@ -1,11 +1,11 @@
 //! Grouped Pareto frontiers.  Unlike the legacy frontier, the selection is
-//! the complete snapshot map: group tags decide which runs are summarized.
+//! the complete snapshot map: group attributes decide which runs are summarized.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::tags::{canonical_group_tags, stable_hash_hex, valid_tag_name};
+use super::attributes::{canonical_group_attributes, stable_hash_hex, valid_attribute_name};
 
 /// SVG rendering companion for this grouped response shape.
 pub use super::svg::render_grouped;
@@ -15,21 +15,21 @@ use super::{
     resolve_reserved, valid_grade_axis_name,
 };
 
-/// One snapshot plus the tags by which it may be grouped.  A missing tag is
+/// One snapshot plus the attributes by which it may be grouped.  A missing attribute is
 /// meaningful: it belongs to that grouping key's explicit `null` bucket.
 #[derive(Debug, Clone)]
 pub struct GroupedSnapshot {
     pub snapshot: InvestigationSnapshot,
-    pub tags: BTreeMap<String, String>,
+    pub attributes: BTreeMap<String, String>,
 }
 
-/// Request a frontier over means of complete investigations in each tag group.
+/// Request a frontier over means of complete investigations in each attribute group.
 /// There is intentionally no investigation selection field: accepting an old
 /// selection accidentally as an empty selection would silently mean all jobs.
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GroupedFrontierRequest {
-    /// Tag names that form a group. Omit for exactly
+    /// Attribute names that form a group. Omit for exactly
     /// `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one
     /// group containing every current job. A job missing a requested key is
     /// retained in that key's explicit JSON-null group, never dropped.
@@ -62,18 +62,20 @@ pub struct GroupExclusion {
     pub missing_axes: Vec<String>,
 }
 
-/// One stable tag group. Groups without usable runs are deliberately retained
+/// One stable attribute group. Groups without usable runs are deliberately retained
 /// with null values/frontier state rather than disappearing from the result.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct GroupedFrontierPoint {
-    /// Stable SHA-256-derived id of canonical grouping tags only; membership
+    /// Stable SHA-256-derived id of canonical grouping attributes only; membership
     /// changes do not recolor or rename a group.
     pub id: String,
-    /// The requested group tags. Missing source values appear as JSON null.
-    pub tags: BTreeMap<String, Option<String>>,
-    /// Human-readable summary of grouping tags, not an editable group identity.
-    /// The investigation's editable `label` tag names its UI card; it affects
-    /// grouping only when explicitly selected in `group_by`.
+    /// The requested group attributes. Missing source values appear as JSON null.
+    pub attributes: BTreeMap<String, Option<String>>,
+    /// Compact slash-separated grouping values in the request's `group_by`
+    /// order (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`). Known model
+    /// namespaces and content hashes are shortened for presentation; the full
+    /// values remain in `attributes`, and `id` remains the stable identity.
+    /// Presentation collisions receive a stable group-id suffix.
     pub label: String,
     /// Stable categorical color derived from this group's id.
     pub color: String,
@@ -132,24 +134,24 @@ pub fn compute_grouped(
             ),
         });
     }
-    let mut seen_tags = BTreeSet::new();
-    for tag in &req.group_by {
-        if !seen_tags.insert(tag) {
+    let mut seen_attributes = BTreeSet::new();
+    for attribute in &req.group_by {
+        if !seen_attributes.insert(attribute) {
             problems.push(FrontierProblem {
                 investigation: None,
-                axis: Some(tag.clone()),
-                reason: "duplicate_group_tag",
+                axis: Some(attribute.clone()),
+                reason: "duplicate_group_attribute",
                 detail: format!(
-                    "group tag '{tag}' appears more than once — list each grouping key once"
+                    "group attribute '{attribute}' appears more than once — list each grouping key once"
                 ),
             });
         }
-        if !valid_tag_name(tag) {
+        if !valid_attribute_name(attribute) {
             problems.push(FrontierProblem {
                 investigation: None,
-                axis: Some(tag.clone()),
-                reason: "bad_group_tag",
-                detail: format!("group tag '{tag}' fails ^[a-z][a-z0-9_]{{0,63}}$"),
+                axis: Some(attribute.clone()),
+                reason: "bad_group_attribute",
+                detail: format!("group attribute '{attribute}' fails ^[a-z][a-z0-9_]{{0,63}}$"),
             });
         }
     }
@@ -198,28 +200,30 @@ pub fn compute_grouped(
         });
     }
 
-    // Canonical group tags are the map key, making output ordering and all
+    // Canonical group attributes are the map key, making output ordering and all
     // group identity independent of insertion order and member ids.
     let mut groups: BTreeMap<Vec<(String, Option<String>)>, Vec<&GroupedSnapshot>> =
         BTreeMap::new();
     for grouped in snapshots.values() {
-        let tags = req
+        let attributes = req
             .group_by
             .iter()
-            .map(|key| (key.clone(), grouped.tags.get(key).cloned()))
+            .map(|key| (key.clone(), grouped.attributes.get(key).cloned()))
             .collect();
-        groups.entry(tags).or_default().push(grouped);
+        groups.entry(attributes).or_default().push(grouped);
     }
 
     let mut points = Vec::with_capacity(groups.len());
-    for (tag_pairs, members) in groups {
-        let tags: BTreeMap<String, Option<String>> = tag_pairs.into_iter().collect();
-        let canonical = canonical_group_tags(&tags);
+    for (attribute_pairs, members) in groups {
+        // Keep request order for the human label; the response map is sorted
+        // and the canonical identity remains independent of presentation.
+        let label = group_label(&attribute_pairs);
+        let attributes: BTreeMap<String, Option<String>> = attribute_pairs.into_iter().collect();
+        let canonical = canonical_group_attributes(&attributes);
         let digest = stable_hash_hex(&canonical);
         let id = format!("group-{}", &digest[..16]);
         let palette_index = usize::from_str_radix(&digest[..8], 16).unwrap_or(0) % PALETTE.len();
         let color = PALETTE[palette_index].to_string();
-        let label = group_label(&tags);
         let mut investigations = Vec::with_capacity(members.len());
         let mut included = Vec::new();
         let mut excluded = Vec::new();
@@ -296,7 +300,7 @@ pub fn compute_grouped(
         });
         points.push(GroupedFrontierPoint {
             id,
-            tags,
+            attributes,
             label,
             color,
             investigations,
@@ -307,6 +311,22 @@ pub fn compute_grouped(
             on_frontier: None,
             dominated_by: Vec::new(),
         });
+    }
+
+    // Compact model/hash presentation can theoretically collide. Preserve a
+    // readable value-derived prefix and disambiguate only those labels with a
+    // stable suffix; machine identity always remains `id`.
+    let mut label_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for point in &points {
+        *label_counts.entry(point.label.clone()).or_default() += 1;
+    }
+    for point in &mut points {
+        if label_counts[&point.label] > 1 {
+            point.label.push('~');
+            point
+                .label
+                .push_str(point.id.strip_prefix("group-").unwrap_or(&point.id));
+        }
     }
 
     let dirs: Vec<f64> = req
@@ -369,17 +389,39 @@ fn finite_mean(rows: &[Vec<f64>], column: usize) -> f64 {
     (sum / rows.len() as f64) * scale
 }
 
-fn group_label(tags: &BTreeMap<String, Option<String>>) -> String {
-    if tags.is_empty() {
+fn group_label(attributes: &[(String, Option<String>)]) -> String {
+    if attributes.is_empty() {
         return "all investigations".into();
     }
-    tags.iter()
-        .map(|(key, value)| match value {
-            Some(value) => format!("{key}={value}"),
-            None => format!("{key}=null"),
-        })
+    attributes
+        .iter()
+        .map(|(key, value)| display_attribute_value(key, value.as_deref()))
         .collect::<Vec<_>>()
-        .join(", ")
+        .join("/")
+}
+
+fn display_attribute_value(key: &str, value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return "null".into();
+    };
+    match key {
+        // Resolved names retain their provider in `attributes`; the compact
+        // plot label uses the model basename.
+        "put_model" | "sim_model" => value
+            .rsplit('/')
+            .next()
+            .unwrap_or(value)
+            .rsplit("::")
+            .next()
+            .unwrap_or(value)
+            .to_string(),
+        "prompt_hash" => format!("prompt-{}", value.chars().take(8).collect::<String>()),
+        "workspace_hash" => format!("workspace-{}", value.chars().take(8).collect::<String>()),
+        _ if value.chars().count() > 32 => {
+            format!("{}…", value.chars().take(31).collect::<String>())
+        }
+        _ => value.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -399,7 +441,7 @@ mod tests {
                 sim_model: None,
                 steps_per_trace: vec![1],
             },
-            tags: BTreeMap::new(),
+            attributes: BTreeMap::new(),
         }
     }
     fn request(axes: &[&str]) -> GroupedFrontierRequest {
@@ -428,15 +470,15 @@ mod tests {
     #[test]
     fn means_use_one_shared_complete_cohort_and_keep_backlog() {
         let mut a1 = snapshot("a1");
-        a1.tags.insert("variant".into(), "a".into());
+        a1.attributes.insert("variant".into(), "a".into());
         a1.snapshot
             .grades
             .extend([(String::from("x"), 2.), (String::from("y"), 4.)]);
         let mut a2 = snapshot("a2");
-        a2.tags.insert("variant".into(), "a".into());
+        a2.attributes.insert("variant".into(), "a".into());
         a2.snapshot.grades.insert("x".into(), 100.); // must not leak into x mean
         let mut b = snapshot("b");
-        b.tags.insert("variant".into(), "b".into());
+        b.attributes.insert("variant".into(), "b".into());
         b.snapshot
             .grades
             .extend([(String::from("x"), 3.), (String::from("y"), 3.)]);
@@ -444,7 +486,7 @@ mod tests {
         let a = result
             .points
             .iter()
-            .find(|p| p.tags["variant"] == Some("a".into()))
+            .find(|p| p.attributes["variant"] == Some("a".into()))
             .unwrap();
         assert_eq!(a.included, vec!["a1"]);
         assert_eq!(a.values.as_ref().unwrap()["x"], 2.0);
@@ -503,17 +545,17 @@ mod tests {
     }
 
     #[test]
-    fn completed_run_enters_frontier_and_tags_distinguish_null_from_string() {
+    fn completed_run_enters_frontier_and_attributes_distinguish_null_from_string() {
         let mut missing = snapshot("missing");
         missing.snapshot.status = SnapshotStatus::Running;
         let mut literal = snapshot("literal");
-        literal.tags.insert("variant".into(), "null".into());
+        literal.attributes.insert("variant".into(), "null".into());
         literal.snapshot.grades.insert("x".into(), 1.);
         let mut done = snapshot("done");
         done.snapshot.grades.insert("x".into(), 2.);
         let req = request(&["x"]);
         let before = compute_for(&req, vec![missing.clone(), literal.clone()]);
-        assert_eq!(before.points.len(), 2); // absent tag bucket != literal "null"
+        assert_eq!(before.points.len(), 2); // absent attribute bucket != literal "null"
         let mut after_missing = missing;
         after_missing.snapshot.status = SnapshotStatus::Done;
         after_missing.snapshot.grades.insert("x".into(), 3.);
@@ -529,11 +571,11 @@ mod tests {
     #[test]
     fn ids_and_colors_survive_membership_changes_and_empty_server_succeeds() {
         let mut one = snapshot("one");
-        one.tags.insert("variant".into(), "same".into());
+        one.attributes.insert("variant".into(), "same".into());
         one.snapshot.grades.insert("x".into(), 1.);
         let once = compute_for(&request(&["x"]), vec![one.clone()]);
         let mut two = snapshot("two");
-        two.tags.insert("variant".into(), "same".into());
+        two.attributes.insert("variant".into(), "same".into());
         two.snapshot.grades.insert("x".into(), 2.);
         let twice = compute_for(&request(&["x"]), vec![one, two]);
         assert_eq!(once.points[0].id, twice.points[0].id);
@@ -546,7 +588,7 @@ mod tests {
     #[test]
     fn canonical_group_identity_ignores_group_key_order() {
         let mut one = snapshot("one");
-        one.tags.extend([
+        one.attributes.extend([
             (String::from("a"), String::from("one")),
             (String::from("b"), String::from("two")),
         ]);
@@ -567,6 +609,47 @@ mod tests {
         );
         assert_eq!(ordered.points[0].id, reversed.points[0].id);
         assert_eq!(ordered.points[0].color, reversed.points[0].color);
+        assert_eq!(ordered.points[0].label, "one/two");
+        assert_eq!(reversed.points[0].label, "two/one");
+    }
+
+    #[test]
+    fn labels_are_compact_grouping_values_not_group_hashes() {
+        let mut run = snapshot("run");
+        run.attributes.extend([
+            (
+                "put_model".into(),
+                "open_router::openai/gpt-5.6-luna".into(),
+            ),
+            ("put_thinking".into(), "low".into()),
+            (
+                "prompt_hash".into(),
+                "a1b2c3d4eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
+            ),
+        ]);
+        run.snapshot.grades.insert("x".into(), 1.0);
+        let req = GroupedFrontierRequest {
+            group_by: default_group_by(),
+            axes: request(&["x"]).axes,
+        };
+        let point = compute_for(&req, vec![run]).points.pop().unwrap();
+        assert_eq!(point.label, "gpt-5.6-luna/low/prompt-a1b2c3d4");
+        assert!(!point.label.starts_with("g-"));
+    }
+
+    #[test]
+    fn compact_label_collisions_receive_stable_suffixes() {
+        let mut a = snapshot("a");
+        let mut b = snapshot("b");
+        a.attributes
+            .insert("variant".into(), format!("{}a", "x".repeat(40)));
+        b.attributes
+            .insert("variant".into(), format!("{}b", "x".repeat(40)));
+        a.snapshot.grades.insert("x".into(), 1.0);
+        b.snapshot.grades.insert("x".into(), 2.0);
+        let result = compute_for(&request(&["x"]), vec![a, b]);
+        assert_ne!(result.points[0].label, result.points[1].label);
+        assert!(result.points.iter().all(|p| p.label.contains('~')));
     }
 
     #[test]
@@ -594,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_request_rejects_unknown_duplicate_and_bad_group_tag() {
+    fn malformed_request_rejects_unknown_duplicate_and_bad_group_attribute() {
         let defaulted: GroupedFrontierRequest =
             serde_json::from_str(r#"{"axes":[{"name":"x","better":"higher"}]}"#).unwrap();
         assert_eq!(
@@ -613,12 +696,17 @@ mod tests {
             }],
         };
         let error = compute_grouped(&req, &BTreeMap::new(), FrontierFormat::Json).unwrap_err();
-        assert!(error.problems.iter().any(|p| p.reason == "bad_group_tag"));
         assert!(
             error
                 .problems
                 .iter()
-                .any(|p| p.reason == "duplicate_group_tag")
+                .any(|p| p.reason == "bad_group_attribute")
+        );
+        assert!(
+            error
+                .problems
+                .iter()
+                .any(|p| p.reason == "duplicate_group_attribute")
         );
     }
 }

@@ -28,7 +28,7 @@
     "/api/frontier": {
       "post": {
         "tags": [],
-        "summary": "Compute a grouped Pareto frontier over ALL investigations currently held by\nthis server. There is no investigation-selection list: `group_by` chooses\nthe provenance/campaign tags that define one candidate point (default:\nput model, thinking setting, and behavior-only prompt hash). Each point\nretains its member ids and explicit exclusions. Running/failed/ungraded\nmembers are successful evidence, not a 422: poll jobs, PATCH grades, then\nPOST this same request again to update preliminary coordinates. An all-error\nrun (`result.result.status=error`) or a no-op with zero completed traces is\na failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if\nall requested values exist; judging their adequacy belongs to the caller.",
+        "summary": "Compute a grouped Pareto frontier over ALL investigations currently held by\nthis server. There is no investigation-selection list: `group_by` chooses\nthe provenance/campaign attributes that define one candidate point (default:\nput model, thinking setting, and behavior-only prompt hash). Each point\nretains its member ids and explicit exclusions. Running/failed/ungraded\nmembers are successful evidence, not a 422: poll jobs, PATCH grades, then\nPOST this same request again to update preliminary coordinates. An all-error\nrun (`result.result.status=error`) or a no-op with zero completed traces is\na failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if\nall requested values exist; judging their adequacy belongs to the caller.",
         "operationId": "frontier",
         "parameters": [
           {
@@ -42,7 +42,7 @@
           }
         ],
         "requestBody": {
-          "description": "Grouping tag keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display tag; system provenance tags describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes.",
+          "description": "Grouping attribute keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display attribute; system provenance attributes describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes.",
           "content": {
             "application/json": {
               "schema": {
@@ -70,7 +70,7 @@
             "description": "Missing or invalid bearer token"
           },
           "422": {
-            "description": "Invalid grouping/axis request (for example bad tag or axis name, duplicate axis, incompatible direction, or SVG arity).",
+            "description": "Invalid grouping/axis request (for example bad attribute or axis name, duplicate axis, incompatible direction, or SVG arity).",
             "content": {
               "application/json": {
                 "schema": {
@@ -242,7 +242,7 @@
       },
       "delete": {
         "tags": [],
-        "summary": "Delete an investigation: remove the job — its traces, grades, tags, and\nprogress — from the server's memory. Irreversible: the evidence is gone\n(a re-run means POSTing a new investigation). Useful for pruning a\ncampaign: the next grouped POST /api/frontier considers all REMAINING jobs\nand no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be\ncancelled — its provider calls would keep spending while the\nresult is discarded. Poll until done or failed, then delete.",
+        "summary": "Delete an investigation: remove the job — its traces, grades, attributes, and\nprogress — from the server's memory. Irreversible: the evidence is gone\n(a re-run means POSTing a new investigation). Useful for pruning a\ncampaign: the next grouped POST /api/frontier considers all REMAINING jobs\nand no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be\ncancelled — its provider calls would keep spending while the\nresult is discarded. Poll until done or failed, then delete.",
         "operationId": "delete_investigation",
         "parameters": [
           {
@@ -277,8 +277,8 @@
       },
       "patch": {
         "tags": [],
-        "summary": "Record caller judgment and campaign metadata on an investigation. `grades`\nis caller-owned numeric judgment (for example `tone_of_voice: 0.8`);\n`tags` is caller-owned string metadata (for example `label: \"baseline\"`).\nThe harness records both and never interprets a grade. Read traces before\ngrading: the caller, not a mechanical extractor, owns that semantic work.",
-        "description": "Both maps have merge semantics: a number/string sets or overwrites and\nJSON `null` deletes that key. Both supplied maps validate before EITHER is\napplied, and the response echoes the FULL updated grades AND tags maps.\nGrade names and tag names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot\nbe measured axes. The literal measured names are `put_input_tokens`,\n`put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,\n`sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,\n`sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,\n`steps_per_trace_max`, and `steps_per_trace_stdev`.\n\nPATCH is allowed while a job runs. POST /api/frontier always considers ALL\ncurrent jobs: running, failed, ungraded, or unavailable members appear as\nexplicit exclusions/backlog in a successful grouped response. A group has\nnull coordinates until it has at least one common complete cohort; poll\nand PATCH missing grades, then submit the same frontier request again.",
+        "summary": "Record caller judgment and campaign metadata on an investigation. `grades`\nis caller-owned numeric judgment (for example `tone_of_voice: 0.8`);\n`attributes` is caller-owned string metadata (for example `label: \"baseline\"`).\nThe harness records both and never interprets a grade. Read traces before\ngrading: the caller, not a mechanical extractor, owns that semantic work.",
+        "description": "Both maps have merge semantics: a number/string sets or overwrites and\nJSON `null` deletes that key. Both supplied maps validate before EITHER is\napplied, and the response echoes the FULL updated grades AND attributes maps.\nGrade names and attribute names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot\nbe measured axes. The literal measured names are `put_input_tokens`,\n`put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,\n`sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,\n`sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,\n`steps_per_trace_max`, and `steps_per_trace_stdev`.\n\nPATCH is allowed while a job runs. POST /api/frontier always considers ALL\ncurrent jobs: running, failed, ungraded, or unavailable members appear as\nexplicit exclusions/backlog in a successful grouped response. A group has\nnull coordinates until it has at least one common complete cohort; poll\nand PATCH missing grades, then submit the same frontier request again.",
         "operationId": "patch_investigation",
         "parameters": [
           {
@@ -292,7 +292,7 @@
           }
         ],
         "requestBody": {
-          "description": "Optional grades and/or tags maps. A grade number sets a grade; a tag string sets a tag; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps.",
+          "description": "Optional `grades` and/or `attributes` maps (`tags` is not an alias). A grade number sets a grade; an attribute string sets an attribute; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps.",
           "content": {
             "application/json": {
               "schema": {
@@ -304,7 +304,7 @@
         },
         "responses": {
           "200": {
-            "description": "Updated grades and tags (both full maps echoed)",
+            "description": "Updated grades and attributes (both full maps echoed)",
             "content": {
               "application/json": {
                 "schema": {
@@ -314,7 +314,7 @@
             }
           },
           "400": {
-            "description": "Invalid grades or tags. Tag keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."
+            "description": "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -647,10 +647,10 @@
       },
       "GroupedFrontierPoint": {
         "type": "object",
-        "description": "One stable tag group. Groups without usable runs are deliberately retained\nwith null values/frontier state rather than disappearing from the result.",
+        "description": "One stable attribute group. Groups without usable runs are deliberately retained\nwith null values/frontier state rather than disappearing from the result.",
         "required": [
           "id",
-          "tags",
+          "attributes",
           "label",
           "color",
           "investigations",
@@ -662,6 +662,19 @@
           "dominated_by"
         ],
         "properties": {
+          "attributes": {
+            "type": "object",
+            "description": "The requested group attributes. Missing source values appear as JSON null.",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "color": {
             "type": "string",
             "description": "Stable categorical color derived from this group's id."
@@ -681,7 +694,7 @@
           },
           "id": {
             "type": "string",
-            "description": "Stable SHA-256-derived id of canonical grouping tags only; membership\nchanges do not recolor or rename a group."
+            "description": "Stable SHA-256-derived id of canonical grouping attributes only; membership\nchanges do not recolor or rename a group."
           },
           "included": {
             "type": "array",
@@ -699,7 +712,7 @@
           },
           "label": {
             "type": "string",
-            "description": "Human-readable summary of grouping tags, not an editable group identity.\nThe investigation's editable `label` tag names its UI card; it affects\ngrouping only when explicitly selected in `group_by`."
+            "description": "Compact slash-separated grouping values in the request's `group_by`\norder (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`). Known model\nnamespaces and content hashes are shortened for presentation; the full\nvalues remain in `attributes`, and `id` remains the stable identity.\nPresentation collisions receive a stable group-id suffix."
           },
           "on_frontier": {
             "type": [
@@ -711,19 +724,6 @@
           "preliminary": {
             "type": "boolean",
             "description": "True when any member was excluded. Preliminary points still participate\nin dominance when they have a complete common cohort."
-          },
-          "tags": {
-            "type": "object",
-            "description": "The requested group tags. Missing source values appear as JSON null.",
-            "additionalProperties": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "propertyNames": {
-              "type": "string"
-            }
           },
           "values": {
             "type": [
@@ -743,7 +743,7 @@
       },
       "GroupedFrontierRequest": {
         "type": "object",
-        "description": "Request a frontier over means of complete investigations in each tag group.\nThere is intentionally no investigation selection field: accepting an old\nselection accidentally as an empty selection would silently mean all jobs.",
+        "description": "Request a frontier over means of complete investigations in each attribute group.\nThere is intentionally no investigation selection field: accepting an old\nselection accidentally as an empty selection would silently mean all jobs.",
         "required": [
           "axes"
         ],
@@ -760,7 +760,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Tag names that form a group. Omit for exactly\n`[\"put_model\", \"put_thinking\", \"prompt_hash\"]`; send `[]` for one\ngroup containing every current job. A job missing a requested key is\nretained in that key's explicit JSON-null group, never dropped."
+            "description": "Attribute names that form a group. Omit for exactly\n`[\"put_model\", \"put_thinking\", \"prompt_hash\"]`; send `[]` for one\ngroup containing every current job. A job missing a requested key is\nretained in that key's explicit JSON-null group, never dropped."
           }
         },
         "additionalProperties": false
@@ -787,6 +787,16 @@
           "scenarios"
         ],
         "properties": {
+          "attributes": {
+            "type": "object",
+            "description": "Caller-owned campaign attributes. This field is literally `attributes`;\nthere is no `tags` alias and unknown fields are rejected. Keys use\n`^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.\n`label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "conversation_controls": {
             "$ref": "#/components/schemas/ConversationControls",
             "description": "Per-investigation overrides for LLM conversation controls. Omit a\nfield to use its documented server default. These controls are recorded\nresolved on the job view so traces remain reproducible."
@@ -839,16 +849,6 @@
                 "description": "Thinking/reasoning level for the tool SIMULATOR only. Same\nvocabulary as `put_thinking_level`; omit for the provider\ndefault. The simulator only renders tool responses, so full\nreasoning there is spend without measurement value — `low` or\n`none` cuts per-run cost directly (keep `sim_model` strong; a\ncheap level on a strong model usually degrades less than a\nweak model does). Falls back INDEPENDENTLY of\n`put_thinking_level`: omitting this while setting the PUT's\nlevel leaves the simulator at its default, NOT at the PUT's\nlevel."
               }
             ]
-          },
-          "tags": {
-            "type": "object",
-            "description": "Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values\nare strings up to 1024 UTF-8 bytes. `label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash).",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
           }
         },
         "additionalProperties": false
@@ -905,8 +905,24 @@
       },
       "InvestigationPatch": {
         "type": "object",
-        "description": "PATCH can update either independently optional map, but validates BOTH\nbefore modifying the job so a mixed grades/tags update is atomic.",
+        "description": "PATCH can update either independently optional map, but validates BOTH\nbefore modifying the job so a mixed grades/attributes update is atomic.",
         "properties": {
+          "attributes": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Caller-owned attribute name → string to set/overwrite, or null to delete.\nThis is `attributes`, never `tags` (unknown fields are rejected).\n`label` names the job in the UI. It affects group identity only when\nexplicitly selected in `group_by`. System provenance keys are read-only.",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "grades": {
             "type": [
               "object",
@@ -923,22 +939,6 @@
             "propertyNames": {
               "type": "string"
             }
-          },
-          "tags": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Caller-owned tag name → string to set/overwrite, or null to delete.\n`label` names the job in the UI. It affects group identity only when\nexplicitly selected in `group_by`. System provenance keys are read-only.",
-            "additionalProperties": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "propertyNames": {
-              "type": "string"
-            }
           }
         },
         "additionalProperties": false
@@ -947,23 +947,23 @@
         "type": "object",
         "required": [
           "grades",
-          "tags"
+          "attributes"
         ],
         "properties": {
-          "grades": {
+          "attributes": {
             "type": "object",
             "additionalProperties": {
-              "type": "number",
-              "format": "double"
+              "type": "string"
             },
             "propertyNames": {
               "type": "string"
             }
           },
-          "tags": {
+          "grades": {
             "type": "object",
             "additionalProperties": {
-              "type": "string"
+              "type": "number",
+              "format": "double"
             },
             "propertyNames": {
               "type": "string"
@@ -975,21 +975,21 @@
         "type": "object",
         "required": [
           "id",
-          "tags"
+          "attributes"
         ],
         "properties": {
-          "id": {
-            "type": "string"
-          },
-          "tags": {
+          "attributes": {
             "type": "object",
-            "description": "The stored provenance + caller tags, including resolved model names\nand stable prompt/workspace hashes, available without a follow-up GET.",
+            "description": "The stored provenance + caller attributes, including resolved model names\nand stable prompt/workspace hashes, available without a follow-up GET.",
             "additionalProperties": {
               "type": "string"
             },
             "propertyNames": {
               "type": "string"
             }
+          },
+          "id": {
+            "type": "string"
           }
         }
       },
@@ -1008,9 +1008,19 @@
           "status",
           "started_at",
           "scenarios",
-          "tags"
+          "attributes"
         ],
         "properties": {
+          "attributes": {
+            "type": "object",
+            "description": "Immutable provenance plus caller-owned campaign attributes, sufficient for\na list view to group/filter before fetching full job evidence.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "id": {
             "type": "string"
           },
@@ -1026,16 +1036,6 @@
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
-          },
-          "tags": {
-            "type": "object",
-            "description": "Immutable provenance plus caller-owned campaign tags, sufficient for\na list view to group/filter before fetching full job evidence.",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
           }
         }
       },
@@ -1051,12 +1051,22 @@
           "conversation_controls",
           "workspace_files",
           "grades",
-          "tags",
+          "attributes",
           "put",
           "scenarios",
           "progress"
         ],
         "properties": {
+          "attributes": {
+            "type": "object",
+            "description": "Immutable provenance plus caller-owned campaign attributes. `label` is the\nspecial editable display label; reserved provenance keys cannot change.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "conversation_controls": {
             "$ref": "#/components/schemas/ResolvedConversationControls",
             "description": "Resolved controls for the PUT and simulator conversations."
@@ -1155,16 +1165,6 @@
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
-          },
-          "tags": {
-            "type": "object",
-            "description": "Immutable provenance plus caller-owned campaign tags. `label` is the\nspecial editable display label; reserved provenance keys cannot change.",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
           },
           "workspace_files": {
             "type": "integer",

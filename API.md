@@ -16,7 +16,7 @@ Serve the web UI.
 
 ### `POST /api/frontier`
 
-Compute a grouped Pareto frontier over ALL investigations currently held by this server. There is no investigation-selection list: `group_by` chooses the provenance/campaign tags that define one candidate point (default: put model, thinking setting, and behavior-only prompt hash). Each point retains its member ids and explicit exclusions. Running/failed/ungraded members are successful evidence, not a 422: poll jobs, PATCH grades, then POST this same request again to update preliminary coordinates. An all-error run (`result.result.status=error`) or a no-op with zero completed traces is a failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if all requested values exist; judging their adequacy belongs to the caller.
+Compute a grouped Pareto frontier over ALL investigations currently held by this server. There is no investigation-selection list: `group_by` chooses the provenance/campaign attributes that define one candidate point (default: put model, thinking setting, and behavior-only prompt hash). Each point retains its member ids and explicit exclusions. Running/failed/ungraded members are successful evidence, not a 422: poll jobs, PATCH grades, then POST this same request again to update preliminary coordinates. An all-error run (`result.result.status=error`) or a no-op with zero completed traces is a failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if all requested values exist; judging their adequacy belongs to the caller.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -27,7 +27,7 @@ Body: [`GroupedFrontierRequest`](#groupedfrontierrequest)
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | Axes whose arithmetic means define Pareto dominance. Every included run has every requested value, so different axes never average different cohorts. |
-| `group_by` | string[] | no | Tag names that form a group. Omit for exactly `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one group containing every current job. A job missing a requested key is retained in that key's explicit JSON-null group, never dropped. |
+| `group_by` | string[] | no | Attribute names that form a group. Omit for exactly `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one group containing every current job. A job missing a requested key is retained in that key's explicit JSON-null group, never dropped. |
 
 
 | Status | Response |
@@ -35,7 +35,7 @@ Body: [`GroupedFrontierRequest`](#groupedfrontierrequest)
 | `200` | Grouped frontier and exclusion evidence, including running/failed/awaiting-grades/unavailable members. Pending groups have null coordinates; poll investigations and resubmit after they finish or receive grades.: [`GroupedFrontierResponse`](#groupedfrontierresponse) |
 | `400` | Malformed body or unknown ?format |
 | `401` | Missing or invalid bearer token |
-| `422` | Invalid grouping/axis request (for example bad tag or axis name, duplicate axis, incompatible direction, or SVG arity).: [`FrontierError`](#frontiererror) |
+| `422` | Invalid grouping/axis request (for example bad attribute or axis name, duplicate axis, incompatible direction, or SVG arity).: [`FrontierError`](#frontiererror) |
 
 ### `GET /api/investigations`
 
@@ -54,6 +54,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string&gt; | no | Caller-owned campaign attributes. This field is literally `attributes`; there is no `tags` alias and unknown fields are rejected. Keys use `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes. `label` is the special editable display label shown by the UI. POST rejects every system-owned key: `put_model`/`sim_model` are the resolved provider-qualified model names; `put_thinking`/`sim_thinking` are a reasoning keyword or `provider_default`; `prompt_hash` is SHA-256 of canonical PUT template/tools/design_goals (not cosmetic PUT id); and `workspace_hash` is SHA-256 of sorted uploaded workspace path/content pairs (including the stable empty-workspace hash). |
 | `conversation_controls` | [`ConversationControls`](#conversationcontrols) | no | Per-investigation overrides for LLM conversation controls. Omit a field to use its documented server default. These controls are recorded resolved on the job view so traces remain reproducible. |
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
@@ -62,7 +63,6 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Omit to use the server default independently of `put_model`; setting `put_model` never changes the simulator.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `put_model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
-| `tags` | map&lt;string, string&gt; | no | Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes. `label` is the special editable display label shown by the UI. POST rejects every system-owned key: `put_model`/`sim_model` are the resolved provider-qualified model names; `put_thinking`/`sim_thinking` are a reasoning keyword or `provider_default`; `prompt_hash` is SHA-256 of canonical PUT template/tools/design_goals (not cosmetic PUT id); and `workspace_hash` is SHA-256 of sorted uploaded workspace path/content pairs (including the stable empty-workspace hash). |
 
 
 | Status | Response |
@@ -73,7 +73,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 
 ### `DELETE /api/investigations/{id}`
 
-Delete an investigation: remove the job — its traces, grades, tags, and progress — from the server's memory. Irreversible: the evidence is gone (a re-run means POSTing a new investigation). Useful for pruning a campaign: the next grouped POST /api/frontier considers all REMAINING jobs and no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be cancelled — its provider calls would keep spending while the result is discarded. Poll until done or failed, then delete.
+Delete an investigation: remove the job — its traces, grades, attributes, and progress — from the server's memory. Irreversible: the evidence is gone (a re-run means POSTing a new investigation). Useful for pruning a campaign: the next grouped POST /api/frontier considers all REMAINING jobs and no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be cancelled — its provider calls would keep spending while the result is discarded. Poll until done or failed, then delete.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -102,7 +102,7 @@ Poll an investigation job. `progress` is always present (live model turns while 
 
 ### `PATCH /api/investigations/{id}`
 
-Both maps have merge semantics: a number/string sets or overwrites and JSON `null` deletes that key. Both supplied maps validate before EITHER is applied, and the response echoes the FULL updated grades AND tags maps. Grade names and tag names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot be measured axes. The literal measured names are `put_input_tokens`, `put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`, `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`, `sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`, and `steps_per_trace_stdev`.  PATCH is allowed while a job runs. POST /api/frontier always considers ALL current jobs: running, failed, ungraded, or unavailable members appear as explicit exclusions/backlog in a successful grouped response. A group has null coordinates until it has at least one common complete cohort; poll and PATCH missing grades, then submit the same frontier request again.
+Both maps have merge semantics: a number/string sets or overwrites and JSON `null` deletes that key. Both supplied maps validate before EITHER is applied, and the response echoes the FULL updated grades AND attributes maps. Grade names and attribute names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot be measured axes. The literal measured names are `put_input_tokens`, `put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`, `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`, `sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`, and `steps_per_trace_stdev`.  PATCH is allowed while a job runs. POST /api/frontier always considers ALL current jobs: running, failed, ungraded, or unavailable members appear as explicit exclusions/backlog in a successful grouped response. A group has null coordinates until it has at least one common complete cohort; poll and PATCH missing grades, then submit the same frontier request again.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -112,14 +112,14 @@ Body: [`InvestigationPatch`](#investigationpatch)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | object? | no | Caller-owned attribute name → string to set/overwrite, or null to delete. This is `attributes`, never `tags` (unknown fields are rejected). `label` names the job in the UI. It affects group identity only when explicitly selected in `group_by`. System provenance keys are read-only. |
 | `grades` | object? | no | Axis name → number to set/overwrite, or null to delete. |
-| `tags` | object? | no | Caller-owned tag name → string to set/overwrite, or null to delete. `label` names the job in the UI. It affects group identity only when explicitly selected in `group_by`. System provenance keys are read-only. |
 
 
 | Status | Response |
 |---|---|
-| `200` | Updated grades and tags (both full maps echoed): [`InvestigationPatchView`](#investigationpatchview) |
-| `400` | Invalid grades or tags. Tag keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change. |
+| `200` | Updated grades and attributes (both full maps echoed): [`InvestigationPatchView`](#investigationpatchview) |
+| `400` | Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change. |
 | `401` | Missing or invalid bearer token |
 | `404` | Unknown job id |
 
@@ -214,30 +214,30 @@ One omitted run and why it is not part of its group's common cohort.
 
 ### `GroupedFrontierPoint`
 
-One stable tag group. Groups without usable runs are deliberately retained with null values/frontier state rather than disappearing from the result.
+One stable attribute group. Groups without usable runs are deliberately retained with null values/frontier state rather than disappearing from the result.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string?&gt; | yes | The requested group attributes. Missing source values appear as JSON null. |
 | `color` | string | yes | Stable categorical color derived from this group's id. |
 | `dominated_by` | string[] | yes | IDs of dominating GROUPS, not investigation ids or display labels. Empty for non-dominated and pending groups; equal means do not dominate. |
 | `excluded` | [`GroupExclusion`](#groupexclusion)[] | yes |  |
-| `id` | string | yes | Stable SHA-256-derived id of canonical grouping tags only; membership changes do not recolor or rename a group. |
+| `id` | string | yes | Stable SHA-256-derived id of canonical grouping attributes only; membership changes do not recolor or rename a group. |
 | `included` | string[] | yes | Investigation ids used in every mean, sorted. Each has equal weight; all requested axes use exactly this same completed, fully-valued cohort. |
 | `investigations` | string[] | yes | All snapshot ids in this group, sorted. |
-| `label` | string | yes | Human-readable summary of grouping tags, not an editable group identity. The investigation's editable `label` tag names its UI card; it affects grouping only when explicitly selected in `group_by`. |
+| `label` | string | yes | Compact slash-separated grouping values in the request's `group_by` order (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`). Known model namespaces and content hashes are shortened for presentation; the full values remain in `attributes`, and `id` remains the stable identity. Presentation collisions receive a stable group-id suffix. |
 | `on_frontier` | boolean? | yes | True if non-dominated, false if dominated, null if pending (no values). Preliminary points with values participate in the current frontier. |
 | `preliminary` | boolean | yes | True when any member was excluded. Preliminary points still participate in dominance when they have a complete common cohort. |
-| `tags` | map&lt;string, string?&gt; | yes | The requested group tags. Missing source values appear as JSON null. |
 | `values` | object? | yes | Axis → arithmetic mean, or null if no member has all requested values. Always present, even for pending groups (null means no coordinates). |
 
 ### `GroupedFrontierRequest`
 
-Request a frontier over means of complete investigations in each tag group. There is intentionally no investigation selection field: accepting an old selection accidentally as an empty selection would silently mean all jobs.
+Request a frontier over means of complete investigations in each attribute group. There is intentionally no investigation selection field: accepting an old selection accidentally as an empty selection would silently mean all jobs.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | Axes whose arithmetic means define Pareto dominance. Every included run has every requested value, so different axes never average different cohorts. |
-| `group_by` | string[] | no | Tag names that form a group. Omit for exactly `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one group containing every current job. A job missing a requested key is retained in that key's explicit JSON-null group, never dropped. |
+| `group_by` | string[] | no | Attribute names that form a group. Omit for exactly `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one group containing every current job. A job missing a requested key is retained in that key's explicit JSON-null group, never dropped. |
 
 ### `GroupedFrontierResponse`
 
@@ -249,6 +249,7 @@ Request a frontier over means of complete investigations in each tag group. Ther
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string&gt; | no | Caller-owned campaign attributes. This field is literally `attributes`; there is no `tags` alias and unknown fields are rejected. Keys use `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes. `label` is the special editable display label shown by the UI. POST rejects every system-owned key: `put_model`/`sim_model` are the resolved provider-qualified model names; `put_thinking`/`sim_thinking` are a reasoning keyword or `provider_default`; `prompt_hash` is SHA-256 of canonical PUT template/tools/design_goals (not cosmetic PUT id); and `workspace_hash` is SHA-256 of sorted uploaded workspace path/content pairs (including the stable empty-workspace hash). |
 | `conversation_controls` | [`ConversationControls`](#conversationcontrols) | no | Per-investigation overrides for LLM conversation controls. Omit a field to use its documented server default. These controls are recorded resolved on the job view so traces remain reproducible. |
 | `investigation` | [`Investigation`](#investigation) | yes |  |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
@@ -257,7 +258,6 @@ Request a frontier over means of complete investigations in each tag group. Ther
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Omit to use the server default independently of `put_model`; setting `put_model` never changes the simulator.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `put_model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
-| `tags` | map&lt;string, string&gt; | no | Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes. `label` is the special editable display label shown by the UI. POST rejects every system-owned key: `put_model`/`sim_model` are the resolved provider-qualified model names; `put_thinking`/`sim_thinking` are a reasoning keyword or `provider_default`; `prompt_hash` is SHA-256 of canonical PUT template/tools/design_goals (not cosmetic PUT id); and `workspace_hash` is SHA-256 of sorted uploaded workspace path/content pairs (including the stable empty-workspace hash). |
 
 ### `InvestigateResponse`
 
@@ -279,26 +279,26 @@ An investigation: run the given scenarios against the PUT and surface the result
 
 ### `InvestigationPatch`
 
-PATCH can update either independently optional map, but validates BOTH before modifying the job so a mixed grades/tags update is atomic.
+PATCH can update either independently optional map, but validates BOTH before modifying the job so a mixed grades/attributes update is atomic.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | object? | no | Caller-owned attribute name → string to set/overwrite, or null to delete. This is `attributes`, never `tags` (unknown fields are rejected). `label` names the job in the UI. It affects group identity only when explicitly selected in `group_by`. System provenance keys are read-only. |
 | `grades` | object? | no | Axis name → number to set/overwrite, or null to delete. |
-| `tags` | object? | no | Caller-owned tag name → string to set/overwrite, or null to delete. `label` names the job in the UI. It affects group identity only when explicitly selected in `group_by`. System provenance keys are read-only. |
 
 ### `InvestigationPatchView`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string&gt; | yes |  |
 | `grades` | map&lt;string, number&gt; | yes |  |
-| `tags` | map&lt;string, string&gt; | yes |  |
 
 ### `JobCreated`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string&gt; | yes | The stored provenance + caller attributes, including resolved model names and stable prompt/workspace hashes, available without a follow-up GET. |
 | `id` | string | yes |  |
-| `tags` | map&lt;string, string&gt; | yes | The stored provenance + caller tags, including resolved model names and stable prompt/workspace hashes, available without a follow-up GET. |
 
 ### `JobStatus`
 
@@ -308,16 +308,17 @@ Values: `running`, `done`, `failed`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign attributes, sufficient for a list view to group/filter before fetching full job evidence. |
 | `id` | string | yes |  |
 | `scenarios` | integer | yes | How many scenarios this job is running. |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
-| `tags` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign tags, sufficient for a list view to group/filter before fetching full job evidence. |
 
 ### `JobView`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `attributes` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign attributes. `label` is the special editable display label; reserved provenance keys cannot change. |
 | `conversation_controls` | [`ResolvedConversationControls`](#resolvedconversationcontrols) | yes | Resolved controls for the PUT and simulator conversations. |
 | `error` | string? | no |  |
 | `grades` | map&lt;string, number&gt; | yes | Caller-graded axes on this investigation (PATCHed via PATCH /api/investigations/{id}). Free-form names, caller-chosen scales (0..1, 1..5, anything); the harness stores them and never interprets them. |
@@ -334,7 +335,6 @@ Values: `running`, `done`, `failed`
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
-| `tags` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign tags. `label` is the special editable display label; reserved provenance keys cannot change. |
 | `workspace_files` | integer | yes | How many files seeded the simulation workspace (0 = no zip upload; the simulator answered from narrative alone). The workspace is an in-memory filesystem the SIMULATOR consults via read/write/list_dir/ grep — it is NOT the PUT's tools. See the endpoint description. |
 
 ### `LuaExecutionRecord`

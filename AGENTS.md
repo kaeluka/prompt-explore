@@ -136,19 +136,22 @@ reader.
 ## Live grouped Pareto frontier
 
 All investigations in memory are candidates; there is no selection/filter list.
-`POST /api/frontier` groups by tag names (default: `put_model`, `put_thinking`,
+`POST /api/frontier` groups by attribute names (default: `put_model`, `put_thinking`,
 `prompt_hash`) and averages requested axes over completed investigations with
 EVERY requested value. All coordinates use the same cohort, equally weighted
 per investigation. This change does not remove multi-scenario investigations.
 
-System tags (resolved model/thinking settings, prompt/workspace hashes) are
-immutable. Custom tags are editable; `label` is the UI display name. It changes
-group identity only if explicitly selected as a grouping key.
-Missing grouping tags form null-valued groups. Missing grades, running/failed
+The API map is named `attributes` (not `tags`; do not add a compatibility alias).
+System attributes (resolved model/thinking settings, prompt/workspace hashes) are
+immutable. Custom attributes are editable; `label` is the UI display name. It
+changes group identity only if explicitly selected as a grouping key.
+Visible group labels are compact slash-separated attribute VALUES in `group_by`
+order (never the opaque group hash); the full values remain in `attributes`.
+Missing grouping attributes form null-valued groups. Missing grades, running/failed
 jobs, and unavailable measured axes remain an explicit per-group backlog, never
 silently dropped and never a whole-request error. Groups with no contributors
 are pending (no coordinates); any exclusions make a group preliminary. The UI
-polls and redraws as jobs, tags, and grades change. Preliminary means participate
+polls and redraws as jobs, attributes, and grades change. Preliminary means participate
 in dominance and use faded markers with dashed outer rings. The caller owns
 comparability and grading; the harness does only grouping and arithmetic.
 

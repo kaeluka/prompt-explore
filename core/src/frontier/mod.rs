@@ -760,11 +760,11 @@ pub fn compute(
     Ok(FrontierResponse { points })
 }
 
+/// Reusable attribute validation plus stable prompt/workspace content identities.
+pub mod attributes;
 /// Grouped, cohort-safe frontier API used by the investigations collection.
 pub mod grouped;
 pub mod svg;
-/// Reusable tag validation plus stable prompt/workspace content identities.
-pub mod tags;
 
 pub use grouped::{
     GroupExclusion, GroupedFrontierPoint, GroupedFrontierRequest, GroupedFrontierResponse,

@@ -5,8 +5,8 @@ frontier does deterministic bookkeeping over those numbers, not judging.
 
 ## The simple model
 
-Every investigation in server memory is a candidate. Pick **grouping tag
-names** and **axes**. Each unique combination of tag values becomes a point.
+Every investigation in server memory is a candidate. Pick **grouping attribute
+names** and **axes**. Each unique combination of attribute values becomes a point.
 Coordinates are arithmetic means over completed investigations having a value
 on **every** requested axis. Each included investigation has equal weight.
 No explicit investigation selection, filter language, or weighting framework.
@@ -21,12 +21,14 @@ per-scenario normalization. A separate change may make each investigation one
 scenario. Benchmark coverage, repeated-run weighting, grading scales, and
 simulator comparability remain the caller's responsibility.
 
-## Tags
+## Attributes
 
-Tags are string-valued key/value pairs, exposed on investigation views and
-summaries. Keys use `^[a-z][a-z0-9_]{0,63}$`.
+Attributes are string-valued key/value pairs, exposed on investigation views and
+summaries through the literal `attributes` field. Keys use
+`^[a-z][a-z0-9_]{0,63}$`. There is no `tags` compatibility alias: this feature
+was unreleased when renamed, and unknown request fields are rejected.
 
-System-owned tags cannot be supplied, changed, or removed by callers:
+System-owned attributes cannot be supplied, changed, or removed by callers:
 
 - `put_model`, `sim_model`: resolved provider/model names.
 - `put_thinking`, `sim_thinking`: recorded effort keyword, or
@@ -38,23 +40,23 @@ System-owned tags cannot be supplied, changed, or removed by callers:
   not later simulated writes.
 
 `label` is editable but special: the UI displays it as the investigation's
-name. Other custom tags have no implicit meaning. A label edit does not change
+name. Other custom attributes have no implicit meaning. A label edit does not change
 the default grouping identity. If the caller explicitly groups by `label`, it
-becomes an identity key like any other selected tag; editing it then regroups.
+becomes an identity key like any other selected attribute; editing it then regroups.
 
 ```json
-{"tags":{"label":"Warm variant","campaign":"support"}}
+{"attributes":{"label":"Warm variant","campaign":"support"}}
 ```
 
-Supply editable tags on creation, or PATCH them later. PATCH accepts `grades`
-and/or `tags`, each merged by key; `null` deletes an editable entry. Validation
-happens before either map changes, so a rejected readonly-tag change cannot
+Supply editable attributes on creation, or PATCH them later. PATCH accepts `grades`
+and/or `attributes`, each merged by key; `null` deletes an editable entry. Validation
+happens before either map changes, so a rejected read-only attribute change cannot
 partially apply accompanying grades. Responses echo both full maps.
 
 ## Axes and grades
 
 Graded axes are caller-PATCHed finite numbers. Names use the same allow-pattern
-as tag keys. Arbitrary scales are supported; no grade is interpreted against
+as attribute keys. Arbitrary scales are supported; no grade is interpreted against
 traces. Measured axes cannot be PATCHed:
 
 | Axis | Better | Source |
@@ -83,7 +85,7 @@ be contradicted.
 
 `POST /api/frontier?format=json` supports one or more axes. `format=svg`
 requires exactly two. Omitted `group_by` defaults to the example above;
-`group_by: []` makes one group. Missing tags form explicit null-valued groups,
+`group_by: []` makes one group. Missing attributes form explicit null-valued groups,
 not silent exclusions; null is distinct from the string `"null"` or `""`.
 
 Malformed/unknown request fields are rejected. Invalid axes, duplicate grouping
@@ -95,9 +97,13 @@ job store is valid and produces an empty plot.
 
 Each point exposes:
 
-- `id`: stable group identity derived only from grouping tag names/values.
-- `tags`: grouping values, with missing values represented as JSON null.
-- `label`, `color`: presentation, not identity.
+- `id`: stable group identity derived only from grouping attribute names/values.
+- `attributes`: grouping values, with missing values represented as JSON null.
+- `label`, `color`: presentation, not identity. The label is the compact
+  slash-separated combination of selected attribute values in `group_by` order
+  (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`), not an opaque group hash.
+  Full values remain in `attributes`; presentation collisions receive a stable
+  suffix.
 - `investigations`: all member ids, including unfinished/excluded members.
 - `included`: exactly the cohort used for every coordinate.
 - `excluded`: one entry per non-contributor, naming its investigation, status,
@@ -124,7 +130,7 @@ can remain preliminary until such members are removed or become usable.
 
 The frontier is recomputed from a consistent snapshot of all jobs on every
 POST. The UI polls investigation data and refreshes after arrivals, completion,
-external grade/tag PATCHes, and deletion. No new subscription protocol is needed.
+external grade/attribute PATCHes, and deletion. No new subscription protocol is needed.
 Late HTTP responses must not replace a newer selection/plot; polling must not
 resurrect a deleted investigation. Turning auto-refresh off pauses polling.
 
@@ -146,12 +152,12 @@ have explicit Solarized Light fallback colors.
 
 ## Architecture and durability
 
-`core/src/frontier/` owns tag rules, grouping, means, dominance, and rendering.
+`core/src/frontier/` owns attribute rules, grouping, means, dominance, and rendering.
 The HTTP layer holds jobs, assembles snapshots, and routes requests; the UI
 renders the response. Legacy core single-investigation helpers can remain for
 standalone callers, but the HTTP/UI contract is grouped.
 
-No persistence is added. Restarting loses jobs, tags, and grades. Group ids are
+No persistence is added. Restarting loses jobs, attributes, and grades. Group ids are
 stable for unchanged grouping values, but are not durable stored records.
 No in-harness verdict, grade oracle, automatic grading, or comparability judge
 is introduced.
@@ -160,7 +166,7 @@ is introduced.
 
 - Deterministic core/HTTP regressions cover common-cohort means, stable ids and
   colors, null grouping values, missing grades, running/failed/pending members,
-  deletion, immutable tags, atomic PATCHes, canonical workspace hashes,
+  deletion, immutable attributes, atomic PATCHes, canonical workspace hashes,
   all-error/zero-trace exclusions, extreme finite numbers, and SVG escaping.
 - A live two-workspace run used the same PUT with different cosmetic ids. Both
   traces returned the requested `DONE`. The workspace hashes differed, prompt
@@ -183,3 +189,16 @@ is introduced.
   deletion, pending/empty state, auth changes, and in-flight GET/PATCH races.
   Polls are serialized; dirty edits survive refreshes and save only their changed
   keys, retaining unrelated concurrent metadata edits.
+- The terminology rename used identical full-spec direct and in-harness probes.
+  Before, both callers consistently described the key/value map and exact JSON
+  field as `tags`. After, both used `attributes` for create, PATCH, views, and
+  grouped-point values; named the immutable provenance attributes; used exact
+  `put_cost_usd`; and explicitly rejected `tags` as an invented alias. A live
+  contract check separately verified legacy create/PATCH bodies return 400 while
+  list/view/frontier responses expose only `attributes`.
+- A same-spec label probe initially identified `point.label` correctly but said
+  its formatting was unspecified. After the label contract was documented, it
+  selected `point.label`, described the compact slash-separated attribute-value
+  form, kept full values in `attributes` and stable identity in `id`, and
+  explicitly rejected deriving a visible `g-<hash>` label. The live 8080 SVG
+  and table separately displayed the expected value-derived labels.

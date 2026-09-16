@@ -25,10 +25,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use uuid::Uuid;
 
+use prompt_explore::frontier::attributes::{
+    self, system_attributes, validate_attribute_patch, validate_post_attributes,
+};
 use prompt_explore::frontier::grouped::{
     self, GroupedFrontierRequest, GroupedFrontierResponse, GroupedSnapshot,
 };
-use prompt_explore::frontier::tags::{self, system_tags, validate_post_tags, validate_tag_patch};
 use prompt_explore::frontier::{
     self, FrontierFormat, GradesPatch, InvestigationSnapshot, SnapshotStatus,
 };
@@ -145,10 +147,10 @@ struct Job {
     /// Caller-graded axes on this job: axis name → number, PATCHed via
     /// PATCH /api/investigations/{id}. Never interpreted by the harness.
     grades: BTreeMap<String, f64>,
-    /// Immutable provenance tags plus caller-owned campaign tags. Reserved
+    /// Immutable provenance attributes plus caller-owned campaign attributes. Reserved
     /// provenance keys are set once when the job is created; callers may
-    /// merge/delete only their own keys (notably the UI display tag `label`).
-    tags: BTreeMap<String, String>,
+    /// merge/delete only their own keys (notably the UI display attribute `label`).
+    attributes: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
@@ -231,8 +233,10 @@ struct InvestigateRequest {
     /// to the count). Scenarios are authored outside this API and are
     /// editable before running: reviewing them is the intended workflow.
     scenarios: Vec<Scenario>,
-    /// Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values
-    /// are strings up to 1024 UTF-8 bytes. `label` is the special editable
+    /// Caller-owned campaign attributes. This field is literally `attributes`;
+    /// there is no `tags` alias and unknown fields are rejected. Keys use
+    /// `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.
+    /// `label` is the special editable
     /// display label shown by the UI. POST rejects every system-owned key:
     /// `put_model`/`sim_model` are the resolved provider-qualified model
     /// names; `put_thinking`/`sim_thinking` are a reasoning keyword or
@@ -241,7 +245,7 @@ struct InvestigateRequest {
     /// `workspace_hash` is SHA-256 of sorted uploaded workspace path/content
     /// pairs (including the stable empty-workspace hash).
     #[serde(default)]
-    tags: BTreeMap<String, String>,
+    attributes: BTreeMap<String, String>,
 }
 
 /// Caller-selected limits and sampling controls for an investigation's LLM
@@ -396,9 +400,9 @@ struct AttemptView {
 #[derive(Serialize, utoipa::ToSchema)]
 struct JobCreated {
     id: String,
-    /// The stored provenance + caller tags, including resolved model names
+    /// The stored provenance + caller attributes, including resolved model names
     /// and stable prompt/workspace hashes, available without a follow-up GET.
-    tags: BTreeMap<String, String>,
+    attributes: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
@@ -456,9 +460,9 @@ struct JobView {
     /// scales (0..1, 1..5, anything); the harness stores them and never
     /// interprets them.
     grades: BTreeMap<String, f64>,
-    /// Immutable provenance plus caller-owned campaign tags. `label` is the
+    /// Immutable provenance plus caller-owned campaign attributes. `label` is the
     /// special editable display label; reserved provenance keys cannot change.
-    tags: BTreeMap<String, String>,
+    attributes: BTreeMap<String, String>,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative = ground truth, etc.).
@@ -481,30 +485,31 @@ struct JobSummary {
     started_at: u64,
     /// How many scenarios this job is running.
     scenarios: usize,
-    /// Immutable provenance plus caller-owned campaign tags, sufficient for
+    /// Immutable provenance plus caller-owned campaign attributes, sufficient for
     /// a list view to group/filter before fetching full job evidence.
-    tags: BTreeMap<String, String>,
+    attributes: BTreeMap<String, String>,
 }
 
 /// PATCH can update either independently optional map, but validates BOTH
-/// before modifying the job so a mixed grades/tags update is atomic.
+/// before modifying the job so a mixed grades/attributes update is atomic.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct InvestigationPatch {
     /// Axis name → number to set/overwrite, or null to delete.
     #[serde(default)]
     grades: Option<BTreeMap<String, Option<f64>>>,
-    /// Caller-owned tag name → string to set/overwrite, or null to delete.
+    /// Caller-owned attribute name → string to set/overwrite, or null to delete.
+    /// This is `attributes`, never `tags` (unknown fields are rejected).
     /// `label` names the job in the UI. It affects group identity only when
     /// explicitly selected in `group_by`. System provenance keys are read-only.
     #[serde(default)]
-    tags: Option<BTreeMap<String, Option<String>>>,
+    attributes: Option<BTreeMap<String, Option<String>>>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct InvestigationPatchView {
     grades: BTreeMap<String, f64>,
-    tags: BTreeMap<String, String>,
+    attributes: BTreeMap<String, String>,
 }
 
 #[derive(utoipa::OpenApi)]
@@ -828,7 +833,7 @@ fn fabricate_done_job(
             sim_thinking_level: None,
             conversation_controls: ResolvedConversationControls::default(),
             workspace_files: 0,
-            tags: system_tags(
+            attributes: system_attributes(
                 "zai_coding::glm-5.2",
                 "zai_coding::glm-5.2",
                 None,
@@ -839,7 +844,7 @@ fn fabricate_done_job(
                     tools: vec![],
                     design_goals: "Cancel orders only on explicit user request.".into(),
                 },
-                &tags::workspace_hash(&Workspace::empty()),
+                &attributes::workspace_hash(&Workspace::empty()),
                 BTreeMap::new(),
             ),
         },
@@ -1250,7 +1255,7 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
     // server's default provider, exactly as they will at call time.
     if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider)
         .or_else(|| conversation_controls_problem(&investigate_req.conversation_controls))
-        .or_else(|| validate_post_tags(&investigate_req.tags).err())
+        .or_else(|| validate_post_attributes(&investigate_req.attributes).err())
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -1260,8 +1265,8 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
     }
 
     let id = spawn_investigation(state.clone(), investigate_req, workspace_seed);
-    let tags = state.jobs.lock().unwrap()[&id].tags.clone();
-    (StatusCode::ACCEPTED, Json(JobCreated { id, tags })).into_response()
+    let attributes = state.jobs.lock().unwrap()[&id].attributes.clone();
+    (StatusCode::ACCEPTED, Json(JobCreated { id, attributes })).into_response()
 }
 
 /// Validate the request's thinking levels against the models they will
@@ -1481,7 +1486,7 @@ fn spawn_investigation(
     // surfaced on the job immediately — visible while the run is still
     // in flight, not only after it finishes.
     let (put_model_requested, sim_model_requested) = resolved_models(&req);
-    // Persist and tag the provider-qualified names actually passed to the
+    // Persist and record the provider-qualified names actually passed to the
     // client. Bare request names are therefore comparable with explicit ones.
     let put_model =
         prompt_explore::llm::qualify_model(&put_model_requested, &state.default_provider);
@@ -1496,16 +1501,16 @@ fn spawn_investigation(
     let workspace_seed = workspace_seed.with_tool_limits(workspace_limits);
     let workspace_files = workspace_seed.file_count();
     // The core workspace canonicalizes sorted seed paths and bytes. Empty
-    // (including no upload) has a stable digest rather than a missing tag.
-    let workspace_hash = tags::workspace_hash(&workspace_seed);
-    let tags = system_tags(
+    // (including no upload) has a stable digest rather than a missing attribute.
+    let workspace_hash = attributes::workspace_hash(&workspace_seed);
+    let attributes = system_attributes(
         &put_model,
         &sim_model,
         put_thinking_level,
         sim_thinking_level,
         &req.put,
         &workspace_hash,
-        req.tags.clone(),
+        req.attributes.clone(),
     );
     state.jobs.lock().unwrap().insert(
         id.clone(),
@@ -1525,7 +1530,7 @@ fn spawn_investigation(
             conversation_controls,
             workspace_files,
             grades: BTreeMap::new(),
-            tags,
+            attributes,
         },
     );
 
@@ -1641,7 +1646,7 @@ async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<Job
             status: j.status,
             started_at: j.started_at,
             scenarios: j.progress.lock().unwrap().scenarios.len(),
-            tags: j.tags.clone(),
+            attributes: j.attributes.clone(),
         })
         .collect();
     // Running first, then newest-started first.
@@ -1691,7 +1696,7 @@ async fn get_investigation(
         conversation_controls: job.conversation_controls.clone(),
         workspace_files: job.workspace_files,
         grades: job.grades.clone(),
-        tags: job.tags.clone(),
+        attributes: job.attributes.clone(),
         put: job.put.clone(),
         scenarios: job.scenarios.clone(),
         progress: progress_snapshot,
@@ -1702,14 +1707,14 @@ async fn get_investigation(
 
 /// Record caller judgment and campaign metadata on an investigation. `grades`
 /// is caller-owned numeric judgment (for example `tone_of_voice: 0.8`);
-/// `tags` is caller-owned string metadata (for example `label: "baseline"`).
+/// `attributes` is caller-owned string metadata (for example `label: "baseline"`).
 /// The harness records both and never interprets a grade. Read traces before
 /// grading: the caller, not a mechanical extractor, owns that semantic work.
 ///
 /// Both maps have merge semantics: a number/string sets or overwrites and
 /// JSON `null` deletes that key. Both supplied maps validate before EITHER is
-/// applied, and the response echoes the FULL updated grades AND tags maps.
-/// Grade names and tag names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot
+/// applied, and the response echoes the FULL updated grades AND attributes maps.
+/// Grade names and attribute names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot
 /// be measured axes. The literal measured names are `put_input_tokens`,
 /// `put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,
 /// `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,
@@ -1725,11 +1730,11 @@ async fn get_investigation(
     patch,
     path = "/api/investigations/{id}",
     params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
-    request_body(content = InvestigationPatch, description = "Optional grades and/or tags maps. A grade number sets a grade; a tag string sets a tag; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps."),
+    request_body(content = InvestigationPatch, description = "Optional `grades` and/or `attributes` maps (`tags` is not an alias). A grade number sets a grade; an attribute string sets an attribute; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps."),
     security(("api_token" = [])),
     responses(
-        (status = 200, description = "Updated grades and tags (both full maps echoed)", body = InvestigationPatchView),
-        (status = 400, description = "Invalid grades or tags. Tag keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."),
+        (status = 200, description = "Updated grades and attributes (both full maps echoed)", body = InvestigationPatchView),
+        (status = 400, description = "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "Unknown job id")
     )
@@ -1751,15 +1756,15 @@ async fn patch_investigation(
                 .into_response();
         }
     };
-    if patch.grades.is_none() && patch.tags.is_none() {
+    if patch.grades.is_none() && patch.attributes.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "patch must contain grades and/or tags"})),
+            Json(serde_json::json!({"error": "patch must contain grades and/or attributes"})),
         )
             .into_response();
     }
     // Validate every supplied map before taking the job lock or mutating it:
-    // a bad tag cannot leave its otherwise-valid grade sibling half-applied.
+    // a bad attribute cannot leave its otherwise-valid grade sibling half-applied.
     if let Some(grades) = &patch.grades {
         if let Err(problems) = frontier::validate_grades_patch(&GradesPatch {
             grades: grades.clone(),
@@ -1767,8 +1772,8 @@ async fn patch_investigation(
             return (StatusCode::BAD_REQUEST, Json(problems)).into_response();
         }
     }
-    if let Some(tags) = &patch.tags {
-        if let Err(error) = validate_tag_patch(tags) {
+    if let Some(attributes) = &patch.attributes {
+        if let Err(error) = validate_attribute_patch(attributes) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": error })),
@@ -1798,14 +1803,14 @@ async fn patch_investigation(
             }
         }
     }
-    if let Some(tags) = patch.tags {
-        for (key, value) in tags {
+    if let Some(attributes) = patch.attributes {
+        for (key, value) in attributes {
             match value {
                 Some(value) => {
-                    job.tags.insert(key, value);
+                    job.attributes.insert(key, value);
                 }
                 None => {
-                    job.tags.remove(&key);
+                    job.attributes.remove(&key);
                 }
             }
         }
@@ -1814,13 +1819,13 @@ async fn patch_investigation(
         StatusCode::OK,
         Json(InvestigationPatchView {
             grades: job.grades.clone(),
-            tags: job.tags.clone(),
+            attributes: job.attributes.clone(),
         }),
     )
         .into_response()
 }
 
-/// Delete an investigation: remove the job — its traces, grades, tags, and
+/// Delete an investigation: remove the job — its traces, grades, attributes, and
 /// progress — from the server's memory. Irreversible: the evidence is gone
 /// (a re-run means POSTing a new investigation). Useful for pruning a
 /// campaign: the next grouped POST /api/frontier considers all REMAINING jobs
@@ -1936,7 +1941,7 @@ struct FrontierQuery {
 
 /// Compute a grouped Pareto frontier over ALL investigations currently held by
 /// this server. There is no investigation-selection list: `group_by` chooses
-/// the provenance/campaign tags that define one candidate point (default:
+/// the provenance/campaign attributes that define one candidate point (default:
 /// put model, thinking setting, and behavior-only prompt hash). Each point
 /// retains its member ids and explicit exclusions. Running/failed/ungraded
 /// members are successful evidence, not a 422: poll jobs, PATCH grades, then
@@ -1948,13 +1953,13 @@ struct FrontierQuery {
     post,
     path = "/api/frontier",
     params(("format" = Option<String>, Query, description = "`json` (default) or `svg`")),
-    request_body(content = GroupedFrontierRequest, description = "Grouping tag keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display tag; system provenance tags describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes."),
+    request_body(content = GroupedFrontierRequest, description = "Grouping attribute keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display attribute; system provenance attributes describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes."),
     security(("api_token" = [])),
     responses(
         (status = 200, description = "Grouped frontier and exclusion evidence, including running/failed/awaiting-grades/unavailable members. Pending groups have null coordinates; poll investigations and resubmit after they finish or receive grades.", body = GroupedFrontierResponse),
         (status = 400, description = "Malformed body or unknown ?format"),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 422, description = "Invalid grouping/axis request (for example bad tag or axis name, duplicate axis, incompatible direction, or SVG arity).", body = frontier::FrontierError)
+        (status = 422, description = "Invalid grouping/axis request (for example bad attribute or axis name, duplicate axis, incompatible direction, or SVG arity).", body = frontier::FrontierError)
     )
 )]
 async fn frontier(
@@ -1996,7 +2001,7 @@ async fn frontier(
                     id.clone(),
                     GroupedSnapshot {
                         snapshot: snapshot_of(id, job),
-                        tags: job.tags.clone(),
+                        attributes: job.attributes.clone(),
                     },
                 )
             })
@@ -2114,7 +2119,7 @@ mod tests {
         bytes
     }
 
-    async fn patch_grades(app: &Router, id: &str, body: &str) -> (StatusCode, serde_json::Value) {
+    async fn patch_job(app: &Router, id: &str, body: &str) -> (StatusCode, serde_json::Value) {
         let res = app
             .clone()
             .oneshot(
@@ -2138,7 +2143,7 @@ mod tests {
     }
 
     async fn create_multipart(app: &Router, archive: Vec<u8>) -> serde_json::Value {
-        let boundary = "workspace-tag-test";
+        let boundary = "workspace-attribute-test";
         let request = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 1}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
@@ -2214,7 +2219,7 @@ mod tests {
         let app = build_app(state);
 
         // Set two axes.
-        let (code, v) = patch_grades(
+        let (code, v) = patch_job(
             &app,
             "job-1",
             r#"{"grades": {"tone_of_voice": 0.8, "clarity": 0.6}}"#,
@@ -2225,7 +2230,7 @@ mod tests {
         assert_eq!(v["grades"]["clarity"], 0.6);
 
         // Overwrite one, delete the other; echo shows the merged map.
-        let (code, v) = patch_grades(
+        let (code, v) = patch_job(
             &app,
             "job-1",
             r#"{"grades": {"clarity": 0.9, "tone_of_voice": null}}"#,
@@ -2249,28 +2254,46 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["grades"]["clarity"], 0.9);
+        assert!(v["attributes"].is_object());
+        assert!(v.get("tags").is_none());
+
+        // The compact list shape uses the same vocabulary.
+        let res = app
+            .oneshot(
+                HttpRequest::get("/api/investigations")
+                    .body(String::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let summaries: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(summaries[0]["attributes"].is_object());
+        assert!(summaries[0].get("tags").is_none());
     }
 
     #[tokio::test]
-    async fn multipart_workspace_tags_ignore_archive_metadata_but_track_content() {
+    async fn multipart_workspace_attributes_ignore_archive_metadata_but_track_content() {
         let early = zip::DateTime::from_date_and_time(2024, 1, 2, 3, 4, 6).unwrap();
         let late = zip::DateTime::from_date_and_time(2025, 2, 3, 4, 5, 8).unwrap();
         let first = zip_bytes(&[("a.txt", b"alpha"), ("dir/b.txt", b"beta")], early);
         let reordered = zip_bytes(&[("dir/b.txt", b"beta"), ("a.txt", b"alpha")], late);
         let changed = zip_bytes(&[("a.txt", b"ALPHA"), ("dir/b.txt", b"beta")], late);
         let app = build_app(test_state());
-        // Job creation computes/copies tags before launching its future, so
+        // Job creation computes/copies attributes before launching its future, so
         // the 202 response is already reproducible even while work is live.
         let first = create_multipart(&app, first).await;
         let reordered = create_multipart(&app, reordered).await;
         let changed = create_multipart(&app, changed).await;
         assert_eq!(
-            first["tags"]["workspace_hash"],
-            reordered["tags"]["workspace_hash"]
+            first["attributes"]["workspace_hash"],
+            reordered["attributes"]["workspace_hash"]
         );
         assert_ne!(
-            first["tags"]["workspace_hash"],
-            changed["tags"]["workspace_hash"]
+            first["attributes"]["workspace_hash"],
+            changed["attributes"]["workspace_hash"]
         );
     }
 
@@ -2290,45 +2313,51 @@ mod tests {
             .unwrap()
         };
         assert_eq!(
-            tags::workspace_hash(&unpack(&first)),
-            tags::workspace_hash(&unpack(&reordered)),
+            attributes::workspace_hash(&unpack(&first)),
+            attributes::workspace_hash(&unpack(&reordered)),
             "archive ordering/timestamps are not workspace content"
         );
         assert_ne!(
-            tags::workspace_hash(&unpack(&first)),
-            tags::workspace_hash(&unpack(&changed)),
+            attributes::workspace_hash(&unpack(&first)),
+            attributes::workspace_hash(&unpack(&changed)),
             "path content changes must be visible in provenance"
         );
     }
 
     #[tokio::test]
-    async fn tags_merge_delete_and_invalid_siblings_are_atomic() {
+    async fn attributes_merge_delete_and_invalid_siblings_are_atomic() {
         let state = test_state();
         seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
         let app = build_app(state.clone());
 
-        let (code, view) = patch_grades(
+        let (code, view) = patch_job(
             &app,
             "job-1",
-            r#"{"grades":{"clarity":0.6},"tags":{"label":"baseline","campaign":"spring","empty":""}}"#,
+            r#"{"grades":{"clarity":0.6},"attributes":{"label":"baseline","campaign":"spring","empty":""}}"#,
         )
         .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(view["grades"]["clarity"], 0.6);
-        assert_eq!(view["tags"]["label"], "baseline");
+        assert_eq!(view["attributes"]["label"], "baseline");
         assert_eq!(
-            view["tags"]["empty"], "",
+            view["attributes"]["empty"], "",
             "empty string is a stored value, not deletion"
         );
-        assert_eq!(view["tags"]["prompt_hash"].as_str().unwrap().len(), 64);
-        assert_eq!(view["tags"]["workspace_hash"].as_str().unwrap().len(), 64);
+        assert_eq!(
+            view["attributes"]["prompt_hash"].as_str().unwrap().len(),
+            64
+        );
+        assert_eq!(
+            view["attributes"]["workspace_hash"].as_str().unwrap().len(),
+            64
+        );
 
-        // Both maps validate before either changes: an immutable tag cannot
+        // Both maps validate before either changes: an immutable attribute cannot
         // smuggle through a grade update as a partial PATCH.
-        let (code, _) = patch_grades(
+        let (code, _) = patch_job(
             &app,
             "job-1",
-            r#"{"grades":{"clarity":0.9},"tags":{"put_model":"forged"}}"#,
+            r#"{"grades":{"clarity":0.9},"attributes":{"put_model":"forged"}}"#,
         )
         .await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
@@ -2342,30 +2371,40 @@ mod tests {
             .clone();
         assert_eq!(job["clarity"], 0.6);
 
-        let (code, view) = patch_grades(
+        // The feature was unreleased when renamed: do not silently retain the
+        // misleading old vocabulary as a compatibility alias.
+        let (code, _) = patch_job(&app, "job-1", r#"{"tags":{"label":"legacy"}}"#).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            state.jobs.lock().unwrap()["job-1"].attributes["label"],
+            "baseline"
+        );
+
+        let (code, view) = patch_job(
             &app,
             "job-1",
-            r#"{"grades":{"clarity":0.8},"tags":{"label":null}}"#,
+            r#"{"grades":{"clarity":0.8},"attributes":{"label":null}}"#,
         )
         .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(view["grades"]["clarity"], 0.8);
-        assert!(view["tags"].get("label").is_none());
-        assert_eq!(view["tags"]["campaign"], "spring");
-        assert_eq!(view["tags"]["empty"], "");
+        assert!(view["attributes"].get("label").is_none());
+        assert_eq!(view["attributes"]["campaign"], "spring");
+        assert_eq!(view["attributes"]["empty"], "");
     }
 
     #[tokio::test]
-    async fn post_rejects_immutable_tags_before_launch() {
+    async fn post_rejects_immutable_attributes_before_launch() {
         let state = test_state();
         let app = build_app(state.clone());
         let body = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 2}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
             "scenarios": [],
-            "tags": {"put_model": "forged"}
+            "attributes": {"put_model": "forged"}
         });
         let response = app
+            .clone()
             .oneshot(
                 HttpRequest::post("/api/investigations")
                     .header("content-type", "application/json")
@@ -2376,13 +2415,31 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(state.jobs.lock().unwrap().is_empty());
+
+        let legacy = serde_json::json!({
+            "investigation": {"budget": {"max_steps_per_trace": 2}},
+            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "scenarios": [],
+            "tags": {"label": "legacy"}
+        });
+        let response = app
+            .oneshot(
+                HttpRequest::post("/api/investigations")
+                    .header("content-type", "application/json")
+                    .body(legacy.to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.jobs.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn provenance_tags_use_resolved_settings_and_stable_empty_workspace_hash() {
-        let empty = tags::workspace_hash(&Workspace::empty());
+    fn provenance_attributes_use_resolved_settings_and_stable_empty_workspace_hash() {
+        let empty = attributes::workspace_hash(&Workspace::empty());
         let mut renamed = put("cosmetic-id-only");
-        let original = system_tags(
+        let original = system_attributes(
             "zai_coding::glm-5.2",
             "zai_coding::glm-5.2",
             None,
@@ -2392,13 +2449,13 @@ mod tests {
             BTreeMap::new(),
         );
         renamed.id = "renamed".into();
-        let again = system_tags(
+        let again = system_attributes(
             "zai_coding::glm-5.2",
             "zai_coding::glm-5.2",
             None,
             Some(ThinkingLevel::None),
             &renamed,
-            &tags::workspace_hash(&Workspace::empty()),
+            &attributes::workspace_hash(&Workspace::empty()),
             BTreeMap::new(),
         );
         assert_eq!(original["put_model"], "zai_coding::glm-5.2");
@@ -2532,7 +2589,7 @@ mod tests {
                 sim_thinking_level: sim_level,
                 conversation_controls: ConversationControls::default(),
                 scenarios: vec![],
-                tags: BTreeMap::new(),
+                attributes: BTreeMap::new(),
             }
         };
         let (put_model, sim_model) =
@@ -2710,11 +2767,17 @@ mod tests {
                 .await
                 .unwrap();
             let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(created["tags"]["put_model"], model);
-            assert_eq!(created["tags"]["sim_thinking"], "none");
-            assert_eq!(created["tags"]["prompt_hash"].as_str().unwrap().len(), 64);
+            assert_eq!(created["attributes"]["put_model"], model);
+            assert_eq!(created["attributes"]["sim_thinking"], "none");
             assert_eq!(
-                created["tags"]["workspace_hash"].as_str().unwrap().len(),
+                created["attributes"]["prompt_hash"].as_str().unwrap().len(),
+                64
+            );
+            assert_eq!(
+                created["attributes"]["workspace_hash"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
                 64
             );
         }
@@ -2788,15 +2851,15 @@ mod tests {
         seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
         let app = build_app(state);
 
-        let (code, v) = patch_grades(&app, "job-1", r#"{"grades": {"put_cost_usd": 1.0}}"#).await;
+        let (code, v) = patch_job(&app, "job-1", r#"{"grades": {"put_cost_usd": 1.0}}"#).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert_eq!(v["problems"][0]["reason"], "reserved_axis_name");
 
-        let (code, v) = patch_grades(&app, "job-1", r#"{"grades": {"Bad Name": 1.0}}"#).await;
+        let (code, v) = patch_job(&app, "job-1", r#"{"grades": {"Bad Name": 1.0}}"#).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert_eq!(v["problems"][0]["reason"], "bad_axis_name");
 
-        let (code, v) = patch_grades(&app, "no-such-job", r#"{"grades": {"x": 1.0}}"#).await;
+        let (code, v) = patch_job(&app, "no-such-job", r#"{"grades": {"x": 1.0}}"#).await;
         assert_eq!(code, StatusCode::NOT_FOUND);
         assert!(v["error"].as_str().unwrap().contains("lost on restart"));
     }
@@ -2877,9 +2940,9 @@ mod tests {
         seed_done_job(&state, "v2", "cancel-bot", 2300, vec![2, 4]);
         seed_done_job(&state, "v3", "cancel-bot", 3100, vec![3, 3]); // dominated by v2
         let app = build_app(state.clone());
-        patch_grades(&app, "v1", r#"{"grades": {"tone_of_voice": 0.4}}"#).await;
-        patch_grades(&app, "v2", r#"{"grades": {"tone_of_voice": 0.85}}"#).await;
-        patch_grades(&app, "v3", r#"{"grades": {"tone_of_voice": 0.75}}"#).await;
+        patch_job(&app, "v1", r#"{"grades": {"tone_of_voice": 0.4}}"#).await;
+        patch_job(&app, "v2", r#"{"grades": {"tone_of_voice": 0.85}}"#).await;
+        patch_job(&app, "v3", r#"{"grades": {"tone_of_voice": 0.75}}"#).await;
 
         for id in ["v1", "v2", "v3"] {
             state
@@ -2888,7 +2951,7 @@ mod tests {
                 .unwrap()
                 .get_mut(id)
                 .unwrap()
-                .tags
+                .attributes
                 .insert("variant".into(), id.into());
         }
         let req_body = r#"{
@@ -2903,7 +2966,13 @@ mod tests {
         assert!(ct.starts_with("application/json"));
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let points = v["points"].as_array().unwrap();
-        assert_eq!(points.len(), 3, "one point for every variant tag group");
+        assert_eq!(
+            points.len(),
+            3,
+            "one point for every variant attribute group"
+        );
+        assert!(points.iter().all(|point| point["attributes"].is_object()));
+        assert!(points.iter().all(|point| point.get("tags").is_none()));
         // Mixed directions leave the cheap/low-tone and expensive/high-tone
         // variants on the frontier, while the third is dominated.
         assert_eq!(
@@ -2948,13 +3017,13 @@ mod tests {
                 sim_thinking_level: None,
                 conversation_controls: ResolvedConversationControls::default(),
                 workspace_files: 0,
-                tags: system_tags(
+                attributes: system_attributes(
                     "zai_coding::glm-5.2",
                     "zai_coding::glm-5.2",
                     None,
                     None,
                     &put("cancel-bot"),
-                    &tags::workspace_hash(&Workspace::empty()),
+                    &attributes::workspace_hash(&Workspace::empty()),
                     BTreeMap::new(),
                 ),
             },
@@ -2998,10 +3067,10 @@ mod tests {
         {
             let mut jobs = state.jobs.lock().unwrap();
             let complete = jobs.get_mut("complete").unwrap();
-            complete.tags.insert("campaign".into(), "same".into());
+            complete.attributes.insert("campaign".into(), "same".into());
             complete.grades.insert("quality".into(), 1.0);
             let later = jobs.get_mut("later").unwrap();
-            later.tags.insert("campaign".into(), "same".into());
+            later.attributes.insert("campaign".into(), "same".into());
             later.status = JobStatus::Running;
         }
         let app = build_app(state.clone());
@@ -3015,9 +3084,9 @@ mod tests {
 
         // Once the run completes it remains visible as an awaiting-grade
         // backlog member; the same PATCH that supplies the grade joins it to
-        // the existing tag group rather than creating a selected-job view.
+        // the existing attribute group rather than creating a selected-job view.
         state.jobs.lock().unwrap().get_mut("later").unwrap().status = JobStatus::Done;
-        let (code, _) = patch_grades(&app, "later", r#"{"grades":{"quality":3}}"#).await;
+        let (code, _) = patch_job(&app, "later", r#"{"grades":{"quality":3}}"#).await;
         assert_eq!(code, StatusCode::OK);
         let (code, _, second) = post_frontier(&app, "", body).await;
         assert_eq!(code, StatusCode::OK);
@@ -3072,7 +3141,7 @@ mod tests {
         for id in ["keep", "remove"] {
             let mut jobs = state.jobs.lock().unwrap();
             let job = jobs.get_mut(id).unwrap();
-            job.tags.insert("variant".into(), id.into());
+            job.attributes.insert("variant".into(), id.into());
             job.grades.insert("quality".into(), 1.0);
         }
         let app = build_app(state);
@@ -3133,7 +3202,7 @@ mod tests {
         // only consumer hit "/" it got an HTML page with no reference to
         // the spec anywhere, and could not discover it (observed: an
         // agent pasted http://host/ and found nothing). The "/" body now
-        // carries a `<link rel="service-desc" href="/openapi.json">` tag
+        // carries a `<link rel="service-desc" href="/openapi.json">` element
         // in <head> (plus a visible footer line) so the spec is
         // discoverable from the body itself, not just the header. This
         // test guards against that marker being silently removed —
@@ -3142,7 +3211,7 @@ mod tests {
         assert!(
             INDEX_HTML.contains(r#"rel="service-desc" href="/openapi.json""#),
             "the / body must advertise the OpenAPI spec via a service-desc \
-             link tag; body-only consumers (most agent HTTP tools) cannot \
+             link element; body-only consumers (most agent HTTP tools) cannot \
              see the Link header"
         );
     }

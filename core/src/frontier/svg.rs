@@ -51,7 +51,7 @@ const PANEL_BG: &str = "var(--frontier-panel, #fdf6e3)";
 const PAGE_BG: &str = "var(--frontier-page, #eee8d5)";
 const FRONTIER_STROKE: &str = "#6c71c4";
 
-/// XML-escape a text run and discard XML-forbidden control code points. Tags
+/// XML-escape a text run and discard XML-forbidden control code points. Attributes
 /// are caller-owned arbitrary text, so escaping alone is not enough to make a
 /// valid SVG document. Valid Unicode (including non-ASCII labels) is retained.
 fn esc(s: &str) -> String {
@@ -340,14 +340,6 @@ pub fn render(points: &[FrontierPoint], x: &PlotAxis, y: &PlotAxis) -> String {
     s
 }
 
-/// A short, fixed-width plot label avoids spilling long model/hash lineage
-/// labels outside the panel. The full tag identity remains available in SVG
-/// tooltips and in the response JSON.
-fn short_group_id(id: &str) -> String {
-    let suffix = id.strip_prefix("group-").unwrap_or(id);
-    format!("g-{}", suffix.chars().take(8).collect::<String>())
-}
-
 fn wrap_pending(text: &str) -> Vec<String> {
     const WIDTH: usize = 88;
     // Wrap raw text first: splitting an escaped '&amp;' between text nodes
@@ -385,8 +377,8 @@ fn wrap_pending(text: &str) -> Vec<String> {
 }
 
 fn pending_description(point: &super::grouped::GroupedFrontierPoint) -> String {
-    let tags = point
-        .tags
+    let attributes = point
+        .attributes
         .iter()
         .map(|(key, value)| match value {
             Some(value) => format!("{key}={value}"),
@@ -410,9 +402,9 @@ fn pending_description(point: &super::grouped::GroupedFrontierPoint) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!(
-        "{}: tags [{}]; members={}; included={}; excluded [{}]",
-        short_group_id(&point.id),
-        tags,
+        "{}: attributes [{}]; members={}; included={}; excluded [{}]",
+        point.label,
+        attributes,
         point.investigations.len(),
         point.included.len(),
         excluded
@@ -534,10 +526,10 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
             s.push_str(&format!(
                 r#"<g opacity="{opacity}"><title>{}</title>"#,
                 esc(&format!(
-                    "{}; tags: {}; members: {}; included: {}",
+                    "{}; attributes: {}; members: {}; included: {}",
                     point.label,
                     point
-                        .tags
+                        .attributes
                         .iter()
                         .map(|(k, v)| format!("{k}={}", v.as_deref().unwrap_or("null")))
                         .collect::<Vec<_>>()
@@ -555,7 +547,7 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
                 s.push_str(&format!(r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="8.5" fill="none" stroke="{}" stroke-width="1.4" stroke-dasharray="3 2"/>"#, esc(&point.color)));
             }
             s.push_str("</g>");
-            let label = short_group_id(&point.id);
+            let label = &point.label;
             let (lx, anchor) = if cx + 9.0 + label.len() as f64 * 6.8 > W - 6.0 {
                 (cx - 9.0, "end")
             } else {
@@ -663,7 +655,7 @@ mod tests {
         use std::collections::BTreeMap;
         let pending = GroupedFrontierPoint {
             id: "group-pending".into(),
-            tags: BTreeMap::new(),
+            attributes: BTreeMap::new(),
             label: "waiting".into(),
             color: "#268bd2".into(),
             investigations: vec!["i".into()],
@@ -693,7 +685,7 @@ mod tests {
         use std::collections::BTreeMap;
         let make = |id: &str, x: f64, y: f64| GroupedFrontierPoint {
             id: id.into(),
-            tags: BTreeMap::new(),
+            attributes: BTreeMap::new(),
             label: id.into(),
             color: "#268bd2".into(),
             investigations: vec![id.into()],
@@ -722,7 +714,7 @@ mod tests {
         use crate::frontier::grouped::{GroupedFrontierPoint, GroupedFrontierResponse};
         let point = GroupedFrontierPoint {
             id: "group-1234567890abcdef".into(),
-            tags: [("label".into(), Some("<\u{1}über-long".into()))].into(),
+            attributes: [("label".into(), Some("<\u{1}über-long".into()))].into(),
             label: "model-with-a-very-long-hash".into(),
             color: "#268bd2".into(),
             investigations: vec!["i".into(), "needs-grade".into()],
@@ -763,7 +755,7 @@ mod tests {
         assert!(svg.contains("<path d=\"M ")); // staircase
         assert!(svg.contains("<g opacity=\"0.48\""));
         assert!(svg.contains("stroke-dasharray=\"3 2\""));
-        assert!(svg.contains("g-12345678"));
+        assert!(svg.contains("model-with-a-very-long-hash"));
         assert!(svg.contains("needs-grade"));
         assert!(svg.contains("(awaiting_grades)"));
         assert!(svg.contains("grades=x"));

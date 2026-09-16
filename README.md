@@ -28,33 +28,33 @@ supports this without ever judging for you:
 - **Judged axes** are yours: PATCH numeric grades with free-form axis
   names onto an investigation. The harness stores them and never
   interprets them.
-- **Tags group investigations into points.** Each point represents one unique
-  combination of your chosen tag values, averaged across its completed, fully
+- **Attributes group investigations into points.** Each point represents one unique
+  combination of your chosen attribute values, averaged across its completed, fully
   graded investigations. Run the same prompt against several workspaces to
   contribute to one point. Every investigation is a candidate; there is no
   selection/filter list. Delete investigations you do not want included.
-- `POST /api/frontier` takes `group_by` tag names and `axes` with directions
+- `POST /api/frontier` takes `group_by` attribute names and `axes` with directions
   (`"better": "lower" | "higher"`). `?format=json` supports N axes;
   `?format=svg` renders exactly two. **Up-and-right is always better**:
   lower-is-better axes are reversed. Filled dots are non-dominated; hollow
   dots are dominated. The frontier is relative to the chosen axes, not a verdict.
-- **The plot is live.** The UI refreshes as jobs finish, grades/tags change,
+- **The plot is live.** The UI refreshes as jobs finish, grades/attributes change,
   or jobs are deleted. Groups with running or excluded members are preliminary
   (faded dots with dashed outer rings). Groups with no usable results are
   pending, not given invented coordinates. Every excluded investigation and
   its missing grades remain visible in the API and UI as a grading backlog.
 
-Tags are string-valued. `put_model`, `sim_model`, `put_thinking`,
+Attributes are string-valued. `put_model`, `sim_model`, `put_thinking`,
 `sim_thinking`, `prompt_hash`, and `workspace_hash` are recorded automatically
 and cannot be overwritten or deleted. `label` is editable and displayed in
-the UI; other custom tags are editable too. Renaming a label leaves the default
+the UI; other custom attributes are editable too. Renaming a label leaves the default
 grouping unchanged; explicitly grouping by `label` makes it an identity key
-like any other selected tag. Model tags use resolved names;
+like any other selected attribute. Model attributes use resolved names;
 missing thinking settings are `provider_default` (different from explicit
 `none`). Prompt hashes exclude the cosmetic PUT id; workspace hashes describe
 extracted paths and contents, not zip metadata.
 
-Everything remains in memory: restarting loses investigations, tags, and grades.
+Everything remains in memory: restarting loses investigations, attributes, and grades.
 Groups and their frontier are computed on demand; an API caller polls the same
 POST to refresh. Group ids remain stable when membership or grades change.
 
@@ -74,11 +74,12 @@ both full maps:
 ```
 $ curl -X PATCH 'http://127.0.0.1:8099/api/investigations/v2-warm' \
     -H 'content-type: application/json' \
-    -d '{"grades": {"tone_of_voice": 0.85}, "tags": {"label": "Warm variant"}}'
+    -d '{"grades": {"tone_of_voice": 0.85}, "attributes": {"label": "Warm variant"}}'
 ```
 
-Custom tags can also be supplied as a `tags` object when creating an
-investigation. System-owned tags are read-only even at creation time.
+Custom attributes can also be supplied in the `attributes` object when creating
+an investigation. System-owned attributes are read-only even at creation time.
+There is deliberately no `tags` compatibility alias: unknown fields are rejected.
 
 Reserved axes are harness-computed, so grading one is rejected with the
 fix named:
@@ -103,11 +104,12 @@ $ curl -X POST 'http://127.0.0.1:8099/api/frontier?format=json' \
                {"name": "tone_of_voice", "better": "higher"}] }'
 ```
 
-Each returned point carries its grouping `tags`, a stable `id`, all member
-`investigations`, the `included` ids used for **every** coordinate, and an
+Each returned point carries its grouping `attributes`, a stable `id`, and a
+compact slash-separated value label in `group_by` order (for example
+`gpt-5.6-luna/low/prompt-a1b2c3d4`), plus all member `investigations`, the `included` ids used for **every** coordinate, and an
 `excluded` backlog. `values` contains arithmetic means, not totals across the
 group. `on_frontier` and `dominated_by` describe dominance between **group ids**.
-Ties dominate nothing. `group_by: []` means one group; an absent grouping tag
+Ties dominate nothing. `group_by: []` means one group; an absent grouping attribute
 has a `null` value, distinct from any string.
 
 An exclusion names its `investigation`, `status` (`running`, `failed`,

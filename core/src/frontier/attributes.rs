@@ -1,5 +1,5 @@
-//! Shared tag validation and deterministic content identities for frontier
-//! grouping. Tags are descriptive metadata; these helpers deliberately do not
+//! Shared attribute validation and deterministic content identities for frontier
+//! grouping. Attributes are descriptive metadata; these helpers deliberately do not
 //! turn them into a registry or a storage policy.
 
 use std::collections::BTreeMap;
@@ -11,10 +11,10 @@ use crate::llm::ThinkingLevel;
 use crate::model::input::PromptUnderTest;
 use crate::simulate::Workspace;
 
-/// Tags the harness derives from an investigation and therefore callers must
+/// Attributes the harness derives from an investigation and therefore callers must
 /// not edit through a metadata PATCH. `label` is the explicit editable display
-/// tag; other valid names are caller-owned arbitrary tags.
-pub const IMMUTABLE_TAG_NAMES: &[&str] = &[
+/// attribute; other valid names are caller-owned arbitrary attributes.
+pub const IMMUTABLE_ATTRIBUTE_NAMES: &[&str] = &[
     "put_model",
     "sim_model",
     "put_thinking",
@@ -23,7 +23,7 @@ pub const IMMUTABLE_TAG_NAMES: &[&str] = &[
     "workspace_hash",
 ];
 
-pub fn valid_tag_name(name: &str) -> bool {
+pub fn valid_attribute_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         Some(c) if c.is_ascii_lowercase() => {}
@@ -35,52 +35,62 @@ pub fn valid_tag_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-pub fn is_immutable_tag(name: &str) -> bool {
-    IMMUTABLE_TAG_NAMES.contains(&name)
+pub fn is_immutable_attribute(name: &str) -> bool {
+    IMMUTABLE_ATTRIBUTE_NAMES.contains(&name)
 }
-pub fn is_editable_tag(name: &str) -> bool {
-    name == "label" || (valid_tag_name(name) && !is_immutable_tag(name))
+pub fn is_editable_attribute(name: &str) -> bool {
+    name == "label" || (valid_attribute_name(name) && !is_immutable_attribute(name))
 }
 
-/// Maximum UTF-8 bytes in one caller-owned tag value (creation or PATCH).
-pub const MAX_TAG_VALUE_BYTES: usize = 1024;
+/// Maximum UTF-8 bytes in one caller-owned attribute value (creation or PATCH).
+pub const MAX_ATTRIBUTE_VALUE_BYTES: usize = 1024;
 
 fn validate_edits<'a>(
     entries: impl Iterator<Item = (&'a String, Option<&'a str>)>,
 ) -> Result<(), String> {
     let mut problems = Vec::new();
     for (key, value) in entries {
-        if is_immutable_tag(key) {
+        if is_immutable_attribute(key) {
             problems.push(format!("'{key}' is system-owned immutable provenance"));
-        } else if !valid_tag_name(key) {
+        } else if !valid_attribute_name(key) {
             problems.push(format!("'{key}' fails ^[a-z][a-z0-9_]{{0,63}}$"));
         }
-        if value.is_some_and(|v| v.len() > MAX_TAG_VALUE_BYTES) {
+        if value.is_some_and(|v| v.len() > MAX_ATTRIBUTE_VALUE_BYTES) {
             problems.push(format!(
-                "value for '{key}' exceeds {MAX_TAG_VALUE_BYTES} UTF-8 bytes"
+                "value for '{key}' exceeds {MAX_ATTRIBUTE_VALUE_BYTES} UTF-8 bytes"
             ));
         }
     }
     if problems.is_empty() {
         Ok(())
     } else {
-        Err(format!("invalid tags: {}", problems.join("; ")))
+        Err(format!("invalid attributes: {}", problems.join("; ")))
     }
 }
 
-/// Validate caller-supplied tags at creation; system keys may not be supplied,
+/// Validate caller-supplied attributes at creation; system keys may not be supplied,
 /// even with the same value. Empty strings are valid, distinct from absence.
-pub fn validate_post_tags(tags: &BTreeMap<String, String>) -> Result<(), String> {
-    validate_edits(tags.iter().map(|(key, value)| (key, Some(value.as_str()))))
+pub fn validate_post_attributes(attributes: &BTreeMap<String, String>) -> Result<(), String> {
+    validate_edits(
+        attributes
+            .iter()
+            .map(|(key, value)| (key, Some(value.as_str()))),
+    )
 }
 
-/// Validate a complete tag PATCH before applying any edit. Null deletes an
+/// Validate a complete attribute PATCH before applying any edit. Null deletes an
 /// editable key, never a provenance key. The HTTP adapter merges only on success.
-pub fn validate_tag_patch(tags: &BTreeMap<String, Option<String>>) -> Result<(), String> {
-    validate_edits(tags.iter().map(|(key, value)| (key, value.as_deref())))
+pub fn validate_attribute_patch(
+    attributes: &BTreeMap<String, Option<String>>,
+) -> Result<(), String> {
+    validate_edits(
+        attributes
+            .iter()
+            .map(|(key, value)| (key, value.as_deref())),
+    )
 }
 
-fn thinking_tag(level: Option<ThinkingLevel>) -> String {
+fn thinking_attribute(level: Option<ThinkingLevel>) -> String {
     level
         .map(|level| serde_json::to_value(level).expect("thinking level serializes"))
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -88,8 +98,8 @@ fn thinking_tag(level: Option<ThinkingLevel>) -> String {
 }
 
 /// Assemble authoritative provenance from resolved settings and seed content.
-/// Callers validate custom tags before invoking this; derived values always win.
-pub fn system_tags(
+/// Callers validate custom attributes before invoking this; derived values always win.
+pub fn system_attributes(
     put_model: &str,
     sim_model: &str,
     put_thinking: Option<ThinkingLevel>,
@@ -98,19 +108,19 @@ pub fn system_tags(
     workspace_hash: &str,
     custom: BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
-    let mut tags = custom;
-    tags.insert("put_model".into(), put_model.into());
-    tags.insert("sim_model".into(), sim_model.into());
-    tags.insert("put_thinking".into(), thinking_tag(put_thinking));
-    tags.insert("sim_thinking".into(), thinking_tag(sim_thinking));
-    tags.insert("prompt_hash".into(), prompt_hash(put));
-    tags.insert("workspace_hash".into(), workspace_hash.into());
-    tags
+    let mut attributes = custom;
+    attributes.insert("put_model".into(), put_model.into());
+    attributes.insert("sim_model".into(), sim_model.into());
+    attributes.insert("put_thinking".into(), thinking_attribute(put_thinking));
+    attributes.insert("sim_thinking".into(), thinking_attribute(sim_thinking));
+    attributes.insert("prompt_hash".into(), prompt_hash(put));
+    attributes.insert("workspace_hash".into(), workspace_hash.into());
+    attributes
 }
 
 /// SHA-256 of a canonical JSON representation of only prompt behavior. The
 /// cosmetic PUT `id` is deliberately absent, so renaming a variant cannot
-/// create a different lineage tag.
+/// create a different lineage attribute.
 pub fn prompt_hash(prompt: &PromptUnderTest) -> String {
     let value = json!({
         "template": prompt.template,
@@ -120,18 +130,18 @@ pub fn prompt_hash(prompt: &PromptUnderTest) -> String {
     stable_hash_hex(&canonical_json(&value))
 }
 
-/// SHA-256 hex encoding used for stable group ids, colors, and content tags.
+/// SHA-256 hex encoding used for stable group ids, colors, and content attributes.
 pub fn stable_hash_hex(input: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(input.as_bytes());
     format!("{:x}", hash.finalize())
 }
 
-/// Length-delimited canonical tag encoding, so (`a`, `bc`) cannot collide with
+/// Length-delimited canonical attribute encoding, so (`a`, `bc`) cannot collide with
 /// (`ab`, `c`) and absent remains distinct from the literal string "null".
-pub fn canonical_group_tags(tags: &BTreeMap<String, Option<String>>) -> String {
+pub fn canonical_group_attributes(attributes: &BTreeMap<String, Option<String>>) -> String {
     let mut out = String::new();
-    for (key, value) in tags {
+    for (key, value) in attributes {
         out.push_str(&format!("{}:{}=", key.len(), key));
         match value {
             Some(value) => out.push_str(&format!("s{}:{};", value.len(), value)),
@@ -190,21 +200,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tag_policy_is_shared_by_create_and_patch() {
-        for key in IMMUTABLE_TAG_NAMES {
+    fn attribute_policy_is_shared_by_create_and_patch() {
+        for key in IMMUTABLE_ATTRIBUTE_NAMES {
             let create = [(key.to_string(), "forged".into())].into();
-            assert!(validate_post_tags(&create).is_err());
-            assert!(validate_tag_patch(&[(key.to_string(), None)].into()).is_err());
+            assert!(validate_post_attributes(&create).is_err());
+            assert!(validate_attribute_patch(&[(key.to_string(), None)].into()).is_err());
         }
-        assert!(validate_post_tags(&[("empty".into(), "".into())].into()).is_ok());
-        assert!(validate_tag_patch(&[("label".into(), None)].into()).is_ok());
-        let maximum = "ü".repeat(MAX_TAG_VALUE_BYTES / 2);
-        assert!(validate_post_tags(&[("label".into(), maximum.clone())].into()).is_ok());
-        assert!(validate_post_tags(&[("label".into(), format!("{maximum}x"))].into()).is_err());
+        assert!(validate_post_attributes(&[("empty".into(), "".into())].into()).is_ok());
+        assert!(validate_attribute_patch(&[("label".into(), None)].into()).is_ok());
+        let maximum = "ü".repeat(MAX_ATTRIBUTE_VALUE_BYTES / 2);
+        assert!(validate_post_attributes(&[("label".into(), maximum.clone())].into()).is_ok());
         assert!(
-            validate_tag_patch(&[("label".into(), Some(format!("{maximum}x")))].into()).is_err()
+            validate_post_attributes(&[("label".into(), format!("{maximum}x"))].into()).is_err()
         );
-        assert!(validate_post_tags(&[("Bad Key".into(), "v".into())].into()).is_err());
+        assert!(
+            validate_attribute_patch(&[("label".into(), Some(format!("{maximum}x")))].into())
+                .is_err()
+        );
+        assert!(validate_post_attributes(&[("Bad Key".into(), "v".into())].into()).is_err());
     }
 
     #[test]
@@ -221,14 +234,14 @@ mod tests {
     }
 
     #[test]
-    fn canonical_group_tags_distinguishes_missing_from_literal_null() {
+    fn canonical_group_attributes_distinguishes_missing_from_literal_null() {
         let missing = [(String::from("x"), None)].into_iter().collect();
         let literal = [(String::from("x"), Some(String::from("null")))]
             .into_iter()
             .collect();
         assert_ne!(
-            canonical_group_tags(&missing),
-            canonical_group_tags(&literal)
+            canonical_group_attributes(&missing),
+            canonical_group_attributes(&literal)
         );
     }
 }
