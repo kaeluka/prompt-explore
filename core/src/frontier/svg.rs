@@ -11,6 +11,7 @@
 //! and colors are allow-pattern-validated before they ever reach the
 //! renderer.
 
+use super::grouped::GroupedFrontierResponse;
 use super::{BetterDirection, FrontierPoint};
 
 /// One rendered axis: name + direction. (The request-level
@@ -49,7 +50,9 @@ const PANEL_BG: &str = "#fdf6e3";
 const PAGE_BG: &str = "#eee8d5";
 const FRONTIER_STROKE: &str = "#6c71c4";
 
-/// XML-escape a text run. & < > " ' — the five predefined entities.
+/// XML-escape a text run and discard XML-forbidden control code points. Tags
+/// are caller-owned arbitrary text, so escaping alone is not enough to make a
+/// valid SVG document. Valid Unicode (including non-ASCII labels) is retained.
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -59,6 +62,9 @@ fn esc(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
+            '\t' | '\n' | '\r' => out.push(' '),
+            c if !matches!(c, '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}') =>
+                {}
             _ => out.push(c),
         }
     }
@@ -92,6 +98,24 @@ fn fmt_tick(v: f64, step: f64) -> String {
 /// plot_lo, plot_hi) where the plot range is padded to whole steps.
 /// A degenerate (equal lo/hi) range is padded symmetrically.
 fn nice_ticks(lo: f64, hi: f64, target: usize) -> (Vec<f64>, f64, f64) {
+    // Opposite-sign values near f64::MAX make `hi - lo` overflow even
+    // though every plotted coordinate is finite. Normalize before choosing
+    // nice ticks, then scale back; ordinary ranges retain byte-for-byte legacy
+    // behavior (and its SVG golden).
+    if !lo.is_finite() || !hi.is_finite() {
+        return (vec![-1.0, 0.0, 1.0], -1.0, 1.0);
+    }
+    if !(hi - lo).is_finite() {
+        let scale = lo.abs().max(hi.abs());
+        if scale > 0.0 {
+            let (ticks, plo, phi) = nice_ticks(lo / scale, hi / scale, target);
+            return (
+                ticks.into_iter().map(|v| v * scale).collect(),
+                plo * scale,
+                phi * scale,
+            );
+        }
+    }
     let (lo, hi) = if lo == hi {
         let h = if lo == 0.0 {
             0.5
@@ -132,7 +156,18 @@ fn nice_ticks(lo: f64, hi: f64, target: usize) -> (Vec<f64>, f64, f64) {
 /// Lower-is-better axes invert, so the BETTER end always lands at `b`
 /// (right for x, top for y) — the up-and-right-is-better contract.
 fn px(v: f64, plo: f64, phi: f64, a: f64, b: f64, better: BetterDirection) -> f64 {
-    let t = ((v - plo) / (phi - plo)).clamp(0.0, 1.0);
+    let range = phi - plo;
+    let t = if range.is_finite() {
+        (v - plo) / range
+    } else {
+        let scale = v.abs().max(plo.abs()).max(phi.abs());
+        if scale == 0.0 {
+            0.5
+        } else {
+            (v / scale - plo / scale) / (phi / scale - plo / scale)
+        }
+    }
+    .clamp(0.0, 1.0);
     match better {
         BetterDirection::Higher => a + t * (b - a),
         BetterDirection::Lower => b - t * (b - a),
@@ -304,6 +339,252 @@ pub fn render(points: &[FrontierPoint], x: &PlotAxis, y: &PlotAxis) -> String {
     s
 }
 
+/// A short, fixed-width plot label avoids spilling long model/hash lineage
+/// labels outside the panel. The full tag identity remains available in SVG
+/// tooltips and in the response JSON.
+fn short_group_id(id: &str) -> String {
+    let suffix = id.strip_prefix("group-").unwrap_or(id);
+    format!("g-{}", suffix.chars().take(8).collect::<String>())
+}
+
+fn wrap_pending(text: &str) -> Vec<String> {
+    const WIDTH: usize = 88;
+    // Wrap raw text first: splitting an escaped '&amp;' between text nodes
+    // would produce invalid XML. Escape each completed line at rendering.
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let word_len = word.chars().count();
+        if !line.is_empty() && line.chars().count() + 1 + word_len > WIDTH {
+            lines.push(line);
+            line = String::new();
+        }
+        // Long hashes/ids have no whitespace. Split them by Unicode scalar so
+        // no text element can exceed the bounded plot width.
+        if word_len > WIDTH {
+            if !line.is_empty() {
+                lines.push(line);
+                line = String::new();
+            }
+            let chars: Vec<char> = word.chars().collect();
+            for chunk in chars.chunks(WIDTH) {
+                lines.push(chunk.iter().collect());
+            }
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn pending_description(point: &super::grouped::GroupedFrontierPoint) -> String {
+    let tags = point
+        .tags
+        .iter()
+        .map(|(key, value)| match value {
+            Some(value) => format!("{key}={value}"),
+            None => format!("{key}=null"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let excluded = point
+        .excluded
+        .iter()
+        .map(|e| {
+            let mut detail = format!("{} ({})", e.investigation, e.status);
+            if !e.missing_grades.is_empty() {
+                detail.push_str(&format!(" grades={}", e.missing_grades.join(",")));
+            }
+            if !e.missing_axes.is_empty() {
+                detail.push_str(&format!(" axes={}", e.missing_axes.join(",")));
+            }
+            detail
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "{}: tags [{}]; members={}; included={}; excluded [{}]",
+        short_group_id(&point.id),
+        tags,
+        point.investigations.len(),
+        point.included.len(),
+        excluded
+    )
+}
+
+/// Render grouped frontier points. Complete groups use their real arithmetic
+/// means; groups with no common cohort are listed as a wrapped backlog below
+/// the plot rather than receiving invented coordinates. Preliminary points keep
+/// their filled/hollow dominance shape but the entire marker group is subdued.
+pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &PlotAxis) -> String {
+    let usable: Vec<_> = response
+        .points
+        .iter()
+        .filter_map(|p| {
+            let values = p.values.as_ref()?;
+            let xv = *values.get(&x.name)?;
+            let yv = *values.get(&y.name)?;
+            (xv.is_finite() && yv.is_finite()).then_some((p, xv, yv))
+        })
+        .collect();
+    let pending: Vec<_> = response
+        .points
+        .iter()
+        .filter(|p| p.values.is_none() || !p.excluded.is_empty())
+        .collect();
+    let pending_lines: Vec<String> = pending
+        .iter()
+        .flat_map(|p| wrap_pending(&pending_description(p)))
+        .collect();
+    let svg_h = H + if pending_lines.is_empty() {
+        0.0
+    } else {
+        22.0 + pending_lines.len() as f64 * 13.0
+    };
+    let plot_w = W - L - R;
+    let plot_h = H - T - B;
+    let mut s = String::with_capacity(4096 + pending_lines.len() * 100);
+    s.push_str(&format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{svg_h}" viewBox="0 0 {W} {svg_h}" font-family="ui-monospace, Menlo, Consolas, monospace">"#));
+    s.push_str(&format!(
+        r#"<rect width="{W}" height="{svg_h}" fill="{PAGE_BG}"/>"#
+    ));
+    s.push_str(&format!(r#"<text x="{L}" y="21" font-size="13" font-weight="700" fill="{LABEL_COLOR}">Grouped Pareto frontier</text>"#));
+    s.push_str(&format!(r#"<text x="{}" y="21" font-size="11" fill="{TICK_COLOR}" text-anchor="end">up &amp; right is better</text>"#, W - R));
+    s.push_str(&format!(r#"<rect x="{L}" y="{T}" width="{plot_w}" height="{plot_h}" fill="{PANEL_BG}" stroke="{GRID_COLOR}"/>"#));
+    if usable.is_empty() {
+        s.push_str(&format!(r#"<text x="{:.1}" y="{:.1}" font-size="13" fill="{DIM_LABEL_COLOR}" text-anchor="middle">no groups have a complete cohort for these axes</text>"#, L + plot_w / 2.0, T + plot_h / 2.0));
+    } else {
+        let (xt, xlo, xhi) = nice_ticks(
+            usable
+                .iter()
+                .map(|(_, v, _)| *v)
+                .fold(f64::INFINITY, f64::min),
+            usable
+                .iter()
+                .map(|(_, v, _)| *v)
+                .fold(f64::NEG_INFINITY, f64::max),
+            5,
+        );
+        let (yt, ylo, yhi) = nice_ticks(
+            usable
+                .iter()
+                .map(|(_, _, v)| *v)
+                .fold(f64::INFINITY, f64::min),
+            usable
+                .iter()
+                .map(|(_, _, v)| *v)
+                .fold(f64::NEG_INFINITY, f64::max),
+            5,
+        );
+        let step_x = xt.get(1).copied().unwrap_or(xhi) - xt.first().copied().unwrap_or(xhi);
+        let step_y = yt.get(1).copied().unwrap_or(yhi) - yt.first().copied().unwrap_or(yhi);
+        for &tick in &xt {
+            let at = px(tick, xlo, xhi, L, W - R, x.better);
+            s.push_str(&format!(
+                r#"<line x1="{at:.1}" y1="{T}" x2="{at:.1}" y2="{}" stroke="{GRID_COLOR}"/>"#,
+                H - B
+            ));
+            s.push_str(&format!(r#"<text x="{at:.1}" y="{}" font-size="11" fill="{TICK_COLOR}" text-anchor="middle">{}</text>"#, H - B + 18.0, esc(&fmt_tick(tick, step_x))));
+        }
+        for &tick in &yt {
+            let at = px(tick, ylo, yhi, H - B, T, y.better);
+            s.push_str(&format!(
+                r#"<line x1="{L}" y1="{at:.1}" x2="{}" y2="{at:.1}" stroke="{GRID_COLOR}"/>"#,
+                W - R
+            ));
+            s.push_str(&format!(r#"<text x="{}" y="{:.1}" font-size="11" fill="{TICK_COLOR}" text-anchor="end">{}</text>"#, L - 8.0, at + 4.0, esc(&fmt_tick(tick, step_y))));
+        }
+        let mut frontier: Vec<(f64, f64)> = usable
+            .iter()
+            .filter(|(p, _, _)| p.on_frontier == Some(true))
+            .map(|(_, xv, yv)| {
+                (
+                    px(*xv, xlo, xhi, L, W - R, x.better),
+                    px(*yv, ylo, yhi, H - B, T, y.better),
+                )
+            })
+            .collect();
+        frontier.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap()
+                .then(a.1.partial_cmp(&b.1).unwrap())
+        });
+        if let Some((x0, y0)) = frontier.first() {
+            let mut d = format!("M {L:.1} {y0:.1} L {x0:.1} {y0:.1}");
+            let mut prev_y = *y0;
+            for &(cx, cy) in frontier.iter().skip(1) {
+                d.push_str(&format!(" L {cx:.1} {prev_y:.1} L {cx:.1} {cy:.1}"));
+                prev_y = cy;
+            }
+            d.push_str(&format!(" L {:.1} {prev_y:.1}", W - R));
+            s.push_str(&format!(r#"<path d="{d}" fill="none" stroke="{FRONTIER_STROKE}" stroke-width="2" opacity="0.85"/>"#));
+        }
+        for (point, xv, yv) in usable {
+            let cx = px(xv, xlo, xhi, L, W - R, x.better);
+            let cy = px(yv, ylo, yhi, H - B, T, y.better);
+            let frontier = point.on_frontier == Some(true);
+            let opacity = if point.preliminary { "0.48" } else { "1" };
+            s.push_str(&format!(
+                r#"<g opacity="{opacity}"><title>{}</title>"#,
+                esc(&format!(
+                    "{}; tags: {}; members: {}; included: {}",
+                    point.label,
+                    point
+                        .tags
+                        .iter()
+                        .map(|(k, v)| format!("{k}={}", v.as_deref().unwrap_or("null")))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    point.investigations.len(),
+                    point.included.len()
+                ))
+            ));
+            if frontier {
+                s.push_str(&format!(r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="6" fill="{}" stroke="{PANEL_BG}" stroke-width="1.5"/>"#, esc(&point.color)));
+            } else {
+                s.push_str(&format!(r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="4.5" fill="none" stroke="{}" stroke-width="1.8"/>"#, esc(&point.color)));
+            }
+            if point.preliminary {
+                s.push_str(&format!(r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="8.5" fill="none" stroke="{}" stroke-width="1.4" stroke-dasharray="3 2"/>"#, esc(&point.color)));
+            }
+            s.push_str("</g>");
+            let label = short_group_id(&point.id);
+            let (lx, anchor) = if cx + 9.0 + label.len() as f64 * 6.8 > W - 6.0 {
+                (cx - 9.0, "end")
+            } else {
+                (cx + 9.0, "start")
+            };
+            let ly = if cy - 20.0 < T + 8.0 {
+                cy + 20.0
+            } else {
+                cy - 9.0
+            };
+            s.push_str(&format!(r#"<text x="{lx:.1}" y="{ly:.1}" font-size="11" fill="{}" text-anchor="{anchor}">{}</text>"#, if frontier { LABEL_COLOR } else { DIM_LABEL_COLOR }, esc(&label)));
+        }
+    }
+    s.push_str(&format!(r#"<text x="{:.1}" y="{}" font-size="12" fill="{TICK_COLOR}" text-anchor="middle">{} &#8212; {} is better &#8594;</text>"#, L + plot_w / 2.0, H - 14.0, esc(&x.name), x.better.as_str()));
+    let y_mid = (T + (H - B)) / 2.0;
+    s.push_str(&format!(r#"<text transform="translate(16 {y_mid:.1}) rotate(-90)" font-size="12" fill="{TICK_COLOR}" text-anchor="middle">{} &#8212; {} is better &#8593;</text>"#, esc(&y.name), y.better.as_str()));
+    if !pending_lines.is_empty() {
+        s.push_str(&format!(r#"<text x="{L}" y="{}" font-size="11" fill="{DIM_LABEL_COLOR}">pending / preliminary backlog (excluded investigations):</text>"#, H + 16.0));
+        for (i, line) in pending_lines.iter().enumerate() {
+            s.push_str(&format!(
+                r#"<text x="{L}" y="{}" font-size="10" fill="{DIM_LABEL_COLOR}">{}</text>"#,
+                H + 30.0 + i as f64 * 13.0,
+                esc(line)
+            ));
+        }
+    }
+    s.push_str("</svg>");
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +629,11 @@ mod tests {
     }
 
     #[test]
+    fn esc_drops_xml_forbidden_noncharacters_but_preserves_unicode() {
+        assert_eq!(esc("Ä\u{fffe}\u{ffff}\u{0}🍊"), "Ä🍊");
+    }
+
+    #[test]
     fn esc_escapes_xml_specials() {
         assert_eq!(esc(r#"<a&"b'>"#), "&lt;a&amp;&quot;b&#39;&gt;");
     }
@@ -360,5 +646,114 @@ mod tests {
         assert_eq!(fmt_tick(2.5, 2.5), "2.5");
         assert_eq!(fmt_tick(0.0, 1.0), "0");
         assert_eq!(fmt_tick(1e17, 1e16), "1e17");
+    }
+
+    #[test]
+    fn wrapping_does_not_split_xml_entities() {
+        let raw = "&<🍊".repeat(120);
+        let lines = wrap_pending(&raw);
+        assert!(lines.iter().all(|s| s.chars().count() <= 88));
+        assert_eq!(lines.iter().map(|s| esc(s)).collect::<String>(), esc(&raw));
+    }
+
+    #[test]
+    fn grouped_renderer_keeps_pending_visible_without_coordinates() {
+        use crate::frontier::grouped::{GroupedFrontierPoint, GroupedFrontierResponse};
+        use std::collections::BTreeMap;
+        let pending = GroupedFrontierPoint {
+            id: "group-pending".into(),
+            tags: BTreeMap::new(),
+            label: "waiting".into(),
+            color: "#268bd2".into(),
+            investigations: vec!["i".into()],
+            included: vec![],
+            excluded: vec![],
+            preliminary: true,
+            values: None,
+            on_frontier: None,
+            dominated_by: vec![],
+        };
+        let svg = render_grouped(
+            &GroupedFrontierResponse {
+                points: vec![pending],
+            },
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert!(svg.contains("no groups have a complete cohort"));
+        assert!(svg.contains("pending / preliminary backlog"));
+        assert!(svg.contains("members=1; included=0"));
+        assert!(!svg.contains("NaN"));
+    }
+
+    #[test]
+    fn grouped_renderer_handles_extreme_signed_finite_coordinates() {
+        use crate::frontier::grouped::{GroupedFrontierPoint, GroupedFrontierResponse};
+        use std::collections::BTreeMap;
+        let make = |id: &str, x: f64, y: f64| GroupedFrontierPoint {
+            id: id.into(),
+            tags: BTreeMap::new(),
+            label: id.into(),
+            color: "#268bd2".into(),
+            investigations: vec![id.into()],
+            included: vec![id.into()],
+            excluded: vec![],
+            preliminary: false,
+            values: Some([("x".into(), x), ("y".into(), y)].into()),
+            on_frontier: Some(true),
+            dominated_by: vec![],
+        };
+        let svg = render_grouped(
+            &GroupedFrontierResponse {
+                points: vec![
+                    make("group-low", -1e308, 1e308),
+                    make("group-high", 1e308, -1e308),
+                ],
+            },
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert!(!svg.contains("NaN") && !svg.contains("inf"));
+    }
+
+    #[test]
+    fn grouped_renderer_has_full_plot_and_subdues_whole_preliminary_marker() {
+        use crate::frontier::grouped::{GroupedFrontierPoint, GroupedFrontierResponse};
+        let point = GroupedFrontierPoint {
+            id: "group-1234567890abcdef".into(),
+            tags: [("label".into(), Some("<\u{1}über-long".into()))].into(),
+            label: "model-with-a-very-long-hash".into(),
+            color: "#268bd2".into(),
+            investigations: vec!["i".into(), "needs-grade".into()],
+            included: vec!["i".into()],
+            excluded: vec![crate::frontier::grouped::GroupExclusion {
+                investigation: "needs-grade".into(),
+                status: "awaiting_grades".into(),
+                missing_grades: vec!["x".into()],
+                missing_axes: vec![],
+            }],
+            preliminary: true,
+            values: Some([("x".into(), 1.0), ("y".into(), 2.0)].into()),
+            on_frontier: Some(true),
+            dominated_by: vec![],
+        };
+        let svg = render_grouped(
+            &GroupedFrontierResponse {
+                points: vec![point],
+            },
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert!(svg.contains("up &amp; right is better"));
+        assert!(svg.contains("rotate(-90)"));
+        assert!(svg.contains("<path d=\"M ")); // staircase
+        assert!(svg.contains("<g opacity=\"0.48\""));
+        assert!(svg.contains("stroke-dasharray=\"3 2\""));
+        assert!(svg.contains("g-12345678"));
+        assert!(svg.contains("needs-grade"));
+        assert!(svg.contains("(awaiting_grades)"));
+        assert!(svg.contains("grades=x"));
+        assert!(svg.contains("&lt;über-long"));
+        assert!(!svg.contains('\u{1}'));
     }
 }

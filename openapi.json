@@ -28,8 +28,7 @@
     "/api/frontier": {
       "post": {
         "tags": [],
-        "summary": "Compute the Pareto frontier over a caller-chosen set of\ninvestigations and axes. This is the read side of multi-dimensional\nprompt optimization: you run prompt variants (each an investigation),\ngrade the soft axes you care about (PATCH /api/investigations/{id}),\nand then ask which variants are NOT dominated — on any mix of your\ngraded axes (tone_of_voice, …) and the harness's measured ones\n(put_/sim_ tokens & cost, steps_per_trace statistics).",
-        "description": "Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a\nv0 rendering constraint — send `format=json` for N axes). Axis\ndirection is declared HERE, per request (`\"better\": \"lower\" |\n\"higher\"`), never stored. The harness records your judgment and does\narithmetic; it never interprets a grade — including which graded\nvalues are \"good enough\" or what an axis should measure. Those are\ncaller-domain questions, answered when you PATCH grades from the\ntraces.\n\nEvery fixable problem (missing grade, unpriced cost axis, running\njob, unknown id, duplicate id, bad label/color, direction conflict\nwith a reserved axis, …) comes back in ONE 422 body with typed\nreasons, each detail naming the fix — including the exact PATCH to\nmake for a missing grade.",
+        "summary": "Compute a grouped Pareto frontier over ALL investigations currently held by\nthis server. There is no investigation-selection list: `group_by` chooses\nthe provenance/campaign tags that define one candidate point (default:\nput model, thinking setting, and behavior-only prompt hash). Each point\nretains its member ids and explicit exclusions. Running/failed/ungraded\nmembers are successful evidence, not a 422: poll jobs, PATCH grades, then\nPOST this same request again to update preliminary coordinates. An all-error\nrun (`result.result.status=error`) or a no-op with zero completed traces is\na failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if\nall requested values exist; judging their adequacy belongs to the caller.",
         "operationId": "frontier",
         "parameters": [
           {
@@ -43,11 +42,11 @@
           }
         ],
         "requestBody": {
-          "description": "Investigation ids (bare strings or {id, label?, color?} — labels `^[A-Za-z0-9_-]{1,64}$`, colors `#rrggbb`) plus axes (name + better). Ids must be unique; exactly 2 axes for format=svg.",
+          "description": "Grouping tag keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display tag; system provenance tags describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes.",
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FrontierRequest"
+                "$ref": "#/components/schemas/GroupedFrontierRequest"
               }
             }
           },
@@ -55,11 +54,11 @@
         },
         "responses": {
           "200": {
-            "description": "Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.",
+            "description": "Grouped frontier and exclusion evidence, including running/failed/awaiting-grades/unavailable members. Pending groups have null coordinates; poll investigations and resubmit after they finish or receive grades.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FrontierResponse"
+                  "$ref": "#/components/schemas/GroupedFrontierResponse"
                 }
               }
             }
@@ -71,7 +70,7 @@
             "description": "Missing or invalid bearer token"
           },
           "422": {
-            "description": "Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes",
+            "description": "Invalid grouping/axis request (for example bad tag or axis name, duplicate axis, incompatible direction, or SVG arity).",
             "content": {
               "application/json": {
                 "schema": {
@@ -243,7 +242,7 @@
       },
       "delete": {
         "tags": [],
-        "summary": "Delete an investigation: remove the job — its traces, grades, and\nprogress — from the server's memory. Irreversible: the evidence is\ngone (a re-run means POSTing a new investigation), and grades are\nonly stored on the job — read the job first if you want to keep\nthem. Useful for pruning a campaign's dead variants so the\ndashboard and POST /api/frontier only show the points you still\ncompare. RUNNING jobs cannot be deleted (409): a run cannot be\ncancelled — its provider calls would keep spending while the\nresult is discarded. Poll until done or failed, then delete.",
+        "summary": "Delete an investigation: remove the job — its traces, grades, tags, and\nprogress — from the server's memory. Irreversible: the evidence is gone\n(a re-run means POSTing a new investigation). Useful for pruning a\ncampaign: the next grouped POST /api/frontier considers all REMAINING jobs\nand no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be\ncancelled — its provider calls would keep spending while the\nresult is discarded. Poll until done or failed, then delete.",
         "operationId": "delete_investigation",
         "parameters": [
           {
@@ -278,8 +277,8 @@
       },
       "patch": {
         "tags": [],
-        "summary": "Record caller judgment on an investigation: numeric grades on\ncaller-chosen axes (\"tone_of_voice\": 0.8, \"self_containedness\": 0.5,\n…). This is how you tag an investigation for multi-dimensional\nprompt optimization: the grades are YOUR judgment — the harness\nstores them and never interprets them — and POST /api/frontier\nplots/compares them later, alongside the measured axes (tokens,\ncost, steps) the harness records anyway.",
-        "description": "Grade by READING the traces with your full goal in mind. The reason\ngrading is the caller's job (not the harness's, not a script's) is\nthat you hold goal-context that does not compress into words:\nmechanical stand-ins (regexes over summaries, extractors) approximate\njudgment and drift badly. Use scripts to FIND the moments worth\njudging — never to decide. Prefer axes that VARY across your\nvariants: an axis every investigation scores the same on cannot\nseparate anything on a frontier; saturating axes usually mean the\nscenarios are too easy, not that the variants tie.\n\nMerge semantics per axis: a number sets/overwrites, `null` deletes.\nThe response echoes the FULL updated grades map. Axis names must\nmatch `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved\nmeasured axis (put_/sim_input_tokens, put_/sim_output_tokens,\nput_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_\n{avg,min,max,stdev}) — those are harness-computed and cannot be\ngraded. Any scale is fine (0..1, 1..5, raw counts): dominance only\nneeds comparability across points, and direction is declared per\nrequest at frontier time, not here.\n\nGrading is allowed in any job state (live-tagging while the run\nunfolds is fine) — but POST /api/frontier only accepts `done` jobs\nas points.",
+        "summary": "Record caller judgment and campaign metadata on an investigation. `grades`\nis caller-owned numeric judgment (for example `tone_of_voice: 0.8`);\n`tags` is caller-owned string metadata (for example `label: \"baseline\"`).\nThe harness records both and never interprets a grade. Read traces before\ngrading: the caller, not a mechanical extractor, owns that semantic work.",
+        "description": "Both maps have merge semantics: a number/string sets or overwrites and\nJSON `null` deletes that key. Both supplied maps validate before EITHER is\napplied, and the response echoes the FULL updated grades AND tags maps.\nGrade names and tag names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot\nbe measured axes. The literal measured names are `put_input_tokens`,\n`put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,\n`sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,\n`sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,\n`steps_per_trace_max`, and `steps_per_trace_stdev`.\n\nPATCH is allowed while a job runs. POST /api/frontier always considers ALL\ncurrent jobs: running, failed, ungraded, or unavailable members appear as\nexplicit exclusions/backlog in a successful grouped response. A group has\nnull coordinates until it has at least one common complete cohort; poll\nand PATCH missing grades, then submit the same frontier request again.",
         "operationId": "patch_investigation",
         "parameters": [
           {
@@ -293,11 +292,11 @@
           }
         ],
         "requestBody": {
-          "description": "Axis name → number (set), or axis name → null (delete).",
+          "description": "Optional grades and/or tags maps. A grade number sets a grade; a tag string sets a tag; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps.",
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GradesPatch"
+                "$ref": "#/components/schemas/InvestigationPatch"
               }
             }
           },
@@ -305,24 +304,17 @@
         },
         "responses": {
           "200": {
-            "description": "Updated grades (full map echoed)",
+            "description": "Updated grades and tags (both full maps echoed)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GradesView"
+                  "$ref": "#/components/schemas/InvestigationPatchView"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GradesPatchError"
-                }
-              }
-            }
+            "description": "Invalid grades or tags. Tag keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -570,7 +562,7 @@
           },
           "name": {
             "type": "string",
-            "description": "A graded axis name (you PATCHed it) or a reserved measured axis\n(harness-computed). Reserved names and their baked-in\ndirections: put_/sim_input_tokens (lower), put_/sim_output_tokens\n(lower), put_/sim_cache_read_tokens (higher — cached input is\ncheaper input), put_/sim_cost_usd (lower), sim_cost_usd (lower),\nsteps_per_trace_avg/_min/_max/_stdev (lower). Requesting a\nreserved axis with a contradicting `better` is rejected."
+            "description": "A graded axis name (you PATCHed it) or a reserved measured axis\n(harness-computed). Exact reserved names and baked-in directions:\n`put_input_tokens`, `put_output_tokens`, `sim_input_tokens`, and\n`sim_output_tokens` (lower); `put_cache_read_tokens` and\n`sim_cache_read_tokens` (higher — cached input is cheaper);\n`put_cost_usd` and `sim_cost_usd` (lower); and\n`steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`,\n`steps_per_trace_stdev` (lower). The `put_/sim_` notation is only\nprose shorthand, NEVER a valid axis name. Requesting a reserved axis\nwith a contradicting `better` is rejected."
           }
         }
       },
@@ -588,83 +580,6 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/FrontierProblem"
-            }
-          }
-        }
-      },
-      "FrontierInvestigation": {
-        "oneOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "object",
-            "required": [
-              "id"
-            ],
-            "properties": {
-              "color": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "id": {
-                "type": "string"
-              },
-              "label": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            }
-          }
-        ],
-        "description": "An investigation referenced by the frontier request: a bare id, or\nan object carrying an optional plot label and color."
-      },
-      "FrontierPoint": {
-        "type": "object",
-        "description": "One point of the frontier result.",
-        "required": [
-          "investigation",
-          "label",
-          "color",
-          "values",
-          "on_frontier",
-          "dominated_by"
-        ],
-        "properties": {
-          "color": {
-            "type": "string"
-          },
-          "dominated_by": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Investigations that dominate this point (empty when on the\nfrontier). Tells an optimizer exactly what to compare against."
-          },
-          "investigation": {
-            "type": "string",
-            "description": "The investigation uuid (uuids, not labels, are the stable key —\nlabels are not unique by design)."
-          },
-          "label": {
-            "type": "string"
-          },
-          "on_frontier": {
-            "type": "boolean",
-            "description": "True when no other point dominates this one. Ties dominate\nnothing: equal points are both on the frontier."
-          },
-          "values": {
-            "type": "object",
-            "description": "Resolved value per axis name.",
-            "additionalProperties": {
-              "type": "number",
-              "format": "double"
-            },
-            "propertyNames": {
-              "type": "string"
             }
           }
         }
@@ -697,10 +612,139 @@
           }
         }
       },
-      "FrontierRequest": {
+      "GroupExclusion": {
         "type": "object",
+        "description": "One omitted run and why it is not part of its group's common cohort.",
         "required": [
+          "investigation",
+          "status",
+          "missing_grades",
+          "missing_axes"
+        ],
+        "properties": {
+          "investigation": {
+            "type": "string"
+          },
+          "missing_axes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requested measured axes with no value (for example an unpriced cost)."
+          },
+          "missing_grades": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "All requested caller-graded axes absent from this run. This remains\npopulated for running and failed jobs to make the grading backlog seen."
+          },
+          "status": {
+            "type": "string",
+            "description": "`running`, `failed`, `awaiting_grades`, or `unavailable`."
+          }
+        }
+      },
+      "GroupedFrontierPoint": {
+        "type": "object",
+        "description": "One stable tag group. Groups without usable runs are deliberately retained\nwith null values/frontier state rather than disappearing from the result.",
+        "required": [
+          "id",
+          "tags",
+          "label",
+          "color",
           "investigations",
+          "included",
+          "excluded",
+          "preliminary",
+          "values",
+          "on_frontier",
+          "dominated_by"
+        ],
+        "properties": {
+          "color": {
+            "type": "string",
+            "description": "Stable categorical color derived from this group's id."
+          },
+          "dominated_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IDs of dominating GROUPS, not investigation ids or display labels.\nEmpty for non-dominated and pending groups; equal means do not dominate."
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupExclusion"
+            }
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable SHA-256-derived id of canonical grouping tags only; membership\nchanges do not recolor or rename a group."
+          },
+          "included": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Investigation ids used in every mean, sorted. Each has equal weight;\nall requested axes use exactly this same completed, fully-valued cohort."
+          },
+          "investigations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "All snapshot ids in this group, sorted."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable summary of grouping tags, not an editable group identity.\nThe investigation's editable `label` tag names its UI card; it affects\ngrouping only when explicitly selected in `group_by`."
+          },
+          "on_frontier": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True if non-dominated, false if dominated, null if pending (no values).\nPreliminary points with values participate in the current frontier."
+          },
+          "preliminary": {
+            "type": "boolean",
+            "description": "True when any member was excluded. Preliminary points still participate\nin dominance when they have a complete common cohort."
+          },
+          "tags": {
+            "type": "object",
+            "description": "The requested group tags. Missing source values appear as JSON null.",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "values": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Axis → arithmetic mean, or null if no member has all requested values.\nAlways present, even for pending groups (null means no coordinates).",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "GroupedFrontierRequest": {
+        "type": "object",
+        "description": "Request a frontier over means of complete investigations in each tag group.\nThere is intentionally no investigation selection field: accepting an old\nselection accidentally as an empty selection would silently mean all jobs.",
+        "required": [
           "axes"
         ],
         "properties": {
@@ -709,18 +753,19 @@
             "items": {
               "$ref": "#/components/schemas/FrontierAxis"
             },
-            "description": "The axes to compute dominance over. `format=svg` requires\nEXACTLY 2 (a v0 rendering constraint — the dominance math is\nN-dimensional); `format=json` accepts any count ≥ 1."
+            "description": "Axes whose arithmetic means define Pareto dominance. Every included run\nhas every requested value, so different axes never average different\ncohorts."
           },
-          "investigations": {
+          "group_by": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/FrontierInvestigation"
+              "type": "string"
             },
-            "description": "The investigations to plot (each must be a `done` job with a\nvalue for every axis). Bare id strings or `{id, label?, color?}`\nobjects. Ids must be UNIQUE — duplicates are rejected. Labels:\n`^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label =\nthe PUT's id (deduplicated) else the uuid prefix; color = a\ndeterministic palette by position."
+            "description": "Tag names that form a group. Omit for exactly\n`[\"put_model\", \"put_thinking\", \"prompt_hash\"]`; send `[]` for one\ngroup containing every current job. A job missing a requested key is\nretained in that key's explicit JSON-null group, never dropped."
           }
-        }
+        },
+        "additionalProperties": false
       },
-      "FrontierResponse": {
+      "GroupedFrontierResponse": {
         "type": "object",
         "required": [
           "points"
@@ -729,88 +774,7 @@
           "points": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/FrontierPoint"
-            }
-          }
-        }
-      },
-      "GradeProblem": {
-        "type": "object",
-        "description": "One fixable problem in a grades PATCH. The `detail` names the fix.",
-        "required": [
-          "axis",
-          "reason",
-          "detail"
-        ],
-        "properties": {
-          "axis": {
-            "type": "string"
-          },
-          "detail": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string",
-            "description": "`bad_axis_name` | `reserved_axis_name` | `non_finite_value`"
-          }
-        }
-      },
-      "GradesPatch": {
-        "type": "object",
-        "description": "Caller judgment recorded on an investigation: axis name → number.\nMerge semantics per axis: a number sets/overwrites, `null` deletes.",
-        "required": [
-          "grades"
-        ],
-        "properties": {
-          "grades": {
-            "type": "object",
-            "description": "Axis name → value. Use JSON `null` to DELETE an axis. Axis\nnames must match `^[a-z][a-z0-9_]{0,63}$` and must not collide\nwith a reserved measured axis (see the frontier docs).",
-            "additionalProperties": {
-              "type": [
-                "number",
-                "null"
-              ],
-              "format": "double"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "GradesPatchError": {
-        "type": "object",
-        "required": [
-          "error",
-          "problems"
-        ],
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "problems": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/GradeProblem"
-            }
-          }
-        }
-      },
-      "GradesView": {
-        "type": "object",
-        "description": "The echo response: the full, updated grades map.",
-        "required": [
-          "grades"
-        ],
-        "properties": {
-          "grades": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "number",
-              "format": "double"
-            },
-            "propertyNames": {
-              "type": "string"
+              "$ref": "#/components/schemas/GroupedFrontierPoint"
             }
           }
         }
@@ -875,8 +839,19 @@
                 "description": "Thinking/reasoning level for the tool SIMULATOR only. Same\nvocabulary as `put_thinking_level`; omit for the provider\ndefault. The simulator only renders tool responses, so full\nreasoning there is spend without measurement value — `low` or\n`none` cuts per-run cost directly (keep `sim_model` strong; a\ncheap level on a strong model usually degrades less than a\nweak model does). Falls back INDEPENDENTLY of\n`put_thinking_level`: omitting this while setting the PUT's\nlevel leaves the simulator at its default, NOT at the PUT's\nlevel."
               }
             ]
+          },
+          "tags": {
+            "type": "object",
+            "description": "Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values\nare strings up to 1024 UTF-8 bytes. `label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "InvestigateResponse": {
         "type": "object",
@@ -895,7 +870,8 @@
             "description": "Every completed run — the evidence. The caller reads these traces\nand judges; the harness produces no verdict."
           },
           "result": {
-            "$ref": "#/components/schemas/RunResult"
+            "$ref": "#/components/schemas/RunResult",
+            "description": "Run-level outcome and scenario failures. In GET /api/investigations/{id},\nthe exact failure path is `result.result.failures`, NOT `result.failures`.\nCompleted traces are the sibling `result.attempts` array."
           },
           "scenarios_run": {
             "type": "integer",
@@ -927,14 +903,93 @@
           }
         }
       },
+      "InvestigationPatch": {
+        "type": "object",
+        "description": "PATCH can update either independently optional map, but validates BOTH\nbefore modifying the job so a mixed grades/tags update is atomic.",
+        "properties": {
+          "grades": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Axis name → number to set/overwrite, or null to delete.",
+            "additionalProperties": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Caller-owned tag name → string to set/overwrite, or null to delete.\n`label` names the job in the UI. It affects group identity only when\nexplicitly selected in `group_by`. System provenance keys are read-only.",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "InvestigationPatchView": {
+        "type": "object",
+        "required": [
+          "grades",
+          "tags"
+        ],
+        "properties": {
+          "grades": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "JobCreated": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "tags"
         ],
         "properties": {
           "id": {
             "type": "string"
+          },
+          "tags": {
+            "type": "object",
+            "description": "The stored provenance + caller tags, including resolved model names\nand stable prompt/workspace hashes, available without a follow-up GET.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -952,7 +1007,8 @@
           "id",
           "status",
           "started_at",
-          "scenarios"
+          "scenarios",
+          "tags"
         ],
         "properties": {
           "id": {
@@ -970,6 +1026,16 @@
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
+          },
+          "tags": {
+            "type": "object",
+            "description": "Immutable provenance plus caller-owned campaign tags, sufficient for\na list view to group/filter before fetching full job evidence.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -985,6 +1051,7 @@
           "conversation_controls",
           "workspace_files",
           "grades",
+          "tags",
           "put",
           "scenarios",
           "progress"
@@ -1002,7 +1069,7 @@
           },
           "grades": {
             "type": "object",
-            "description": "Caller-graded axes on this investigation (PATCHed via\nPATCH /api/investigations/{id}). Free-form names, caller-chosen\nscales (0..1, 1..5, anything); consumed by POST /api/frontier\nas judged axes alongside the reserved measured ones. The\nharness stores them and never interprets them.",
+            "description": "Caller-graded axes on this investigation (PATCHed via\nPATCH /api/investigations/{id}). Free-form names, caller-chosen\nscales (0..1, 1..5, anything); the harness stores them and never\ninterprets them.",
             "additionalProperties": {
               "type": "number",
               "format": "double"
@@ -1088,6 +1155,16 @@
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
+          },
+          "tags": {
+            "type": "object",
+            "description": "Immutable provenance plus caller-owned campaign tags. `label` is the\nspecial editable display label; reserved provenance keys cannot change.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "workspace_files": {
             "type": "integer",

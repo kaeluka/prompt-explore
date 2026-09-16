@@ -133,6 +133,25 @@ just field names: what a scenario IS (a test case: a world spec plus a
 protagonist) and what it is FOR. When you change the API, write for that
 reader.
 
+## Live grouped Pareto frontier
+
+All investigations in memory are candidates; there is no selection/filter list.
+`POST /api/frontier` groups by tag names (default: `put_model`, `put_thinking`,
+`prompt_hash`) and averages requested axes over completed investigations with
+EVERY requested value. All coordinates use the same cohort, equally weighted
+per investigation. This change does not remove multi-scenario investigations.
+
+System tags (resolved model/thinking settings, prompt/workspace hashes) are
+immutable. Custom tags are editable; `label` is the UI display name. It changes
+group identity only if explicitly selected as a grouping key.
+Missing grouping tags form null-valued groups. Missing grades, running/failed
+jobs, and unavailable measured axes remain an explicit per-group backlog, never
+silently dropped and never a whole-request error. Groups with no contributors
+are pending (no coordinates); any exclusions make a group preliminary. The UI
+polls and redraws as jobs, tags, and grades change. Preliminary means participate
+in dominance and use faded markers with dashed outer rings. The caller owns
+comparability and grading; the harness does only grouping and arithmetic.
+
 ## Experimental Lua simulation
 
 `conversation_controls.lua_simulation` deliberately explores an **optional

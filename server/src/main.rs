@@ -25,9 +25,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use uuid::Uuid;
 
+use prompt_explore::frontier::grouped::{
+    self, GroupedFrontierRequest, GroupedFrontierResponse, GroupedSnapshot,
+};
+use prompt_explore::frontier::tags::{self, system_tags, validate_post_tags, validate_tag_patch};
 use prompt_explore::frontier::{
-    self, FrontierError, FrontierFormat, FrontierRequest, FrontierResponse, GradesPatch,
-    GradesPatchError, GradesView, InvestigationSnapshot, SnapshotStatus,
+    self, FrontierFormat, GradesPatch, InvestigationSnapshot, SnapshotStatus,
 };
 use prompt_explore::generate::{Investigator, LlmRole};
 use prompt_explore::llm::{
@@ -140,10 +143,12 @@ struct Job {
     /// materialized world to consult, or answered purely from narrative.
     workspace_files: usize,
     /// Caller-graded axes on this job: axis name → number, PATCHed via
-    /// PATCH /api/investigations/{id}. Read by POST /api/frontier.
-    /// Never interpreted by the harness — grades are the caller's
-    /// judgment, recorded.
+    /// PATCH /api/investigations/{id}. Never interpreted by the harness.
     grades: BTreeMap<String, f64>,
+    /// Immutable provenance tags plus caller-owned campaign tags. Reserved
+    /// provenance keys are set once when the job is created; callers may
+    /// merge/delete only their own keys (notably the UI display tag `label`).
+    tags: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
@@ -155,6 +160,7 @@ enum JobStatus {
 }
 
 #[derive(Deserialize, Clone, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct InvestigateRequest {
     investigation: Investigation,
     put: PromptUnderTest,
@@ -225,6 +231,17 @@ struct InvestigateRequest {
     /// to the count). Scenarios are authored outside this API and are
     /// editable before running: reviewing them is the intended workflow.
     scenarios: Vec<Scenario>,
+    /// Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values
+    /// are strings up to 1024 UTF-8 bytes. `label` is the special editable
+    /// display label shown by the UI. POST rejects every system-owned key:
+    /// `put_model`/`sim_model` are the resolved provider-qualified model
+    /// names; `put_thinking`/`sim_thinking` are a reasoning keyword or
+    /// `provider_default`; `prompt_hash` is SHA-256 of canonical PUT
+    /// template/tools/design_goals (not cosmetic PUT id); and
+    /// `workspace_hash` is SHA-256 of sorted uploaded workspace path/content
+    /// pairs (including the stable empty-workspace hash).
+    #[serde(default)]
+    tags: BTreeMap<String, String>,
 }
 
 /// Caller-selected limits and sampling controls for an investigation's LLM
@@ -333,6 +350,9 @@ impl Default for ResolvedConversationControls {
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct InvestigateResponse {
+    /// Run-level outcome and scenario failures. In GET /api/investigations/{id},
+    /// the exact failure path is `result.result.failures`, NOT `result.failures`.
+    /// Completed traces are the sibling `result.attempts` array.
     result: RunResult,
     /// How many of the input scenarios completed a trace.
     scenarios_run: usize,
@@ -376,6 +396,9 @@ struct AttemptView {
 #[derive(Serialize, utoipa::ToSchema)]
 struct JobCreated {
     id: String,
+    /// The stored provenance + caller tags, including resolved model names
+    /// and stable prompt/workspace hashes, available without a follow-up GET.
+    tags: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
@@ -430,10 +453,12 @@ struct JobView {
     workspace_files: usize,
     /// Caller-graded axes on this investigation (PATCHed via
     /// PATCH /api/investigations/{id}). Free-form names, caller-chosen
-    /// scales (0..1, 1..5, anything); consumed by POST /api/frontier
-    /// as judged axes alongside the reserved measured ones. The
-    /// harness stores them and never interprets them.
+    /// scales (0..1, 1..5, anything); the harness stores them and never
+    /// interprets them.
     grades: BTreeMap<String, f64>,
+    /// Immutable provenance plus caller-owned campaign tags. `label` is the
+    /// special editable display label; reserved provenance keys cannot change.
+    tags: BTreeMap<String, String>,
     /// The prompt under test.
     put: PromptUnderTest,
     /// The full input scenarios (narrative = ground truth, etc.).
@@ -456,6 +481,30 @@ struct JobSummary {
     started_at: u64,
     /// How many scenarios this job is running.
     scenarios: usize,
+    /// Immutable provenance plus caller-owned campaign tags, sufficient for
+    /// a list view to group/filter before fetching full job evidence.
+    tags: BTreeMap<String, String>,
+}
+
+/// PATCH can update either independently optional map, but validates BOTH
+/// before modifying the job so a mixed grades/tags update is atomic.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct InvestigationPatch {
+    /// Axis name → number to set/overwrite, or null to delete.
+    #[serde(default)]
+    grades: Option<BTreeMap<String, Option<f64>>>,
+    /// Caller-owned tag name → string to set/overwrite, or null to delete.
+    /// `label` names the job in the UI. It affects group identity only when
+    /// explicitly selected in `group_by`. System provenance keys are read-only.
+    #[serde(default)]
+    tags: Option<BTreeMap<String, Option<String>>>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct InvestigationPatchView {
+    grades: BTreeMap<String, f64>,
+    tags: BTreeMap<String, String>,
 }
 
 #[derive(utoipa::OpenApi)]
@@ -779,6 +828,20 @@ fn fabricate_done_job(
             sim_thinking_level: None,
             conversation_controls: ResolvedConversationControls::default(),
             workspace_files: 0,
+            tags: system_tags(
+                "zai_coding::glm-5.2",
+                "zai_coding::glm-5.2",
+                None,
+                None,
+                &PromptUnderTest {
+                    id: put_id.into(),
+                    template: template.into(),
+                    tools: vec![],
+                    design_goals: "Cancel orders only on explicit user request.".into(),
+                },
+                &tags::workspace_hash(&Workspace::empty()),
+                BTreeMap::new(),
+            ),
         },
     )
 }
@@ -1187,6 +1250,7 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
     // server's default provider, exactly as they will at call time.
     if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider)
         .or_else(|| conversation_controls_problem(&investigate_req.conversation_controls))
+        .or_else(|| validate_post_tags(&investigate_req.tags).err())
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -1195,8 +1259,9 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
             .into_response();
     }
 
-    let id = spawn_investigation(state, investigate_req, workspace_seed);
-    (StatusCode::ACCEPTED, Json(JobCreated { id })).into_response()
+    let id = spawn_investigation(state.clone(), investigate_req, workspace_seed);
+    let tags = state.jobs.lock().unwrap()[&id].tags.clone();
+    (StatusCode::ACCEPTED, Json(JobCreated { id, tags })).into_response()
 }
 
 /// Validate the request's thinking levels against the models they will
@@ -1415,16 +1480,33 @@ fn spawn_investigation(
     // Resolve the model names now (defaults applied) so they can be
     // surfaced on the job immediately — visible while the run is still
     // in flight, not only after it finishes.
-    let (put_model, sim_model) = resolved_models(&req);
-    // Model names and thinking levels resolve INDEPENDENTLY per role (issue #4): the
-    // simulator's NEVER inherits the PUT's — omitted means provider
-    // default, which is exactly the pre-option behavior.
+    let (put_model_requested, sim_model_requested) = resolved_models(&req);
+    // Persist and tag the provider-qualified names actually passed to the
+    // client. Bare request names are therefore comparable with explicit ones.
+    let put_model =
+        prompt_explore::llm::qualify_model(&put_model_requested, &state.default_provider);
+    let sim_model =
+        prompt_explore::llm::qualify_model(&sim_model_requested, &state.default_provider);
+    // Model names and thinking levels resolve INDEPENDENTLY per role: the
+    // simulator never inherits the PUT's omitted provider-default setting.
     let put_thinking_level = req.put_thinking_level;
     let sim_thinking_level = req.sim_thinking_level;
     let (runner_options, workspace_limits, conversation_controls) =
         resolved_conversation_controls(&req.conversation_controls);
     let workspace_seed = workspace_seed.with_tool_limits(workspace_limits);
     let workspace_files = workspace_seed.file_count();
+    // The core workspace canonicalizes sorted seed paths and bytes. Empty
+    // (including no upload) has a stable digest rather than a missing tag.
+    let workspace_hash = tags::workspace_hash(&workspace_seed);
+    let tags = system_tags(
+        &put_model,
+        &sim_model,
+        put_thinking_level,
+        sim_thinking_level,
+        &req.put,
+        &workspace_hash,
+        req.tags.clone(),
+    );
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
@@ -1443,6 +1525,7 @@ fn spawn_investigation(
             conversation_controls,
             workspace_files,
             grades: BTreeMap::new(),
+            tags,
         },
     );
 
@@ -1558,6 +1641,7 @@ async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<Job
             status: j.status,
             started_at: j.started_at,
             scenarios: j.progress.lock().unwrap().scenarios.len(),
+            tags: j.tags.clone(),
         })
         .collect();
     // Running first, then newest-started first.
@@ -1607,6 +1691,7 @@ async fn get_investigation(
         conversation_controls: job.conversation_controls.clone(),
         workspace_files: job.workspace_files,
         grades: job.grades.clone(),
+        tags: job.tags.clone(),
         put: job.put.clone(),
         scenarios: job.scenarios.clone(),
         progress: progress_snapshot,
@@ -1615,46 +1700,36 @@ async fn get_investigation(
     }))
 }
 
-/// Record caller judgment on an investigation: numeric grades on
-/// caller-chosen axes ("tone_of_voice": 0.8, "self_containedness": 0.5,
-/// …). This is how you tag an investigation for multi-dimensional
-/// prompt optimization: the grades are YOUR judgment — the harness
-/// stores them and never interprets them — and POST /api/frontier
-/// plots/compares them later, alongside the measured axes (tokens,
-/// cost, steps) the harness records anyway.
+/// Record caller judgment and campaign metadata on an investigation. `grades`
+/// is caller-owned numeric judgment (for example `tone_of_voice: 0.8`);
+/// `tags` is caller-owned string metadata (for example `label: "baseline"`).
+/// The harness records both and never interprets a grade. Read traces before
+/// grading: the caller, not a mechanical extractor, owns that semantic work.
 ///
-/// Grade by READING the traces with your full goal in mind. The reason
-/// grading is the caller's job (not the harness's, not a script's) is
-/// that you hold goal-context that does not compress into words:
-/// mechanical stand-ins (regexes over summaries, extractors) approximate
-/// judgment and drift badly. Use scripts to FIND the moments worth
-/// judging — never to decide. Prefer axes that VARY across your
-/// variants: an axis every investigation scores the same on cannot
-/// separate anything on a frontier; saturating axes usually mean the
-/// scenarios are too easy, not that the variants tie.
+/// Both maps have merge semantics: a number/string sets or overwrites and
+/// JSON `null` deletes that key. Both supplied maps validate before EITHER is
+/// applied, and the response echoes the FULL updated grades AND tags maps.
+/// Grade names and tag names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot
+/// be measured axes. The literal measured names are `put_input_tokens`,
+/// `put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,
+/// `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,
+/// `sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,
+/// `steps_per_trace_max`, and `steps_per_trace_stdev`.
 ///
-/// Merge semantics per axis: a number sets/overwrites, `null` deletes.
-/// The response echoes the FULL updated grades map. Axis names must
-/// match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved
-/// measured axis (put_/sim_input_tokens, put_/sim_output_tokens,
-/// put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_
-/// {avg,min,max,stdev}) — those are harness-computed and cannot be
-/// graded. Any scale is fine (0..1, 1..5, raw counts): dominance only
-/// needs comparability across points, and direction is declared per
-/// request at frontier time, not here.
-///
-/// Grading is allowed in any job state (live-tagging while the run
-/// unfolds is fine) — but POST /api/frontier only accepts `done` jobs
-/// as points.
+/// PATCH is allowed while a job runs. POST /api/frontier always considers ALL
+/// current jobs: running, failed, ungraded, or unavailable members appear as
+/// explicit exclusions/backlog in a successful grouped response. A group has
+/// null coordinates until it has at least one common complete cohort; poll
+/// and PATCH missing grades, then submit the same frontier request again.
 #[utoipa::path(
     patch,
     path = "/api/investigations/{id}",
     params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
-    request_body(content = GradesPatch, description = "Axis name → number (set), or axis name → null (delete)."),
+    request_body(content = InvestigationPatch, description = "Optional grades and/or tags maps. A grade number sets a grade; a tag string sets a tag; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps."),
     security(("api_token" = [])),
     responses(
-        (status = 200, description = "Updated grades (full map echoed)", body = GradesView),
-        (status = 400, description = "Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix", body = GradesPatchError),
+        (status = 200, description = "Updated grades and tags (both full maps echoed)", body = InvestigationPatchView),
+        (status = 400, description = "Invalid grades or tags. Tag keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "Unknown job id")
     )
@@ -1662,7 +1737,7 @@ async fn get_investigation(
 async fn patch_investigation(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    body: Result<Json<GradesPatch>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<InvestigationPatch>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let patch = match body {
         Ok(Json(p)) => p,
@@ -1670,14 +1745,36 @@ async fn patch_investigation(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
-                    "error": format!("body is not valid grades JSON: {e}")
+                    "error": format!("body is not valid investigation patch JSON: {e}")
                 })),
             )
                 .into_response();
         }
     };
-    if let Err(problems) = prompt_explore::frontier::validate_grades_patch(&patch) {
-        return (StatusCode::BAD_REQUEST, Json(problems)).into_response();
+    if patch.grades.is_none() && patch.tags.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "patch must contain grades and/or tags"})),
+        )
+            .into_response();
+    }
+    // Validate every supplied map before taking the job lock or mutating it:
+    // a bad tag cannot leave its otherwise-valid grade sibling half-applied.
+    if let Some(grades) = &patch.grades {
+        if let Err(problems) = frontier::validate_grades_patch(&GradesPatch {
+            grades: grades.clone(),
+        }) {
+            return (StatusCode::BAD_REQUEST, Json(problems)).into_response();
+        }
+    }
+    if let Some(tags) = &patch.tags {
+        if let Err(error) = validate_tag_patch(tags) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
     }
     let mut jobs = state.jobs.lock().unwrap();
     let Some(job) = jobs.get_mut(&id) else {
@@ -1689,32 +1786,45 @@ async fn patch_investigation(
         )
             .into_response();
     };
-    for (axis, value) in patch.grades {
-        match value {
-            Some(v) => {
-                job.grades.insert(axis, v);
+    if let Some(grades) = patch.grades {
+        for (axis, value) in grades {
+            match value {
+                Some(v) => {
+                    job.grades.insert(axis, v);
+                }
+                None => {
+                    job.grades.remove(&axis);
+                }
             }
-            None => {
-                job.grades.remove(&axis);
+        }
+    }
+    if let Some(tags) = patch.tags {
+        for (key, value) in tags {
+            match value {
+                Some(value) => {
+                    job.tags.insert(key, value);
+                }
+                None => {
+                    job.tags.remove(&key);
+                }
             }
         }
     }
     (
         StatusCode::OK,
-        Json(GradesView {
+        Json(InvestigationPatchView {
             grades: job.grades.clone(),
+            tags: job.tags.clone(),
         }),
     )
         .into_response()
 }
 
-/// Delete an investigation: remove the job — its traces, grades, and
-/// progress — from the server's memory. Irreversible: the evidence is
-/// gone (a re-run means POSTing a new investigation), and grades are
-/// only stored on the job — read the job first if you want to keep
-/// them. Useful for pruning a campaign's dead variants so the
-/// dashboard and POST /api/frontier only show the points you still
-/// compare. RUNNING jobs cannot be deleted (409): a run cannot be
+/// Delete an investigation: remove the job — its traces, grades, tags, and
+/// progress — from the server's memory. Irreversible: the evidence is gone
+/// (a re-run means POSTing a new investigation). Useful for pruning a
+/// campaign: the next grouped POST /api/frontier considers all REMAINING jobs
+/// and no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be
 /// cancelled — its provider calls would keep spending while the
 /// result is discarded. Poll until done or failed, then delete.
 #[utoipa::path(
@@ -1765,14 +1875,29 @@ async fn delete_investigation(
     }
 }
 
-/// Assemble the harness-side facts the frontier needs from one job.
-/// Thin: pure data plumbing, all logic lives in core::frontier.
+/// Assemble the harness-side facts the grouped frontier needs from one job.
+/// Thin data plumbing: all grouping, exclusion, and dominance arithmetic lives
+/// in core::frontier::grouped.
 fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
     let result = job.result.as_ref();
     InvestigationSnapshot {
         id: id.to_string(),
         status: match job.status {
             JobStatus::Running => SnapshotStatus::Running,
+            // The job lifecycle says the worker finished, not that it produced
+            // traces. All-scenario errors are failed evidence, never cheap
+            // zero-token candidates. Partial runs remain caller-judgeable.
+            JobStatus::Done
+                if result.is_some_and(|r| {
+                    r.attempts.is_empty()
+                        || matches!(
+                            r.result.status,
+                            prompt_explore::model::output::RunStatus::Error
+                        )
+                }) =>
+            {
+                SnapshotStatus::Failed
+            }
             JobStatus::Done => SnapshotStatus::Done,
             JobStatus::Failed => SnapshotStatus::Failed,
         },
@@ -1801,109 +1926,91 @@ fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct FrontierQuery {
-    /// `json` (default): points with on_frontier/dominated_by for
-    /// programmatic optimization. `svg`: a 2-axis scatter plot with the
-    /// frontier staircase (up-and-right is always better, whichever
-    /// directions the axes have).
+    /// `json` (default): grouped points and preliminary/exclusion evidence.
+    /// `svg`: exactly two axes rendered as a grouped scatter plot.
     #[serde(default)]
     format: Option<String>,
 }
 
-/// Compute the Pareto frontier over a caller-chosen set of
-/// investigations and axes. This is the read side of multi-dimensional
-/// prompt optimization: you run prompt variants (each an investigation),
-/// grade the soft axes you care about (PATCH /api/investigations/{id}),
-/// and then ask which variants are NOT dominated — on any mix of your
-/// graded axes (tone_of_voice, …) and the harness's measured ones
-/// (put_/sim_ tokens & cost, steps_per_trace statistics).
-///
-/// Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a
-/// v0 rendering constraint — send `format=json` for N axes). Axis
-/// direction is declared HERE, per request (`"better": "lower" |
-/// "higher"`), never stored. The harness records your judgment and does
-/// arithmetic; it never interprets a grade — including which graded
-/// values are "good enough" or what an axis should measure. Those are
-/// caller-domain questions, answered when you PATCH grades from the
-/// traces.
-///
-/// Every fixable problem (missing grade, unpriced cost axis, running
-/// job, unknown id, duplicate id, bad label/color, direction conflict
-/// with a reserved axis, …) comes back in ONE 422 body with typed
-/// reasons, each detail naming the fix — including the exact PATCH to
-/// make for a missing grade.
+/// Compute a grouped Pareto frontier over ALL investigations currently held by
+/// this server. There is no investigation-selection list: `group_by` chooses
+/// the provenance/campaign tags that define one candidate point (default:
+/// put model, thinking setting, and behavior-only prompt hash). Each point
+/// retains its member ids and explicit exclusions. Running/failed/ungraded
+/// members are successful evidence, not a 422: poll jobs, PATCH grades, then
+/// POST this same request again to update preliminary coordinates. An all-error
+/// run (`result.result.status=error`) or a no-op with zero completed traces is
+/// a failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if
+/// all requested values exist; judging their adequacy belongs to the caller.
 #[utoipa::path(
     post,
     path = "/api/frontier",
     params(("format" = Option<String>, Query, description = "`json` (default) or `svg`")),
-    request_body(content = FrontierRequest, description = "Investigation ids (bare strings or {id, label?, color?} — labels `^[A-Za-z0-9_-]{1,64}$`, colors `#rrggbb`) plus axes (name + better). Ids must be unique; exactly 2 axes for format=svg."),
+    request_body(content = GroupedFrontierRequest, description = "Grouping tag keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display tag; system provenance tags describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes."),
     security(("api_token" = [])),
     responses(
-        (status = 200, description = "Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.", body = FrontierResponse),
+        (status = 200, description = "Grouped frontier and exclusion evidence, including running/failed/awaiting-grades/unavailable members. Pending groups have null coordinates; poll investigations and resubmit after they finish or receive grades.", body = GroupedFrontierResponse),
         (status = 400, description = "Malformed body or unknown ?format"),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 422, description = "Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes", body = FrontierError)
+        (status = 422, description = "Invalid grouping/axis request (for example bad tag or axis name, duplicate axis, incompatible direction, or SVG arity).", body = frontier::FrontierError)
     )
 )]
 async fn frontier(
     State(state): State<Arc<AppState>>,
     Query(q): Query<FrontierQuery>,
-    body: Result<Json<FrontierRequest>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<GroupedFrontierRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let format = match q.format.as_deref() {
-        None | Some("json") => FrontierFormat::Json,
-        Some("svg") => FrontierFormat::Svg,
-        Some(other) => {
-            return (
+    let format =
+        match q.format.as_deref() {
+            None | Some("json") => FrontierFormat::Json,
+            Some("svg") => FrontierFormat::Svg,
+            Some(other) => return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": format!("unknown format '{other}' — use ?format=json or ?format=svg")
                 })),
             )
-                .into_response();
-        }
-    };
+                .into_response(),
+        };
     let req = match body {
         Ok(Json(r)) => r,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
-                    "error": format!("body is not valid frontier request JSON: {e}")
+                    "error": format!("body is not valid grouped frontier request JSON: {e}")
                 })),
             )
                 .into_response();
         }
     };
-
-    // Snapshot every referenced job under one lock, then compute
-    // outside the lock (compute is pure and can be slow-ish for big
-    // point sets; never hold the store lock through it).
-    let snapshots: BTreeMap<String, InvestigationSnapshot> = {
+    // Grouped compute intentionally sees ALL jobs, including live ones, so
+    // the response explains campaign backlog instead of omitting it.
+    let snapshots: BTreeMap<String, GroupedSnapshot> = {
         let jobs = state.jobs.lock().unwrap();
-        req.investigations
-            .iter()
-            .map(|inv| inv.id().to_string())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .filter_map(|id| jobs.get(&id).map(|j| (id.clone(), snapshot_of(&id, j))))
+        jobs.iter()
+            .map(|(id, job)| {
+                (
+                    id.clone(),
+                    GroupedSnapshot {
+                        snapshot: snapshot_of(id, job),
+                        tags: job.tags.clone(),
+                    },
+                )
+            })
             .collect()
     };
-
-    match frontier::compute(&req, &snapshots, format) {
-        Err(problems) => (StatusCode::UNPROCESSABLE_ENTITY, Json(problems)).into_response(),
-        Ok(FrontierResponse { points }) => match format {
-            FrontierFormat::Json => {
-                (StatusCode::OK, Json(FrontierResponse { points })).into_response()
-            }
+    match grouped::compute_grouped(&req, &snapshots, format) {
+        Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, Json(error)).into_response(),
+        Ok(response) => match format {
+            FrontierFormat::Json => (StatusCode::OK, Json(response)).into_response(),
             FrontierFormat::Svg => {
-                // Unwrap safety: compute already validated exactly-2
-                // axes for the svg format.
-                let (x, y) = (&req.axes[0], &req.axes[1]);
-                let svg = frontier::svg::render(
-                    &points,
-                    &frontier::svg::PlotAxis::new(&x.name, x.better),
-                    &frontier::svg::PlotAxis::new(&y.name, y.better),
+                let svg = frontier::render_grouped(
+                    &response,
+                    &frontier::svg::PlotAxis::new(&req.axes[0].name, req.axes[0].better),
+                    &frontier::svg::PlotAxis::new(&req.axes[1].name, req.axes[1].better),
                 );
                 (
                     StatusCode::OK,
@@ -1993,6 +2100,20 @@ mod tests {
         state.jobs.lock().unwrap().insert(id, job);
     }
 
+    fn zip_bytes(entries: &[(&str, &[u8])], modified: zip::DateTime) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .last_modified_time(modified);
+        for (path, content) in entries {
+            writer.start_file(*path, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap();
+        bytes
+    }
+
     async fn patch_grades(app: &Router, id: &str, body: &str) -> (StatusCode, serde_json::Value) {
         let res = app
             .clone()
@@ -2014,6 +2135,46 @@ mod tests {
             code,
             serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         )
+    }
+
+    async fn create_multipart(app: &Router, archive: Vec<u8>) -> serde_json::Value {
+        let boundary = "workspace-tag-test";
+        let request = serde_json::json!({
+            "investigation": {"budget": {"max_steps_per_trace": 1}},
+            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "scenarios": []
+        })
+        .to_string();
+        let mut body = Vec::new();
+        body.extend_from_slice(format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"request\"\r\nContent-Type: application/json\r\n\r\n{request}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"workspace\"; filename=\"workspace.zip\"\r\nContent-Type: application/zip\r\n\r\n"
+        ).as_bytes());
+        body.extend_from_slice(&archive);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::post("/api/investigations")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::ACCEPTED,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     async fn post_frontier(app: &Router, query: &str, body: &str) -> (StatusCode, String, String) {
@@ -2088,6 +2249,163 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["grades"]["clarity"], 0.9);
+    }
+
+    #[tokio::test]
+    async fn multipart_workspace_tags_ignore_archive_metadata_but_track_content() {
+        let early = zip::DateTime::from_date_and_time(2024, 1, 2, 3, 4, 6).unwrap();
+        let late = zip::DateTime::from_date_and_time(2025, 2, 3, 4, 5, 8).unwrap();
+        let first = zip_bytes(&[("a.txt", b"alpha"), ("dir/b.txt", b"beta")], early);
+        let reordered = zip_bytes(&[("dir/b.txt", b"beta"), ("a.txt", b"alpha")], late);
+        let changed = zip_bytes(&[("a.txt", b"ALPHA"), ("dir/b.txt", b"beta")], late);
+        let app = build_app(test_state());
+        // Job creation computes/copies tags before launching its future, so
+        // the 202 response is already reproducible even while work is live.
+        let first = create_multipart(&app, first).await;
+        let reordered = create_multipart(&app, reordered).await;
+        let changed = create_multipart(&app, changed).await;
+        assert_eq!(
+            first["tags"]["workspace_hash"],
+            reordered["tags"]["workspace_hash"]
+        );
+        assert_ne!(
+            first["tags"]["workspace_hash"],
+            changed["tags"]["workspace_hash"]
+        );
+    }
+
+    #[test]
+    fn workspace_hash_ignores_zip_order_and_metadata_but_not_content() {
+        let early = zip::DateTime::from_date_and_time(2024, 1, 2, 3, 4, 6).unwrap();
+        let late = zip::DateTime::from_date_and_time(2025, 2, 3, 4, 5, 8).unwrap();
+        let first = zip_bytes(&[("a.txt", b"alpha"), ("dir/b.txt", b"beta")], early);
+        let reordered = zip_bytes(&[("dir/b.txt", b"beta"), ("a.txt", b"alpha")], late);
+        let changed = zip_bytes(&[("a.txt", b"ALPHA"), ("dir/b.txt", b"beta")], late);
+        let unpack = |archive: &[u8]| {
+            unpack_zip_with_limits(
+                archive,
+                workspace_compressed_limit(),
+                workspace_decompressed_limit(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            tags::workspace_hash(&unpack(&first)),
+            tags::workspace_hash(&unpack(&reordered)),
+            "archive ordering/timestamps are not workspace content"
+        );
+        assert_ne!(
+            tags::workspace_hash(&unpack(&first)),
+            tags::workspace_hash(&unpack(&changed)),
+            "path content changes must be visible in provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn tags_merge_delete_and_invalid_siblings_are_atomic() {
+        let state = test_state();
+        seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
+        let app = build_app(state.clone());
+
+        let (code, view) = patch_grades(
+            &app,
+            "job-1",
+            r#"{"grades":{"clarity":0.6},"tags":{"label":"baseline","campaign":"spring","empty":""}}"#,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(view["grades"]["clarity"], 0.6);
+        assert_eq!(view["tags"]["label"], "baseline");
+        assert_eq!(
+            view["tags"]["empty"], "",
+            "empty string is a stored value, not deletion"
+        );
+        assert_eq!(view["tags"]["prompt_hash"].as_str().unwrap().len(), 64);
+        assert_eq!(view["tags"]["workspace_hash"].as_str().unwrap().len(), 64);
+
+        // Both maps validate before either changes: an immutable tag cannot
+        // smuggle through a grade update as a partial PATCH.
+        let (code, _) = patch_grades(
+            &app,
+            "job-1",
+            r#"{"grades":{"clarity":0.9},"tags":{"put_model":"forged"}}"#,
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        let job = state
+            .jobs
+            .lock()
+            .unwrap()
+            .get("job-1")
+            .unwrap()
+            .grades
+            .clone();
+        assert_eq!(job["clarity"], 0.6);
+
+        let (code, view) = patch_grades(
+            &app,
+            "job-1",
+            r#"{"grades":{"clarity":0.8},"tags":{"label":null}}"#,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(view["grades"]["clarity"], 0.8);
+        assert!(view["tags"].get("label").is_none());
+        assert_eq!(view["tags"]["campaign"], "spring");
+        assert_eq!(view["tags"]["empty"], "");
+    }
+
+    #[tokio::test]
+    async fn post_rejects_immutable_tags_before_launch() {
+        let state = test_state();
+        let app = build_app(state.clone());
+        let body = serde_json::json!({
+            "investigation": {"budget": {"max_steps_per_trace": 2}},
+            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "scenarios": [],
+            "tags": {"put_model": "forged"}
+        });
+        let response = app
+            .oneshot(
+                HttpRequest::post("/api/investigations")
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.jobs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn provenance_tags_use_resolved_settings_and_stable_empty_workspace_hash() {
+        let empty = tags::workspace_hash(&Workspace::empty());
+        let mut renamed = put("cosmetic-id-only");
+        let original = system_tags(
+            "zai_coding::glm-5.2",
+            "zai_coding::glm-5.2",
+            None,
+            Some(ThinkingLevel::None),
+            &renamed,
+            &empty,
+            BTreeMap::new(),
+        );
+        renamed.id = "renamed".into();
+        let again = system_tags(
+            "zai_coding::glm-5.2",
+            "zai_coding::glm-5.2",
+            None,
+            Some(ThinkingLevel::None),
+            &renamed,
+            &tags::workspace_hash(&Workspace::empty()),
+            BTreeMap::new(),
+        );
+        assert_eq!(original["put_model"], "zai_coding::glm-5.2");
+        assert_eq!(original["put_thinking"], "provider_default");
+        assert_eq!(original["sim_thinking"], "none");
+        assert_eq!(original["prompt_hash"], again["prompt_hash"]);
+        assert_eq!(original["workspace_hash"], again["workspace_hash"]);
     }
 
     #[test]
@@ -2214,6 +2532,7 @@ mod tests {
                 sim_thinking_level: sim_level,
                 conversation_controls: ConversationControls::default(),
                 scenarios: vec![],
+                tags: BTreeMap::new(),
             }
         };
         let (put_model, sim_model) =
@@ -2387,6 +2706,17 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(res.status(), StatusCode::ACCEPTED, "{model}");
+            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(created["tags"]["put_model"], model);
+            assert_eq!(created["tags"]["sim_thinking"], "none");
+            assert_eq!(created["tags"]["prompt_hash"].as_str().unwrap().len(), 64);
+            assert_eq!(
+                created["tags"]["workspace_hash"].as_str().unwrap().len(),
+                64
+            );
         }
     }
 
@@ -2472,6 +2802,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn all_error_runs_are_failed_exclusions_not_zero_cost_candidates() {
+        let state = test_state();
+        seed_done_job(&state, "failed-run", "p", 0, vec![1]);
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            let job = jobs.get_mut("failed-run").unwrap();
+            // The production worker always finishes with job status done;
+            // the result is where all-scenario failure is recorded.
+            let result = job.result.as_mut().unwrap();
+            result.result.status = prompt_explore::model::output::RunStatus::Error;
+            result.attempts.clear();
+            result.scenarios_run = 0;
+        }
+        let app = build_app(state);
+        let (status, _, body) = post_frontier(
+            &app,
+            "?format=json",
+            r#"{"group_by":[],"axes":[{"name":"put_output_tokens","better":"lower"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        let point = &body["points"][0];
+        assert!(point["values"].is_null());
+        assert!(point["on_frontier"].is_null());
+        assert_eq!(point["included"], serde_json::json!([]));
+        assert_eq!(point["excluded"][0]["status"], "failed");
+        assert_eq!(point["excluded"][0]["investigation"], "failed-run");
+        assert_eq!(point["preliminary"], true);
+    }
+
+    #[tokio::test]
+    async fn zero_scenario_noop_is_visible_but_cannot_dominate_real_runs() {
+        let state = test_state();
+        seed_done_job(&state, "empty-run", "empty", 0, vec![]);
+        seed_done_job(&state, "real-run", "real", 10, vec![1]);
+        let app = build_app(state);
+        let (code, _, body) = post_frontier(
+            &app, "?format=json",
+            r#"{"group_by":["prompt_hash"],"axes":[{"name":"put_output_tokens","better":"lower"}]}"#,
+        ).await;
+        assert_eq!(code, StatusCode::OK);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        let points = body["points"].as_array().unwrap();
+        // Different cosmetic prompt IDs need not split the groups. Regardless
+        // of grouping, the empty run remains an explicit failed exclusion.
+        assert!(points.iter().any(|p| {
+            p["excluded"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["investigation"] == "empty-run" && e["status"] == "failed")
+        }));
+        let real = points
+            .iter()
+            .find(|p| {
+                p["included"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id == "real-run")
+            })
+            .unwrap();
+        assert_eq!(real["values"]["put_output_tokens"], 10.0);
+        assert_eq!(real["on_frontier"], true);
+        assert_eq!(real["dominated_by"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
     async fn frontier_json_and_svg_round_trip() {
         let state = test_state();
         seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2, 4]);
@@ -2482,8 +2881,18 @@ mod tests {
         patch_grades(&app, "v2", r#"{"grades": {"tone_of_voice": 0.85}}"#).await;
         patch_grades(&app, "v3", r#"{"grades": {"tone_of_voice": 0.75}}"#).await;
 
+        for id in ["v1", "v2", "v3"] {
+            state
+                .jobs
+                .lock()
+                .unwrap()
+                .get_mut(id)
+                .unwrap()
+                .tags
+                .insert("variant".into(), id.into());
+        }
         let req_body = r#"{
-            "investigations": ["v1", "v2", {"id": "v3", "label": "v3-verbose"}],
+            "group_by": ["variant"],
             "axes": [
                 {"name": "put_output_tokens", "better": "lower"},
                 {"name": "tone_of_voice", "better": "higher"}
@@ -2493,35 +2902,28 @@ mod tests {
         assert_eq!(code, StatusCode::OK);
         assert!(ct.starts_with("application/json"));
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let points: Vec<_> = v["points"].as_array().unwrap().clone();
-        let find = |label: &str| -> serde_json::Value {
+        let points = v["points"].as_array().unwrap();
+        assert_eq!(points.len(), 3, "one point for every variant tag group");
+        // Mixed directions leave the cheap/low-tone and expensive/high-tone
+        // variants on the frontier, while the third is dominated.
+        assert_eq!(
+            points.iter().filter(|p| p["on_frontier"] == true).count(),
+            2
+        );
+        assert!(
             points
                 .iter()
-                .find(|p| p["label"] == label)
-                .unwrap_or_else(|| panic!("no point labeled {label} in {points:?}"))
-                .clone()
-        };
-        // Mixed directions: v1 cheapest tokens (frontier despite low
-        // tone), v2 best tone (frontier), v3 dominated by v2 on both.
-        assert_eq!(find("cancel-bot")["on_frontier"], true);
-        assert_eq!(find("cancel-bot#2")["on_frontier"], true);
-        assert_eq!(find("v3-verbose")["on_frontier"], false);
-        assert_eq!(
-            find("v3-verbose")["dominated_by"],
-            serde_json::json!(["v2"])
+                .any(|p| !p["dominated_by"].as_array().unwrap().is_empty())
         );
-        // Only the REQUESTED axes appear in values.
-        assert!(
-            find("cancel-bot")["values"]
-                .get("steps_per_trace_avg")
-                .is_none()
-        );
+        // Only the requested axes appear in a resolved group's values.
+        let resolved = points.iter().find(|p| p["values"].is_object()).unwrap();
+        assert!(resolved["values"].get("steps_per_trace_avg").is_none());
 
         let (code, ct, body) = post_frontier(&app, "?format=svg", req_body).await;
         assert_eq!(code, StatusCode::OK);
         assert!(ct.starts_with("image/svg+xml"), "ct={ct}");
         assert!(body.starts_with("<svg "));
-        assert!(body.contains("v3-verbose"));
+        assert!(body.contains("<svg"));
     }
 
     #[tokio::test]
@@ -2546,57 +2948,165 @@ mod tests {
                 sim_thinking_level: None,
                 conversation_controls: ResolvedConversationControls::default(),
                 workspace_files: 0,
+                tags: system_tags(
+                    "zai_coding::glm-5.2",
+                    "zai_coding::glm-5.2",
+                    None,
+                    None,
+                    &put("cancel-bot"),
+                    &tags::workspace_hash(&Workspace::empty()),
+                    BTreeMap::new(),
+                ),
             },
         );
         let app = build_app(state);
 
         let body = r#"{
-            "investigations": ["still-running", "ghost", "v1", "v1"],
+            "group_by": ["put_model"],
             "axes": [
                 {"name": "put_cost_usd", "better": "lower"},
                 {"name": "tone_of_voice", "better": "higher"}
             ]
         }"#;
         let (code, _ct, body) = post_frontier(&app, "", body).await;
-        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        // Every stored job is considered; incomplete/running groups are
+        // successful, pollable evidence rather than a request-level 422.
+        assert_eq!(code, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["error"], "frontier_request_invalid");
-        let reasons: Vec<&str> = v["problems"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|p| p["reason"].as_str().unwrap())
-            .collect();
-        // put_cost_usd is unpriced on v1 (axis_absent) and v1 has no
-        // tone grade (no_grade); the duplicated id reports ONE problem
-        // (duplicate), not its axis problems twice.
-        let mut sorted = reasons.clone();
-        sorted.sort_unstable();
+        let points = v["points"].as_array().unwrap();
+        assert_eq!(points.len(), 1);
         assert_eq!(
-            sorted,
-            vec![
-                "axis_absent",
-                "duplicate_investigation",
-                "job_running",
-                "no_grade",
-                "unknown_investigation"
-            ]
+            points[0]["investigations"],
+            serde_json::json!(["still-running", "v1"])
         );
-        // The no_grade detail names the exact PATCH (fix-instruction
-        // contract, verifiable over HTTP).
-        let no_grade = v["problems"]
-            .as_array()
+        assert_eq!(points[0]["preliminary"], true);
+        assert!(points[0]["values"].is_null());
+        assert!(
+            points[0]["excluded"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["status"] == "running")
+        );
+    }
+
+    #[tokio::test]
+    async fn grouped_frontier_backlog_updates_same_group_after_patch() {
+        let state = test_state();
+        seed_done_job(&state, "complete", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "later", "cancel-bot", 100, vec![2]);
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            let complete = jobs.get_mut("complete").unwrap();
+            complete.tags.insert("campaign".into(), "same".into());
+            complete.grades.insert("quality".into(), 1.0);
+            let later = jobs.get_mut("later").unwrap();
+            later.tags.insert("campaign".into(), "same".into());
+            later.status = JobStatus::Running;
+        }
+        let app = build_app(state.clone());
+        let body = r#"{"group_by":["campaign"],"axes":[{"name":"quality","better":"higher"}]}"#;
+        let (code, _, first) = post_frontier(&app, "", body).await;
+        assert_eq!(code, StatusCode::OK);
+        let point = &serde_json::from_str::<serde_json::Value>(&first).unwrap()["points"][0];
+        assert_eq!(point["included"], serde_json::json!(["complete"]));
+        assert_eq!(point["preliminary"], true);
+        assert_eq!(point["excluded"][0]["status"], "running");
+
+        // Once the run completes it remains visible as an awaiting-grade
+        // backlog member; the same PATCH that supplies the grade joins it to
+        // the existing tag group rather than creating a selected-job view.
+        state.jobs.lock().unwrap().get_mut("later").unwrap().status = JobStatus::Done;
+        let (code, _) = patch_grades(&app, "later", r#"{"grades":{"quality":3}}"#).await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, _, second) = post_frontier(&app, "", body).await;
+        assert_eq!(code, StatusCode::OK);
+        let point = &serde_json::from_str::<serde_json::Value>(&second).unwrap()["points"][0];
+        assert_eq!(point["included"], serde_json::json!(["complete", "later"]));
+        assert_eq!(point["excluded"], serde_json::json!([]));
+        assert_eq!(point["preliminary"], false);
+        assert_eq!(point["values"]["quality"], 2.0);
+    }
+
+    #[tokio::test]
+    async fn grouped_frontier_rejects_legacy_selected_investigations_field() {
+        let app = build_app(test_state());
+        let (code, _, body) = post_frontier(
+            &app,
+            "",
+            r#"{"investigations":["old-id"],"axes":[{"name":"quality","better":"higher"}]}"#,
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(body.contains("unknown field `investigations`"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn grouped_frontier_svg_renders_all_pending_backlog() {
+        let state = test_state();
+        seed_done_job(&state, "pending", "cancel-bot", 100, vec![2]);
+        state
+            .jobs
+            .lock()
             .unwrap()
-            .iter()
-            .find(|p| p["reason"] == "no_grade")
+            .get_mut("pending")
+            .unwrap()
+            .status = JobStatus::Running;
+        let app = build_app(state);
+        let (code, content_type, svg) = post_frontier(
+            &app,
+            "?format=svg",
+            r#"{"axes":[{"name":"quality","better":"higher"},{"name":"clarity","better":"higher"}]}"#,
+        ).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(content_type.starts_with("image/svg+xml"));
+        assert!(svg.contains("no groups have a complete cohort"));
+        assert!(svg.contains("pending / preliminary backlog"));
+    }
+
+    #[tokio::test]
+    async fn grouped_frontier_stops_showing_deleted_jobs() {
+        let state = test_state();
+        seed_done_job(&state, "keep", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "remove", "cancel-bot", 200, vec![2]);
+        for id in ["keep", "remove"] {
+            let mut jobs = state.jobs.lock().unwrap();
+            let job = jobs.get_mut(id).unwrap();
+            job.tags.insert("variant".into(), id.into());
+            job.grades.insert("quality".into(), 1.0);
+        }
+        let app = build_app(state);
+        let body = r#"{"group_by":["variant"],"axes":[{"name":"quality","better":"higher"}]}"#;
+        let (code, _, before) = post_frontier(&app, "", body).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&before).unwrap()["points"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("DELETE")
+                    .uri("/api/investigations/remove")
+                    .body(String::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (code, _, after) = post_frontier(&app, "", body).await;
+        assert_eq!(code, StatusCode::OK);
+        let points = serde_json::from_str::<serde_json::Value>(&after).unwrap()["points"]
+            .as_array()
             .unwrap()
             .clone();
-        assert!(
-            no_grade["detail"]
-                .as_str()
-                .unwrap()
-                .contains("PATCH /api/investigations/v1")
-        );
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0]["investigations"], serde_json::json!(["keep"]));
     }
 
     #[tokio::test]
@@ -2607,7 +3117,7 @@ mod tests {
         let (code, _ct, body) = post_frontier(
             &app,
             "?format=svg",
-            r#"{"investigations": ["v1"], "axes": [{"name": "put_output_tokens", "better": "lower"}]}"#, // 1 axis
+            r#"{"axes": [{"name": "put_output_tokens", "better": "lower"}]}"#, // 1 axis
         )
         .await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);

@@ -55,7 +55,7 @@
   .card.leaving { opacity: 0; transform: scale(0.97); transition: opacity 0.22s ease-in, transform 0.22s ease-in, margin 0.22s ease-in, padding 0.22s ease-in, border 0.22s ease-in; }
   .card.leaving > * { visibility: hidden; }
   .card h2 { font-size: 0.92rem; margin: 0; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-  .mono { font-family: var(--mono); }
+  .mono { font-family: var(--mono); overflow-wrap: anywhere; }
   .badge { display: inline-block; font-size: 0.74rem; font-weight: 700;
     padding: 0.16rem 0.55rem; border-radius: 999px; letter-spacing: 0.02em; }
   .badge.running { background: var(--accent-soft); color: var(--accent-text); border: 1px solid var(--accent-border); }
@@ -135,13 +135,22 @@
   .grade-row { display: flex; gap: 0.4rem; align-items: center; margin: 0.22rem 0; }
   .grade-row .name { font-family: var(--mono); font-size: 0.78rem; color: var(--text); min-width: 11em; }
   .grade-row input { width: 7em; }
+  .tag-row { display: grid; grid-template-columns: minmax(9em, 1fr) minmax(12em, 2fr) auto; gap: 0.4rem; align-items: center; margin: 0.22rem 0; }
+  .tag-row input { min-width: 0; width: 100%; }
+  .system-tag { font-family: var(--mono); font-size: 0.76rem; overflow-wrap: anywhere; }
+  .display-name { color: var(--text); font-size: 1rem; font-weight: 700; overflow-wrap: anywhere; }
+  .group-counts { display: flex; gap: 0.3rem; flex-wrap: wrap; margin: 0.25rem 0; }
+  .group-count { font: 0.7rem var(--mono); padding: 0.08rem 0.35rem; border: 1px solid var(--border); border-radius: 4px; }
+  .pending { color: var(--amber); }
+  .unavailable { color: var(--red); }
   .del { color: var(--text-dim); cursor: pointer; border: none; background: none; padding: 0 0.2rem; font-size: 0.9rem; }
   .del:hover { color: var(--accent); }
   .axis-grid { display: grid; grid-template-columns: 1fr auto auto auto; gap: 0.4rem 0.6rem; align-items: center; }
   .frontier-err { border-left: 2px solid var(--red); padding-left: 0.6rem; margin: 0.4rem 0; }
   .frontier-err .reason { font-family: var(--mono); font-size: 0.74rem; color: var(--red); }
-  .ptable { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-top: 0.5rem; }
-  .ptable th, .ptable td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border); }
+  .ptable { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.78rem; margin-top: 0.5rem; }
+  .ptable th, .ptable td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
+  .ptable .group-label { min-width: 14em; }
   .ptable .dom { color: var(--text-dim); }
   .ptable .nd { color: var(--green); font-weight: 700; }
   .frontier-svg { margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
@@ -150,6 +159,14 @@
      line-length; the "…" / "⌃" marker toggles the rest. */
   .clip-toggle { color: var(--accent); cursor: pointer; user-select: none; font-weight: 700; padding: 0 0.1rem; }
   .clip-toggle:hover { text-decoration: underline; }
+  @media (max-width: 600px) {
+    .wrap { padding-left: 0.7rem; padding-right: 0.7rem; }
+    .axis-grid { grid-template-columns: 1fr; }
+    .axis-grid > * { max-width: 100%; }
+    .tag-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .tag-row > :nth-child(2) { grid-column: 1; }
+    header .auto { margin-left: 0; }
+  }
 </style>
 <script>
   // Light is the product default; remember an explicit dark-mode choice.
@@ -469,31 +486,58 @@ const RESERVED_AXES = [
   ['steps_per_trace_max','lower'], ['steps_per_trace_stdev','lower'],
 ];
 const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null])[1];
+const SYSTEM_TAG_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash']);
+const jobTags = j => (j && j.tags) || {};
+const displayName = j => jobTags(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
 
-// Editable grades on one job. Sends the full desired map (numbers to
-// set, null to delete — merge semantics on the server); the 2.5s poll
-// refreshes j.grades right after.
-function GradesPanel({ j, token }) {
-  const [rows, setRows] = useState(() => Object.entries(j.grades || {}).map(([k, v]) => ({ k, v: String(v) })));
+// Preserve local drafts through live polling; save only keys changed against
+// the editing baseline, retaining unrelated edits from concurrent callers.
+function useMetadataDraft(source) {
+  const asRows = map => Object.entries(map).map(([k, v]) => ({ k, v: String(v) }));
+  const [rows, updateRows] = useState(() => asRows(source));
+  const baseline = useRef(source);
+  const dirty = useRef(false);
+  const reset = map => { baseline.current = map; dirty.current = false; updateRows(asRows(map)); };
+  useEffect(() => { if (!dirty.current) reset(source); }, [JSON.stringify(source)]);
+  const setRows = value => { dirty.current = true; updateRows(value); };
+  return { rows, setRows, baseline, reset };
+}
+function metadataPatch(baseline, desired) {
+  const patch = {};
+  Object.entries(desired).forEach(([key, value]) => { if (baseline[key] !== value) patch[key] = value; });
+  Object.keys(baseline).forEach(key => { if (!Object.prototype.hasOwnProperty.call(desired, key)) patch[key] = null; });
+  return patch;
+}
+
+// Editable caller grades, merged with the live server map.
+function GradesPanel({ j, token, onPatched }) {
+  const { rows, setRows, baseline, reset } = useMetadataDraft(j.grades || {});
   const [nk, setNk] = useState(''); const [nv, setNv] = useState('');
   const [msg, setMsg] = useState(null);
   const set = (i, f) => setRows(rows.map((r, x) => x === i ? { ...r, ...f } : r));
   const save = async () => {
     const grades = {};
+    const seen = new Set();
     for (const r of rows.concat(nk ? [{ k: nk, v: nv }] : [])) {
-      if (!r.k) continue;
-      if (r.v === '' || r.v === null) { grades[r.k] = null; }
+      const key = r.k.trim();
+      if (!key) continue;
+      if (seen.has(key)) { setMsg({ err: `duplicate axis: ${key}` }); return; }
+      seen.add(key);
+      if (r.v === '' || r.v === null) { grades[key] = null; }
       else {
         const f = Number(r.v);
-        if (!Number.isFinite(f)) { setMsg({ err: `${r.k}: not a number` }); return; }
-        grades[r.k] = f;
+        if (!Number.isFinite(f)) { setMsg({ err: `${key}: not a number` }); return; }
+        grades[key] = f;
       }
     }
+    const patch = metadataPatch(baseline.current, grades);
     setMsg(null);
-    const r = await fetch(API(j.id), { method: 'PATCH', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify({ grades }) });
-    const body = await r.json().catch(() => ({}));
-    if (r.ok) setMsg({ ok: 'saved' });
-    else setMsg({ err: (body.problems || []).map(p => p.detail).join(' · ') || body.error || r.status });
+    try {
+      const r = await fetch(API(j.id), { method: 'PATCH', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify({ grades: patch }) });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok) { reset(body.grades || {}); setNk(''); setNv(''); onPatched && onPatched(j.id, body); setMsg({ ok: 'saved' }); }
+      else setMsg({ err: (body.problems || []).map(p => p.detail).join(' · ') || body.error || `HTTP ${r.status}` });
+    } catch (e) { setMsg({ err: `request failed: ${e.message || e}` }); }
   };
   return html`
     <details style="margin-top:0.4rem">
@@ -519,20 +563,69 @@ function GradesPanel({ j, token }) {
     </details>`;
 }
 
-// The frontier panel: pick done investigations + 2 axes (reserved
-// measured or graded), get the SVG plot and the dominance table.
+// Tags describe a variant and are also the grouping dimensions for the live
+// frontier. System tags are provenance emitted by the server, never editable.
+function TagsPanel({ j, token, onPatched }) {
+  const editable = map => Object.fromEntries(Object.entries(map).filter(([k]) => !SYSTEM_TAG_KEYS.has(k)));
+  const { rows, setRows, baseline, reset } = useMetadataDraft(editable(jobTags(j)));
+  const [nk, setNk] = useState(''); const [nv, setNv] = useState('');
+  const [msg, setMsg] = useState(null);
+  const set = (i, f) => setRows(rows.map((r, x) => x === i ? { ...r, ...f } : r));
+  const save = async () => {
+    const tags = {};
+    const desired = rows.concat(nk ? [{ k: nk, v: nv }] : []);
+    const seen = new Set();
+    for (const r of desired) {
+      const key = r.k.trim();
+      if (!key) continue;
+      if (SYSTEM_TAG_KEYS.has(key)) { setMsg({ err: `${key} is server-generated and cannot be changed` }); return; }
+      if (seen.has(key)) { setMsg({ err: `duplicate tag key: ${key}` }); return; }
+      seen.add(key);
+      // Empty is a valid, distinct tag value. Only removing this row emits
+      // null for an old key below; do not turn an intentional empty string
+      // into a missing/null grouping value.
+      tags[key] = r.v;
+    }
+    const patch = metadataPatch(baseline.current, tags);
+    setMsg(null);
+    try {
+      const r = await fetch(API(j.id), { method: 'PATCH', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify({ tags: patch }) });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok) { reset(editable(body.tags || {})); onPatched && onPatched(j.id, body); setMsg({ ok: 'saved' }); setNk(''); setNv(''); }
+      else setMsg({ err: (body.problems || []).map(p => p.detail).join(' · ') || body.error || `HTTP ${r.status}` });
+    } catch (e) { setMsg({ err: `request failed: ${e.message || e}` }); }
+  };
+  const system = Object.entries(jobTags(j)).filter(([k]) => SYSTEM_TAG_KEYS.has(k));
+  return html`<details style="margin-top:0.4rem">
+    <summary class="meta">tags <span style="opacity:0.7">(group variants and set this card's label)</span></summary>
+    <div style="margin:0.4rem 0 0.2rem">
+      ${system.length ? html`<div class="meta" style="margin-bottom:0.25rem">system provenance — read-only</div>
+        ${system.map(([k, v]) => html`<div class="tag-row" key=${k}><span class="system-tag">${k}</span><span class="system-tag meta">${v}</span><span class="meta">🔒</span></div>`)}` : html`<div class="meta">No system tags returned yet.</div>`}
+      <div class="meta" style="margin:0.45rem 0 0.2rem">custom tags</div>
+      ${rows.map((r, i) => html`<div class="tag-row" key=${i}>
+        <input type="text" value=${r.k} placeholder="tag name" onInput=${e => set(i, { k: e.target.value })} />
+        <input type="text" value=${r.v} placeholder="value" onInput=${e => set(i, { v: e.target.value })} />
+        <button class="del" title="delete tag" onClick=${() => setRows(rows.filter((_, x) => x !== i))}>✕</button>
+      </div>`) }
+      <div class="tag-row"><input type="text" placeholder="new tag name" value=${nk} onInput=${e => setNk(e.target.value)} /><input type="text" placeholder="value" value=${nv} onInput=${e => setNv(e.target.value)} /><button class="del" title="add tag" onClick=${() => { if (nk.trim()) { setRows(rows.concat([{ k: nk, v: nv }])); setNk(''); setNv(''); } }}>＋</button></div>
+      <div class="grow" style="margin-top:0.35rem"><button onClick=${save}>save tags</button>${msg?.ok ? html`<span class="meta" style="color:var(--green)">✓ ${msg.ok}</span>` : null}${msg?.err ? html`<span class="note">${msg.err}</span>` : null}</div>
+    </div>
+  </details>`;
+}
+
+// The frontier panel compares every job, grouped by tag values; the server
+// owns cohort construction and dominance so no client-side candidate filter
+// can silently change the comparison.
 function FrontierPanel({ jobs, token }) {
-  const eligible = (jobs || []).filter(j => j.status === 'done');
-  const [sel, setSel] = useState({});
+  const allJobs = jobs || [];
+  const [groupBy, setGroupBy] = useState(['put_model', 'put_thinking', 'prompt_hash']);
   const [axes, setAxes] = useState(['put_output_tokens', '']); // '' = derive at render
-  const [dirs, setDirs] = useState({});   // graded axis name → 'lower'|'higher'
-  const [plot, setPlot] = useState(null); // { svg?, table, skipped? }
+  const [dirs, setDirs] = useState({});
+  const [plot, setPlot] = useState(null);
   const [err, setErr] = useState(null);
-  const gradedNames = [...new Set(eligible.flatMap(j => Object.keys(j.grades || {})))];
+  const knownTagKeys = [...new Set(allJobs.flatMap(j => Object.keys(jobTags(j))))].sort();
+  const gradedNames = [...new Set(allJobs.flatMap(j => Object.keys(j.grades || {})))];
   const options = RESERVED_AXES.map(([n]) => n).concat(gradedNames.filter(n => !reservedDir(n)));
-  // Effective axis names, derived at render time so a row's default
-  // adapts as jobs arrive and get graded (state only stores explicit
-  // choices). Derived defaults skip names already used by other rows.
   const names = [];
   axes.forEach(a => {
     if (a) { names.push(a); return; }
@@ -542,137 +635,105 @@ function FrontierPanel({ jobs, token }) {
   });
   const dirOf = n => reservedDir(n) || dirs[n] || 'higher';
   const setDir = (n, d) => setDirs({ ...dirs, [n]: d });
-  const chosen = eligible.filter(j => sel[j.id]);
-  // Graded axes are only plottable on investigations that HAVE them —
-  // and the UI knows grades (it polls them). Checked points missing a
-  // selected graded axis are marked in the list, excluded from the
-  // request, and the exclusion is reported next to the result — never
-  // dropped silently. Reserved (measured) axes can't be predicted
-  // client-side (unpriced model, no completed traces): those keep the
-  // server's precise 422.
-  const gradedSel = names.filter(n => !reservedDir(n));
-  const missingFor = j => gradedSel.filter(n => !Object.prototype.hasOwnProperty.call(j.grades || {}, n));
-  const toSend = chosen.filter(j => missingFor(j).length === 0);
-
-  // Auto-run: every settings change (selection, axes, directions)
-  // re-fetches immediately — computing the frontier is cheap. Also
-  // re-fetches when the grades data behind it changes, so a new grade
-  // on the job card updates the plot on the next poll. Out-of-order
-  // responses are guarded (seq token: only the latest request's
-  // answer renders). Empty selection clears plot + errors.
-  const toSendKey = JSON.stringify(toSend.map(j => j.id));
-  const gradesKey = JSON.stringify(eligible.map(j => [j.id, j.grades]));
+  // This includes completed jobs too: a caller can PATCH grades/tags after a
+  // run, and these are exactly the result fields used by measured axes. Keep
+  // trace bodies out of the dependency key: a large evidence corpus should
+  // not be repeatedly serialized just to refresh a small frontier request.
+  const measuredSummary = j => {
+    const result = j.result;
+    if (!result) return null;
+    return {
+      usage: result.usage || null,
+      steps_per_trace: (result.attempts || []).map(a => (a.turns || [])
+        .reduce((steps, turn) => steps + Math.max((turn.tool_exchanges || []).length, 1), 0)),
+    };
+  };
+  const jobsKey = JSON.stringify(allJobs.map(j => [j.id, j.status, j.tags, j.grades, measuredSummary(j)]));
+  const groupKey = JSON.stringify(groupBy);
   const namesKey = JSON.stringify(names);
   const dirsKey = JSON.stringify(names.map(n => dirOf(n)));
   const seq = useRef(0);
-  const skipKey = JSON.stringify(chosen.map(j => [j.id, missingFor(j)]));
-  const tokenRef = useRef(token); tokenRef.current = token;
   useEffect(() => {
-    // deps: exactly what the request depends on (as memoized keys).
-    // jobs/eligible are covered via toSendKey/skipKey/gradesKey; token
-    // via a ref (changing it mid-session shouldn't re-fire a fetch with
-    // stale axes); derived names via namesKey/dirsKey.
+    const controller = new AbortController();
     const mySeq = ++seq.current;
-    if (!chosen.length) {
-      if (mySeq === seq.current) { setPlot(null); setErr(null); }
-      return;
-    }
+    if (!allJobs.length) { setPlot({ points: [], svg: null }); setErr(null); return () => controller.abort(); }
+    const body = {
+      group_by: groupBy.map(k => k.trim()).filter(Boolean),
+      axes: names.map(n => ({ name: n, better: dirOf(n) })),
+    };
+    const headers = { ...authHeaders(token), 'content-type': 'application/json' };
     (async () => {
-      const skipped = chosen.filter(j => missingFor(j).length > 0)
-        .map(j => ({ label: (j.put && j.put.id) || j.id.slice(0,8), missing: missingFor(j) }));
-      if (!toSend.length) {
-        if (mySeq === seq.current) {
-          setPlot(null);
-          setErr([{ reason: 'nothing to plot', detail: skipped.length
-            ? `every selected investigation lacks a grade on ${[...new Set(skipped.flatMap(s => s.missing))].join(', ')} — grade it on the job card (PATCH grades) or deselect that axis`
-            : 'select at least one investigation' }]);
-        }
-        return;
-      }
-      const body = {
-        investigations: toSend.map(j => j.id),
-        axes: names.map(n => ({ name: n, better: dirOf(n) })),
-      };
-      const headers = { ...authHeaders(tokenRef.current), 'content-type': 'application/json' };
-      const two = names.length === 2; // the scatter is 2-axis only (v0 rendering constraint)
       try {
+        const two = names.length === 2;
         const [jsonR, svgR] = await Promise.all([
-          fetch('/api/frontier?format=json', { method: 'POST', headers, body: JSON.stringify(body) }),
-          two ? fetch('/api/frontier?format=svg', { method: 'POST', headers, body: JSON.stringify(body) }) : Promise.resolve(null),
+          fetch('/api/frontier?format=json', { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal }),
+          two ? fetch('/api/frontier?format=svg', { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal }) : Promise.resolve(null),
         ]);
         if (!jsonR.ok || (svgR && !svgR.ok)) {
           const b = await jsonR.json().catch(() => ({}));
-          if (mySeq === seq.current) {
-            setPlot(null);
-            setErr(b.problems || [{ reason: b.error || 'error', detail: `HTTP ${jsonR.status}` }]);
+          if (mySeq === seq.current && !controller.signal.aborted) {
+            setPlot(null); setErr(b.problems || [{ reason: b.error || 'error', detail: `HTTP ${jsonR.status}` }]);
           }
           return;
         }
-        const next = { svg: svgR ? await svgR.text() : null, table: (await jsonR.json()).points, skipped };
-        if (mySeq === seq.current) { setErr(null); setPlot(next); }
+        const json = await jsonR.json();
+        const svg = svgR ? await svgR.text() : null;
+        if (mySeq === seq.current && !controller.signal.aborted) { setErr(null); setPlot({ points: json.points || [], svg }); }
       } catch (e) {
-        if (mySeq === seq.current) setErr([{ reason: 'request failed', detail: String(e) }]);
+        if (e.name !== 'AbortError' && mySeq === seq.current && !controller.signal.aborted) setErr([{ reason: 'request failed', detail: String(e) }]);
       }
     })();
-  }, [toSendKey, gradesKey, namesKey, dirsKey, skipKey]);
+    return () => controller.abort();
+  }, [jobsKey, groupKey, namesKey, dirsKey, token]);
 
   const axisRow = i => {
     const name = names[i];
-    // A row can't select a name another row already uses (the API
-    // rejects duplicate axes): each row's options exclude the others'.
     const rowOpts = options.filter(o => !names.some((n, x) => x !== i && n === o));
-    return html`
-      <div class="axis-grid" key=${i}>
-        <span class="meta">${i === 0 ? 'x axis' : i === 1 ? 'y axis' : `axis ${i + 1}`}</span>
-        <select value=${name} onChange=${e => setAxes(axes.map((a, x) => x === i ? e.target.value : a))}>
-          ${rowOpts.map(o => html`<option value=${o} key=${o}>${o}${reservedDir(o) ? '' : ' (graded)'}</option>`)}
-        </select>
-        ${reservedDir(name)
-          ? html`<span class="meta" title="reserved measured axis — direction is baked in">${reservedDir(name)} is better 🔒</span>`
-          : html`<select value=${dirOf(name)} onChange=${e => setDir(name, e.target.value)} title="your call: direction is declared per request, never stored">
-              <option value="higher">higher is better</option>
-              <option value="lower">lower is better</option>
-            </select>`}
-        <button class="del" title="remove this axis" disabled=${axes.length <= 1}
-          onClick=${() => setAxes(axes.filter((_, x) => x !== i))}>✕</button>
-      </div>`;
-  };
-
-  return html`
-    <div class="card">
-      <h2>📈 Pareto frontier <span class="meta" style="font-weight:400">— which variants nobody dominates</span></h2>
-      ${eligible.length < 2 ? html`<div class="meta" style="margin:0.4rem 0">Needs ≥ 2 done investigations to compare.${jobs && jobs.length ? ' Grade finished ones and plot them here as more finish.' : ''}</div>` : html`
-        <div style="margin:0.45rem 0;display:flex;flex-wrap:wrap;gap:0.3rem 1.1rem">
-          ${eligible.map(j => {
-            const miss = missingFor(j);
-            return html`
-            <label class="meta" style="white-space:nowrap;cursor:pointer${miss.length ? ';opacity:0.55' : ''}"
-              title=${miss.length ? `missing ${miss.join(', ')} — excluded from the analysis until graded (add the grade on this job's card, or PATCH its grades)` : ''}>
-              <input type="checkbox" checked=${!!sel[j.id]} onClick=${() => setSel({ ...sel, [j.id]: !sel[j.id] })} />
-              ${(j.put && j.put.id) || j.id.slice(0,8)}${miss.length ? ` (no ${miss.join(', ')})` : ''}
-            </label>`;
-          })}
-        </div>
-        <div style="margin:0.45rem 0">${axes.map((_, i) => axisRow(i))}
-          <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="add an axis — dominance is N-dimensional; the scatter is drawn only at exactly 2 axes (the table always renders)">+ axis</button>
-        </div>
-        <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'up & right is better, whichever directions you pick' : `${names.length} axes — N-dimensional dominance; scatter only at exactly 2 (table always renders)`}</div>`}
-      ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}${p.investigation ? ` · ${String(p.investigation).slice(0,8)}` : ''}${p.axis ? ` · ${p.axis}` : ''}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
-      ${plot && plot.skipped && plot.skipped.length ? html`
-        <div class="note" style="margin:0.45rem 0">excluded from the pareto frontier analysis (missing grades): ${plot.skipped.map(s => `${s.label} → no ${s.missing.join(', ')}`).join(' · ')} — add a grade for the missing axis on that job's card (or PATCH its grades) to include it; the run itself already has traces to judge</div>` : null}
-      ${plot ? html`
-        ${plot.svg ? html`<div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>` : null}
-        <table class="ptable">
-          <thead><tr><th>point</th>${names.map(n => html`<th key=${n} class="mono">${n}</th>`)}<th>on frontier</th><th>dominated by</th></tr></thead>
-          <tbody>${plot.table.map(p => html`
-            <tr key=${p.investigation}>
-              <td class="mono">${p.label}</td>
-              ${names.map(n => html`<td key=${n} class="mono">${fmtAxisVal(p.values[n])}</td>`)}
-              <td>${p.on_frontier ? html`<span class="nd">yes</span>` : html`<span class="dom">no</span>`}</td>
-              <td class="dom mono">${(p.dominated_by || []).map(d => (plot.table.find(q => q.investigation === d) || { label: d }).label).join(', ') || '—'}</td>
-            </tr>`)}</tbody>
-        </table>` : null}
+    return html`<div class="axis-grid" key=${i}>
+      <span class="meta">${i === 0 ? 'x axis' : i === 1 ? 'y axis' : `axis ${i + 1}`}</span>
+      <select value=${name} onChange=${e => setAxes(axes.map((a, x) => x === i ? e.target.value : a))}>
+        ${rowOpts.map(o => html`<option value=${o} key=${o}>${o}${reservedDir(o) ? '' : ' (graded)'}</option>`)}
+      </select>
+      ${reservedDir(name)
+        ? html`<span class="meta" title="reserved measured axis — direction is baked in">${reservedDir(name)} is better 🔒</span>`
+        : html`<select value=${dirOf(name)} onChange=${e => setDir(name, e.target.value)}><option value="higher">higher is better</option><option value="lower">lower is better</option></select>`}
+      <button class="del" title="remove this axis" disabled=${axes.length <= 1} onClick=${() => setAxes(axes.filter((_, x) => x !== i))}>✕</button>
     </div>`;
+  };
+  const counts = point => (point.excluded || []).reduce((out, e) => ({ ...out, [e.status]: (out[e.status] || 0) + 1 }), {});
+  const groupTagText = point => groupBy.length
+    ? groupBy.map(k => `${k}=${point.tags && point.tags[k] != null ? point.tags[k] : 'null'}`).join(' · ')
+    : 'all investigations';
+  const backlog = (plot && plot.points || []).flatMap(point => (point.excluded || []).map(e => ({ point, ...e })));
+
+  return html`<div class="card">
+    <h2>📈 Live grouped Pareto <span class="meta" style="font-weight:400">— every investigation is a candidate</span></h2>
+    <div class="meta" style="margin:0.4rem 0">Matching tag values become one point. Every coordinate is a mean over the same completed, fully graded investigations. Preliminary points are faded with a dashed ring; groups with no usable members stay pending without coordinates. All excluded members remain in the backlog. Delete unwanted investigations to remove them from the comparison.</div>
+    <div style="margin:0.45rem 0">
+      <div class="meta">group by tags <span style="opacity:0.7">(empty = one group; missing values are grouped as null)</span></div>
+      ${groupBy.map((key, i) => html`<div class="grow" key=${i} style="margin:0.2rem 0"><input type="text" list="frontier-tag-keys" value=${key} placeholder="tag name" onInput=${e => setGroupBy(groupBy.map((k, x) => x === i ? e.target.value : k))} /><button class="del" title="remove grouping tag" onClick=${() => setGroupBy(groupBy.filter((_, x) => x !== i))}>✕</button></div>`)}
+      <datalist id="frontier-tag-keys">${knownTagKeys.map(k => html`<option value=${k} key=${k} />`)}</datalist>
+      <button class="toggle" onClick=${() => setGroupBy(groupBy.concat(['']))}>+ grouping tag</button>
+    </div>
+    <div style="margin:0.45rem 0">${axes.map((_, i) => axisRow(i))}
+      <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="dominance supports N axes; SVG is two-axis only">+ axis</button>
+    </div>
+    <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'SVG shows two axes; the table and dominance calculation support any number.' : `${names.length} axes — N-dimensional dominance; SVG is available at exactly two axes.`}</div>
+    ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
+    ${plot && plot.svg ? html`<div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>` : null}
+    ${plot ? html`<table class="ptable"><thead><tr><th>group</th>${names.map(n => html`<th key=${n} class="mono">${n}</th>`)}<th>rank</th><th>counts</th></tr></thead>
+      <tbody>${plot.points.map(p => { const c = counts(p); return html`<tr key=${p.id}>
+        <td class="group-label"><b class="mono" title=${p.id}>${`g-${p.id.replace(/^group-/, '').slice(0, 8)}`}</b><div class="meta mono">${groupTagText(p)}</div></td>
+        ${names.map(n => html`<td key=${n} class="mono">${p.values ? fmtAxisVal(p.values[n]) : 'pending — not plotted'}</td>`)}
+        <td>${p.on_frontier === null ? html`<span class="pending">pending</span>` : p.on_frontier ? html`<span class="nd">frontier${p.preliminary ? ' · preliminary' : ''}</span>` : html`<span class="dom">dominated${p.preliminary ? ' · preliminary' : ''}</span>`}<div class="meta mono">${(p.dominated_by || []).join(', ') || '—'}</div></td>
+        <td><div class="group-counts"><span class="group-count">included ${((p.included || []).length)}</span>${['running','awaiting_grades','failed','unavailable'].filter(s => c[s]).map(s => html`<span class=${`group-count ${s === 'running' || s === 'awaiting_grades' ? 'pending' : 'unavailable'}`} key=${s}>${s.replace('_',' ')} ${c[s] || 0}</span>`)}</div>
+          <details><summary>members ${((p.investigations || []).length)}</summary><div class="mono meta">${(p.investigations || []).map(id => html`<div key=${id}><a href=${`#job-${id}`}>${id}</a></div>`)}</div></details></td>
+      </tr>`; })}</tbody></table>` : null}
+    ${backlog.length ? html`<details open style="margin-top:0.55rem"><summary class="pending">backlog — ${backlog.length} investigation${backlog.length === 1 ? '' : 's'} needs attention</summary>
+      <div class="meta" style="margin:0.35rem 0">These exact members are not in the common complete cohort yet. Grade the linked job when grades are missing; running, failed, and unavailable jobs remain distinct evidence.</div>
+      ${backlog.map(e => html`<div class="step" key=${`${e.point.id}-${e.investigation}`}><a href=${`#job-${e.investigation}`} class="mono">${e.investigation}</a> · <b class=${e.status === 'awaiting_grades' || e.status === 'running' ? 'pending' : 'unavailable'}>${e.status.replace('_', ' ')}</b>${e.missing_grades && e.missing_grades.length ? html` · missing grades: <span class="mono">${e.missing_grades.join(', ')}</span>` : null}${e.missing_axes && e.missing_axes.length ? html` · missing axes: <span class="mono">${e.missing_axes.join(', ')}</span>` : null}<div class="meta">group: ${e.point.label}</div></div>`) }
+    </details>` : null}
+  </div>`;
 }
 
 // Completed attempts are the durable trace view. Synthesize the same shape
@@ -688,7 +749,12 @@ function progressFromAttempt(attempt) {
   };
 }
 
-function JobCard({ j, token, onDelete, leaving }) {
+function JobCard({ j, token, onDelete, onPatched, leaving }) {
+  const tags = jobTags(j);
+  const putModel = tags.put_model || j.put_model;
+  const simModel = tags.sim_model || j.sim_model;
+  const putThinking = tags.put_thinking || j.put_thinking_level;
+  const simThinking = tags.sim_thinking || j.sim_thinking_level;
   const liveProgs = (j.progress && j.progress.scenarios) || [];
   const inputById = {}; (j.scenarios || []).forEach(s => { if (s.id != null) inputById[s.id] = s; });
   // A completed result has attempts by value, not scenario ids. Keep failed
@@ -715,26 +781,26 @@ function JobCard({ j, token, onDelete, leaving }) {
         label: prog.scenario_id || `scenario ${index + 1}`,
       }));
   return html`
-    <div class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
+    <div id=${`job-${j.id}`} class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
       <h2>
         <span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span>
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
+        <span class="display-name" title="custom tag label, or prompt-under-test id when no label is set">${displayName(j)}</span>
         <span class="mono meta">${(j.id || '').slice(0,8)}</span>
-        ${j.put && j.put.id ? html`<span class="meta" title="prompt under test id (caller-chosen name for this variant)"><b class="mono">${j.put.id}</b></span>` : null}
         <span class="meta">${'· ' + relTime(j.started_at)}</span>
-        ${(j.put_model || j.sim_model) ? html`<span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-          ${j.put_model ? html`<span class="utag put" title="prompt under test model">${j.put_model}</span>` : null}
-          ${j.put_thinking_level ? html`<span class="utag put" title="prompt under test thinking level (put_thinking_level)">think ${j.put_thinking_level}</span>` : null}
-          ${j.sim_model ? html`<span class="utag sim" title="tool simulator model">${j.sim_model}</span>` : null}
-          ${j.sim_thinking_level ? html`<span class="utag sim" title="tool simulator thinking level (sim_thinking_level)">think ${j.sim_thinking_level}</span>` : null}
+        <span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          ${putModel ? html`<span class="utag put" title="system tag put_model">${putModel}</span>` : null}
+          ${putThinking ? html`<span class="utag put" title="system tag put_thinking">think ${putThinking}</span>` : null}
+          ${simModel ? html`<span class="utag sim" title="system tag sim_model">${simModel}</span>` : null}
+          ${simThinking ? html`<span class="utag sim" title="system tag sim_thinking">think ${simThinking}</span>` : null}
           ${j.workspace_files ? html`<span class="utag ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
-          <button class="del" title="delete this investigation (irreversible — removes the job, its traces, and its grades from the server's memory)"
-            onClick=${() => onDelete(j.id)}>✕</button>
-        </span>` : null}
+          <button class="del" title="delete this investigation (irreversible — removes the job, traces, grades, and tags from server memory)" onClick=${() => onDelete(j.id)}>✕</button>
+        </span>
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />
-      <${GradesPanel} j=${j} token=${token} />
+      <${TagsPanel} j=${j} token=${token} onPatched=${onPatched} />
+      <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} />
       <${ResultLine} j=${j} />
       <div class="scens" style="margin-top:0.5rem">
         ${panels.map(panel => html`<${ScenarioPanel} key=${panel.key} prog=${panel.prog} input=${panel.input} label=${panel.label} />`)}
@@ -750,6 +816,10 @@ function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authError, setAuthError] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
+  const deletedIds = useRef(new Set());
+  const revision = useRef(0);
+  const deleteTimers = useRef(new Set());
+  useEffect(() => () => { deleteTimers.current.forEach(clearTimeout); }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -758,24 +828,44 @@ function App() {
 
   useEffect(() => {
     if (!auto) return;
-    let stop = false;
+    const controller = new AbortController();
+    let disposed = false, timer;
     const poll = async () => {
+      const mine = revision.current;
       try {
-        const r = await fetch(API(), { headers: authHeaders(token) });
+        const r = await fetch(API(), { headers: authHeaders(token), signal: controller.signal });
         if (r.status === 401) {
-          if (!stop) { setAuthRequired(true); if (token) setAuthError(true); }
+          if (!disposed && mine === revision.current) { setAuthRequired(true); if (token) setAuthError(true); }
           return;
         }
+        if (!r.ok) throw new Error(`job list: HTTP ${r.status}`);
         const list = await r.json();
-        if (!Array.isArray(list)) return;
-        if (!list.length) { if (!stop) { setJobs([]); setAuthRequired(false); setAuthError(false); } return; }
-        const views = await Promise.all(list.map(s => fetch(API(s.id), { headers: authHeaders(token) }).then(r => r.json())));
-        if (!stop) { setJobs(views); setAuthRequired(false); setAuthError(false); }
-      } catch (e) { console.error(e); }
+        if (!Array.isArray(list) || disposed || mine !== revision.current) return;
+        if (!list.length) { setJobs([]); setAuthRequired(false); setAuthError(false); return; }
+        // Always retrieve full views, including completed ones: grades and tags
+        // may have been PATCHed by another caller after a run finished.
+        const views = await Promise.all(list.map(async s => {
+          const view = await fetch(API(s.id), { headers: authHeaders(token), signal: controller.signal });
+          // A delete can race the summary list. Treat that single vanished job
+          // as absent rather than retaining a stale card until the next poll.
+          if (view.status === 404) return null;
+          if (!view.ok) throw new Error(`job ${s.id}: HTTP ${view.status}`);
+          return view.json();
+        }));
+        if (!disposed && mine === revision.current) {
+          setJobs(views.filter(j => j && !deletedIds.current.has(j.id)));
+          setAuthRequired(false); setAuthError(false);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError' && !disposed) console.error(e);
+      } finally {
+        // Serialize polls: slow trace downloads must not be perpetually
+        // invalidated by the next interval or accumulate outstanding requests.
+        if (!disposed) timer = setTimeout(poll, 2500);
+      }
     };
     poll();
-    const id = setInterval(poll, 2500);
-    return () => { stop = true; clearInterval(id); };
+    return () => { disposed = true; controller.abort(); clearTimeout(timer); };
   }, [auto, token]);
 
   const saveToken = () => {
@@ -793,6 +883,14 @@ function App() {
   };
 
   const [leaving, setLeaving] = useState(null); // id mid-leave-animation
+  const applyPatch = (id, patch) => {
+    ++revision.current; // discard any GET snapshot started before this PATCH
+    setJobs(js => (js || []).map(j => j.id === id ? {
+      ...j,
+      grades: patch.grades === undefined ? j.grades : patch.grades,
+      tags: patch.tags === undefined ? j.tags : patch.tags,
+    } : j));
+  };
   const removeJob = async id => {
     let ok = false;
     try {
@@ -805,15 +903,21 @@ function App() {
       ok = true;
     } catch (e) { console.error(e); alert('delete failed: network error'); return; }
     if (!ok) return;
+    // A detail-list poll begun before DELETE may still resolve. Remember the
+    // tombstone until a later list no longer contains it, so it cannot revive.
+    deletedIds.current.add(id);
+    ++revision.current;
     // Leave animation: collapse first, drop from state after. The 250ms
     // covers the 220ms CSS transition plus layout settle; the timeout is
     // cleared on unmount so a deleted card can't resurrect over a page
     // navigation.
     setLeaving(id);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      deleteTimers.current.delete(timer);
       setJobs(js => (js || []).filter(x => x.id !== id));
       setLeaving(null);
     }, 250);
+    deleteTimers.current.add(timer);
   };
 
   const expandAll = () => {
@@ -849,7 +953,7 @@ function App() {
       ${authRequired ? null
        : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${removeJob} leaving=${leaving === j.id} />`)}
+       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${removeJob} onPatched=${applyPatch} leaving=${leaving === j.id} />`)}
     </div>
     <footer class="meta" style="margin-top:2rem;text-align:center">
       API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>

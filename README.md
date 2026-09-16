@@ -28,18 +28,35 @@ supports this without ever judging for you:
 - **Judged axes** are yours: PATCH numeric grades with free-form axis
   names onto an investigation. The harness stores them and never
   interprets them.
-- `POST /api/frontier` computes the Pareto frontier over any mix of the
-  two, with direction declared per request (`"better": "lower" |
-  "higher"`) — never stored, because cost and cache-read already break
-  any single global convention. `?format=json` returns the points with
-  `on_frontier` / `dominated_by` (N axes allowed); `?format=svg` renders
-  exactly 2 axes as a scatter with the non-dominated staircase, with
-  lower-is-better axes pixel-inverted so **up-and-right is always
-  better**. The web UI has a grades editor on each job card and a
-  frontier panel.
+- **Tags group investigations into points.** Each point represents one unique
+  combination of your chosen tag values, averaged across its completed, fully
+  graded investigations. Run the same prompt against several workspaces to
+  contribute to one point. Every investigation is a candidate; there is no
+  selection/filter list. Delete investigations you do not want included.
+- `POST /api/frontier` takes `group_by` tag names and `axes` with directions
+  (`"better": "lower" | "higher"`). `?format=json` supports N axes;
+  `?format=svg` renders exactly two. **Up-and-right is always better**:
+  lower-is-better axes are reversed. Filled dots are non-dominated; hollow
+  dots are dominated. The frontier is relative to the chosen axes, not a verdict.
+- **The plot is live.** The UI refreshes as jobs finish, grades/tags change,
+  or jobs are deleted. Groups with running or excluded members are preliminary
+  (faded dots with dashed outer rings). Groups with no usable results are
+  pending, not given invented coordinates. Every excluded investigation and
+  its missing grades remain visible in the API and UI as a grading backlog.
 
-Everything the frontier needs is in memory, like the jobs themselves —
-the set of investigations in a campaign is yours (you created the ids).
+Tags are string-valued. `put_model`, `sim_model`, `put_thinking`,
+`sim_thinking`, `prompt_hash`, and `workspace_hash` are recorded automatically
+and cannot be overwritten or deleted. `label` is editable and displayed in
+the UI; other custom tags are editable too. Renaming a label leaves the default
+grouping unchanged; explicitly grouping by `label` makes it an identity key
+like any other selected tag. Model tags use resolved names;
+missing thinking settings are `provider_default` (different from explicit
+`none`). Prompt hashes exclude the cosmetic PUT id; workspace hashes describe
+extracted paths and contents, not zip metadata.
+
+Everything remains in memory: restarting loses investigations, tags, and grades.
+Groups and their frontier are computed on demand; an API caller polls the same
+POST to refresh. Group ids remain stable when membership or grades change.
 
 ### Example: four variants of a cancel-bot prompt
 
@@ -50,19 +67,18 @@ needed, grading and the frontier are LLM-independent:
 $ prompt-explore-server --demo-frontier
 ```
 
-Four template variants ran as investigations; after reading the traces
-you grade the soft axes (merge per axis; `null` deletes):
+After reading the traces, grade the soft axes and optionally label the run.
+Both maps merge per key; `null` deletes an editable entry. The response echoes
+both full maps:
 
 ```
 $ curl -X PATCH 'http://127.0.0.1:8099/api/investigations/v2-warm' \
-    -H 'content-type: application/json' -d '{"grades": {"tone_of_voice": 0.85, "self_containedness": 0.9}}'
-{
-  "grades": {
-    "self_containedness": 0.9,
-    "tone_of_voice": 0.85
-  }
-}
+    -H 'content-type: application/json' \
+    -d '{"grades": {"tone_of_voice": 0.85}, "tags": {"label": "Warm variant"}}'
 ```
+
+Custom tags can also be supplied as a `tags` object when creating an
+investigation. System-owned tags are read-only even at creation time.
 
 Reserved axes are harness-computed, so grading one is rejected with the
 fix named:
@@ -76,41 +92,47 @@ $ curl -X PATCH .../api/investigations/v1-terse -d '{"grades": {"put_cost_usd": 
 }
 ```
 
-Then the frontier, over a measured axis × a judged axis:
+Then request one point per model/thinking/prompt combination (the default
+`group_by` if omitted), across **all** investigations:
 
 ```
 $ curl -X POST 'http://127.0.0.1:8099/api/frontier?format=json' \
     -H 'content-type: application/json' -d '{
-      "investigations": ["v1-terse", "v2-warm", "v3-balanced", "v4-verbose"],
+      "group_by": ["put_model", "put_thinking", "prompt_hash"],
       "axes": [{"name": "put_output_tokens", "better": "lower"},
                {"name": "tone_of_voice", "better": "higher"}] }'
-{
-  "points": [
-    { "investigation": "v1-terse",    "label": "cancel-bot",
-      "values": { "put_output_tokens": 1450.0, "tone_of_voice": 0.4  }, "on_frontier": true,  "dominated_by": [] },
-    { "investigation": "v2-warm",     "label": "cancel-bot#2",
-      "values": { "put_output_tokens": 2300.0, "tone_of_voice": 0.85 }, "on_frontier": true,  "dominated_by": [] },
-    { "investigation": "v3-balanced", "label": "cancel-bot#3",
-      "values": { "put_output_tokens": 1800.0, "tone_of_voice": 0.8  }, "on_frontier": true,  "dominated_by": [] },
-    { "investigation": "v4-verbose",  "label": "cancel-bot#4",
-      "values": { "put_output_tokens": 3100.0, "tone_of_voice": 0.75 }, "on_frontier": false,
-      "dominated_by": ["v2-warm", "v3-balanced"] } ]
-}
 ```
 
-The terse variant is cheapest, the warm one has the best tone, and
-balanced joins them on the frontier; verbose is dominated on both axes.
-The same request with `?format=svg` renders it:
+Each returned point carries its grouping `tags`, a stable `id`, all member
+`investigations`, the `included` ids used for **every** coordinate, and an
+`excluded` backlog. `values` contains arithmetic means, not totals across the
+group. `on_frontier` and `dominated_by` describe dominance between **group ids**.
+Ties dominate nothing. `group_by: []` means one group; an absent grouping tag
+has a `null` value, distinct from any string.
 
-<img src="docs/examples/frontier-demo.svg" width="560" alt="Pareto frontier of the four cancel-bot variants: a staircase through v1-terse (cheapest), v3-balanced and v2-warm (best tone); v4-verbose sits below it, dominated">
+An exclusion names its `investigation`, `status` (`running`, `failed`,
+`awaiting_grades`, or `unavailable`), `missing_grades`, and `missing_axes`.
+PATCH missing grades after reading that investigation's traces, then repeat
+the same frontier request. Missing grades and unfinished jobs do **not** make
+the whole plot fail. A pending group has `values: null` and
+`on_frontier: null`; a group with any exclusions is `preliminary: true`.
+Preliminary points participate in dominance using their current means.
 
-And when a request can't be plotted yet, every problem comes back typed
-with its fix — including the exact PATCH to make:
+The same request with `?format=svg` renders the plot and pending/backlog
+information. The UI shows membership and the grading backlog alongside it.
 
-```
-{ "investigation": "v1-terse", "axis": "self_containedness", "reason": "no_grade",
-  "detail": "no caller grade named 'self_containedness' on investigation 'v1-terse'; PATCH /api/investigations/v1-terse with {\"grades\":{\"self_containedness\": <number>}} (higher = better on your scale, per this request's 'better'); graded axes on this investigation: tone_of_voice; reserved measured axes: ..." }
-```
+**Aggregation is deliberately simple:** every included investigation has equal
+weight. All requested coordinates use the same complete cohort. Until the
+separate single-scenario change, investigations can still contain several
+scenarios—means of investigation totals are not per-scenario normalization.
+Keep scenarios, budgets, grading scales, and simulator settings comparable;
+the harness surfaces membership but does not judge comparability.
+
+**API migration:** the former `investigations` selection field on frontier
+requests is replaced by `group_by`; old selection requests are rejected rather
+than silently broadened to all jobs. Groups with missing data now appear in a
+successful response, not a missing-grade 422. Invalid axes/grouping still
+return typed validation errors.
 
 ## Server architecture
 

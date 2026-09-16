@@ -242,12 +242,15 @@ impl FrontierInvestigation {
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct FrontierAxis {
     /// A graded axis name (you PATCHed it) or a reserved measured axis
-    /// (harness-computed). Reserved names and their baked-in
-    /// directions: put_/sim_input_tokens (lower), put_/sim_output_tokens
-    /// (lower), put_/sim_cache_read_tokens (higher — cached input is
-    /// cheaper input), put_/sim_cost_usd (lower), sim_cost_usd (lower),
-    /// steps_per_trace_avg/_min/_max/_stdev (lower). Requesting a
-    /// reserved axis with a contradicting `better` is rejected.
+    /// (harness-computed). Exact reserved names and baked-in directions:
+    /// `put_input_tokens`, `put_output_tokens`, `sim_input_tokens`, and
+    /// `sim_output_tokens` (lower); `put_cache_read_tokens` and
+    /// `sim_cache_read_tokens` (higher — cached input is cheaper);
+    /// `put_cost_usd` and `sim_cost_usd` (lower); and
+    /// `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`,
+    /// `steps_per_trace_stdev` (lower). The `put_/sim_` notation is only
+    /// prose shorthand, NEVER a valid axis name. Requesting a reserved axis
+    /// with a contradicting `better` is rejected.
     pub name: String,
     /// Whether lower or higher values are better on this axis. For
     /// graded axes this is YOUR call (encode direction in your own
@@ -757,7 +760,17 @@ pub fn compute(
     Ok(FrontierResponse { points })
 }
 
+/// Grouped, cohort-safe frontier API used by the investigations collection.
+pub mod grouped;
 pub mod svg;
+/// Reusable tag validation plus stable prompt/workspace content identities.
+pub mod tags;
+
+pub use grouped::{
+    GroupExclusion, GroupedFrontierPoint, GroupedFrontierRequest, GroupedFrontierResponse,
+    GroupedSnapshot, compute_grouped,
+};
+pub use svg::render_grouped;
 
 #[cfg(test)]
 mod tests;

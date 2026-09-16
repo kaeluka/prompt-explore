@@ -80,7 +80,12 @@ pub async fn run() {
         ),
     ];
     for (job_id, put_id, template, out, steps) in campaign {
-        let (id, job): (String, Job) = fabricate_done_job(job_id, put_id, template, out, steps);
+        let (id, mut job): (String, Job) = fabricate_done_job(job_id, put_id, template, out, steps);
+        // `prompt_hash` is system-derived from each distinct template; label
+        // is the caller-owned, editable display tag used by grouped points.
+        job.tags.insert("label".into(), job_id.replace('-', " "));
+        job.tags
+            .insert("campaign".into(), "cancel_tone_sweep".into());
         state.jobs.lock().unwrap().insert(id, job);
     }
 
@@ -161,8 +166,8 @@ pub async fn run() {
         ),
     );
 
-    step("4. Frontier over a measured axis x a judged axis (json: the programmatic answer)");
-    let body = r#"{"investigations": ["v1-terse", "v2-warm", "v3-balanced", "v4-verbose"],
+    step("4. Grouped frontier over every job (json: the programmatic answer)");
+    let body = r#"{"group_by": ["label"],
                   "axes": [{"name": "put_output_tokens", "better": "lower"},
                            {"name": "tone_of_voice", "better": "higher"}]}"#;
     show(
@@ -172,7 +177,7 @@ pub async fn run() {
         &post("/api/frontier?format=json", body),
     );
 
-    step("5. Same request as SVG (up & right is always better)");
+    step("5. Same grouped request as SVG (up & right is always better)");
     let svg = post("/api/frontier?format=svg", body);
     println!(
         "$ curl -s -X POST '{base}/api/frontier?format=svg' -H 'content-type: application/json' -d '<same body>'"
@@ -183,8 +188,8 @@ pub async fn run() {
         svg.len()
     );
 
-    step("6. A frontier with fixable problems says exactly how to fix each one");
-    let body = r#"{"investigations": ["v1-terse", "v2-warm"],
+    step("6. Incomplete groups are successful evidence, not a 422");
+    let body = r#"{"group_by": ["label"],
                   "axes": [{"name": "put_cost_usd", "better": "lower"},
                            {"name": "self_containedness", "better": "higher"},
                            {"name": "steps_per_trace_stdev", "better": "lower"}]}"#;
@@ -195,8 +200,7 @@ pub async fn run() {
         &post("/api/frontier?format=json", body),
     );
     println!(
-        "(v1 was never graded on self_containedness — the no_grade detail names the exact PATCH;\\n\
-              glm-5.2 is not priced in the catalog, so put_cost_usd has no value — use a token axis.)\n"
+        "(Groups keep null coordinates plus missing-grade/axis exclusions; PATCH the grades or use token axes, then poll/resubmit.)\n"
     );
 
     println!(

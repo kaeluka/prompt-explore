@@ -16,26 +16,26 @@ Serve the web UI.
 
 ### `POST /api/frontier`
 
-Dominance is N-dimensional; `format=svg` renders exactly 2 axes (a v0 rendering constraint — send `format=json` for N axes). Axis direction is declared HERE, per request (`"better": "lower" \| "higher"`), never stored. The harness records your judgment and does arithmetic; it never interprets a grade — including which graded values are "good enough" or what an axis should measure. Those are caller-domain questions, answered when you PATCH grades from the traces.  Every fixable problem (missing grade, unpriced cost axis, running job, unknown id, duplicate id, bad label/color, direction conflict with a reserved axis, …) comes back in ONE 422 body with typed reasons, each detail naming the fix — including the exact PATCH to make for a missing grade.
+Compute a grouped Pareto frontier over ALL investigations currently held by this server. There is no investigation-selection list: `group_by` chooses the provenance/campaign tags that define one candidate point (default: put model, thinking setting, and behavior-only prompt hash). Each point retains its member ids and explicit exclusions. Running/failed/ungraded members are successful evidence, not a 422: poll jobs, PATCH grades, then POST this same request again to update preliminary coordinates. An all-error run (`result.result.status=error`) or a no-op with zero completed traces is a failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if all requested values exist; judging their adequacy belongs to the caller.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
 | `format` | query | string | `json` (default) or `svg` |
 
-Body: [`FrontierRequest`](#frontierrequest)
+Body: [`GroupedFrontierRequest`](#groupedfrontierrequest)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | The axes to compute dominance over. `format=svg` requires EXACTLY 2 (a v0 rendering constraint — the dominance math is N-dimensional); `format=json` accepts any count ≥ 1. |
-| `investigations` | [`FrontierInvestigation`](#frontierinvestigation)[] | yes | The investigations to plot (each must be a `done` job with a value for every axis). Bare id strings or `{id, label?, color?}` objects. Ids must be UNIQUE — duplicates are rejected. Labels: `^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label = the PUT's id (deduplicated) else the uuid prefix; color = a deterministic palette by position. |
+| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | Axes whose arithmetic means define Pareto dominance. Every included run has every requested value, so different axes never average different cohorts. |
+| `group_by` | string[] | no | Tag names that form a group. Omit for exactly `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one group containing every current job. A job missing a requested key is retained in that key's explicit JSON-null group, never dropped. |
 
 
 | Status | Response |
 |---|---|
-| `200` | Frontier points. `format=json` (default): body = FrontierResponse (points with values, on_frontier, dominated_by — uuids, not labels, are the stable key). `format=svg`: body is `image/svg+xml`, a scatter plot with the non-dominated staircase; lower-is-better axes are pixel-inverted so up-and-right is always better.: [`FrontierResponse`](#frontierresponse) |
+| `200` | Grouped frontier and exclusion evidence, including running/failed/awaiting-grades/unavailable members. Pending groups have null coordinates; poll investigations and resubmit after they finish or receive grades.: [`GroupedFrontierResponse`](#groupedfrontierresponse) |
 | `400` | Malformed body or unknown ?format |
 | `401` | Missing or invalid bearer token |
-| `422` | Fixable problems, all collected: every detail names the fix (for a missing grade, the exact PATCH to make). Reasons: unknown_investigation, duplicate_investigation, job_running, job_failed, no_grade, axis_absent, direction_conflict, bad_axis_name, duplicate_axis, axis_arity, bad_label, bad_color, empty_investigations, empty_axes: [`FrontierError`](#frontiererror) |
+| `422` | Invalid grouping/axis request (for example bad tag or axis name, duplicate axis, incompatible direction, or SVG arity).: [`FrontierError`](#frontiererror) |
 
 ### `GET /api/investigations`
 
@@ -62,6 +62,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Omit to use the server default independently of `put_model`; setting `put_model` never changes the simulator.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `put_model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
+| `tags` | map&lt;string, string&gt; | no | Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes. `label` is the special editable display label shown by the UI. POST rejects every system-owned key: `put_model`/`sim_model` are the resolved provider-qualified model names; `put_thinking`/`sim_thinking` are a reasoning keyword or `provider_default`; `prompt_hash` is SHA-256 of canonical PUT template/tools/design_goals (not cosmetic PUT id); and `workspace_hash` is SHA-256 of sorted uploaded workspace path/content pairs (including the stable empty-workspace hash). |
 
 
 | Status | Response |
@@ -72,7 +73,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 
 ### `DELETE /api/investigations/{id}`
 
-Delete an investigation: remove the job — its traces, grades, and progress — from the server's memory. Irreversible: the evidence is gone (a re-run means POSTing a new investigation), and grades are only stored on the job — read the job first if you want to keep them. Useful for pruning a campaign's dead variants so the dashboard and POST /api/frontier only show the points you still compare. RUNNING jobs cannot be deleted (409): a run cannot be cancelled — its provider calls would keep spending while the result is discarded. Poll until done or failed, then delete.
+Delete an investigation: remove the job — its traces, grades, tags, and progress — from the server's memory. Irreversible: the evidence is gone (a re-run means POSTing a new investigation). Useful for pruning a campaign: the next grouped POST /api/frontier considers all REMAINING jobs and no longer includes this member. RUNNING jobs cannot be deleted (409): a run cannot be cancelled — its provider calls would keep spending while the result is discarded. Poll until done or failed, then delete.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -101,23 +102,24 @@ Poll an investigation job. `progress` is always present (live model turns while 
 
 ### `PATCH /api/investigations/{id}`
 
-Grade by READING the traces with your full goal in mind. The reason grading is the caller's job (not the harness's, not a script's) is that you hold goal-context that does not compress into words: mechanical stand-ins (regexes over summaries, extractors) approximate judgment and drift badly. Use scripts to FIND the moments worth judging — never to decide. Prefer axes that VARY across your variants: an axis every investigation scores the same on cannot separate anything on a frontier; saturating axes usually mean the scenarios are too easy, not that the variants tie.  Merge semantics per axis: a number sets/overwrites, `null` deletes. The response echoes the FULL updated grades map. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (put_/sim_input_tokens, put_/sim_output_tokens, put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_ {avg,min,max,stdev}) — those are harness-computed and cannot be graded. Any scale is fine (0..1, 1..5, raw counts): dominance only needs comparability across points, and direction is declared per request at frontier time, not here.  Grading is allowed in any job state (live-tagging while the run unfolds is fine) — but POST /api/frontier only accepts `done` jobs as points.
+Both maps have merge semantics: a number/string sets or overwrites and JSON `null` deletes that key. Both supplied maps validate before EITHER is applied, and the response echoes the FULL updated grades AND tags maps. Grade names and tag names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot be measured axes. The literal measured names are `put_input_tokens`, `put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`, `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`, `sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`, and `steps_per_trace_stdev`.  PATCH is allowed while a job runs. POST /api/frontier always considers ALL current jobs: running, failed, ungraded, or unavailable members appear as explicit exclusions/backlog in a successful grouped response. A group has null coordinates until it has at least one common complete cohort; poll and PATCH missing grades, then submit the same frontier request again.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
 | `id` | path | string | Job id returned by POST /api/investigations |
 
-Body: [`GradesPatch`](#gradespatch)
+Body: [`InvestigationPatch`](#investigationpatch)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `grades` | map&lt;string, number?&gt; | yes | Axis name → value. Use JSON `null` to DELETE an axis. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (see the frontier docs). |
+| `grades` | object? | no | Axis name → number to set/overwrite, or null to delete. |
+| `tags` | object? | no | Caller-owned tag name → string to set/overwrite, or null to delete. `label` names the job in the UI. It affects group identity only when explicitly selected in `group_by`. System provenance keys are read-only. |
 
 
 | Status | Response |
 |---|---|
-| `200` | Updated grades (full map echoed): [`GradesView`](#gradesview) |
-| `400` | Invalid grades (bad axis name, reserved axis name, non-finite value) — every problem is collected into one body that names the fix: [`GradesPatchError`](#gradespatcherror) |
+| `200` | Updated grades and tags (both full maps echoed): [`InvestigationPatchView`](#investigationpatchview) |
+| `400` | Invalid grades or tags. Tag keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change. |
 | `401` | Missing or invalid bearer token |
 | `404` | Unknown job id |
 
@@ -179,7 +181,7 @@ One axis of the frontier plot, with the caller's direction.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `better` | [`BetterDirection`](#betterdirection) | yes | Whether lower or higher values are better on this axis. For graded axes this is YOUR call (encode direction in your own scale, e.g. grade "repeatability" high-good rather than "variance" low-good); for reserved axes it must match the measured direction. |
-| `name` | string | yes | A graded axis name (you PATCHed it) or a reserved measured axis (harness-computed). Reserved names and their baked-in directions: put_/sim_input_tokens (lower), put_/sim_output_tokens (lower), put_/sim_cache_read_tokens (higher — cached input is cheaper input), put_/sim_cost_usd (lower), sim_cost_usd (lower), steps_per_trace_avg/_min/_max/_stdev (lower). Requesting a reserved axis with a contradicting `better` is rejected. |
+| `name` | string | yes | A graded axis name (you PATCHed it) or a reserved measured axis (harness-computed). Exact reserved names and baked-in directions: `put_input_tokens`, `put_output_tokens`, `sim_input_tokens`, and `sim_output_tokens` (lower); `put_cache_read_tokens` and `sim_cache_read_tokens` (higher — cached input is cheaper); `put_cost_usd` and `sim_cost_usd` (lower); and `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`, `steps_per_trace_stdev` (lower). The `put_/sim_` notation is only prose shorthand, NEVER a valid axis name. Requesting a reserved axis with a contradicting `better` is rejected. |
 
 ### `FrontierError`
 
@@ -187,35 +189,6 @@ One axis of the frontier plot, with the caller's direction.
 |---|---|---|---|
 | `error` | string | yes |  |
 | `problems` | [`FrontierProblem`](#frontierproblem)[] | yes |  |
-
-### `FrontierInvestigation`
-
-An investigation referenced by the frontier request: a bare id, or an object carrying an optional plot label and color.
-
-**Variant**
-
-`string`
-
-**Variant**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `color` | string? | no |  |
-| `id` | string | yes |  |
-| `label` | string? | no |  |
-
-### `FrontierPoint`
-
-One point of the frontier result.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `color` | string | yes |  |
-| `dominated_by` | string[] | yes | Investigations that dominate this point (empty when on the frontier). Tells an optimizer exactly what to compare against. |
-| `investigation` | string | yes | The investigation uuid (uuids, not labels, are the stable key — labels are not unique by design). |
-| `label` | string | yes |  |
-| `on_frontier` | boolean | yes | True when no other point dominates this one. Ties dominate nothing: equal points are both on the frontier. |
-| `values` | map&lt;string, number&gt; | yes | Resolved value per axis name. |
 
 ### `FrontierProblem`
 
@@ -228,51 +201,49 @@ One fixable problem in a frontier request. Every `detail` names the fix — incl
 | `investigation` | string? | no |  |
 | `reason` | string | yes |  |
 
-### `FrontierRequest`
+### `GroupExclusion`
+
+One omitted run and why it is not part of its group's common cohort.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | The axes to compute dominance over. `format=svg` requires EXACTLY 2 (a v0 rendering constraint — the dominance math is N-dimensional); `format=json` accepts any count ≥ 1. |
-| `investigations` | [`FrontierInvestigation`](#frontierinvestigation)[] | yes | The investigations to plot (each must be a `done` job with a value for every axis). Bare id strings or `{id, label?, color?}` objects. Ids must be UNIQUE — duplicates are rejected. Labels: `^[[A-Za-z0-9_-]{1,64}$`; colors: `#rrggbb`. Defaults: label = the PUT's id (deduplicated) else the uuid prefix; color = a deterministic palette by position. |
+| `investigation` | string | yes |  |
+| `missing_axes` | string[] | yes | Requested measured axes with no value (for example an unpriced cost). |
+| `missing_grades` | string[] | yes | All requested caller-graded axes absent from this run. This remains populated for running and failed jobs to make the grading backlog seen. |
+| `status` | string | yes | `running`, `failed`, `awaiting_grades`, or `unavailable`. |
 
-### `FrontierResponse`
+### `GroupedFrontierPoint`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `points` | [`FrontierPoint`](#frontierpoint)[] | yes |  |
-
-### `GradeProblem`
-
-One fixable problem in a grades PATCH. The `detail` names the fix.
+One stable tag group. Groups without usable runs are deliberately retained with null values/frontier state rather than disappearing from the result.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `axis` | string | yes |  |
-| `detail` | string | yes |  |
-| `reason` | string | yes | `bad_axis_name` \| `reserved_axis_name` \| `non_finite_value` |
+| `color` | string | yes | Stable categorical color derived from this group's id. |
+| `dominated_by` | string[] | yes | IDs of dominating GROUPS, not investigation ids or display labels. Empty for non-dominated and pending groups; equal means do not dominate. |
+| `excluded` | [`GroupExclusion`](#groupexclusion)[] | yes |  |
+| `id` | string | yes | Stable SHA-256-derived id of canonical grouping tags only; membership changes do not recolor or rename a group. |
+| `included` | string[] | yes | Investigation ids used in every mean, sorted. Each has equal weight; all requested axes use exactly this same completed, fully-valued cohort. |
+| `investigations` | string[] | yes | All snapshot ids in this group, sorted. |
+| `label` | string | yes | Human-readable summary of grouping tags, not an editable group identity. The investigation's editable `label` tag names its UI card; it affects grouping only when explicitly selected in `group_by`. |
+| `on_frontier` | boolean? | yes | True if non-dominated, false if dominated, null if pending (no values). Preliminary points with values participate in the current frontier. |
+| `preliminary` | boolean | yes | True when any member was excluded. Preliminary points still participate in dominance when they have a complete common cohort. |
+| `tags` | map&lt;string, string?&gt; | yes | The requested group tags. Missing source values appear as JSON null. |
+| `values` | object? | yes | Axis → arithmetic mean, or null if no member has all requested values. Always present, even for pending groups (null means no coordinates). |
 
-### `GradesPatch`
+### `GroupedFrontierRequest`
 
-Caller judgment recorded on an investigation: axis name → number. Merge semantics per axis: a number sets/overwrites, `null` deletes.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `grades` | map&lt;string, number?&gt; | yes | Axis name → value. Use JSON `null` to DELETE an axis. Axis names must match `^[a-z][a-z0-9_]{0,63}$` and must not collide with a reserved measured axis (see the frontier docs). |
-
-### `GradesPatchError`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `error` | string | yes |  |
-| `problems` | [`GradeProblem`](#gradeproblem)[] | yes |  |
-
-### `GradesView`
-
-The echo response: the full, updated grades map.
+Request a frontier over means of complete investigations in each tag group. There is intentionally no investigation selection field: accepting an old selection accidentally as an empty selection would silently mean all jobs.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `grades` | map&lt;string, number&gt; | yes |  |
+| `axes` | [`FrontierAxis`](#frontieraxis)[] | yes | Axes whose arithmetic means define Pareto dominance. Every included run has every requested value, so different axes never average different cohorts. |
+| `group_by` | string[] | no | Tag names that form a group. Omit for exactly `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one group containing every current job. A job missing a requested key is retained in that key's explicit JSON-null group, never dropped. |
+
+### `GroupedFrontierResponse`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `points` | [`GroupedFrontierPoint`](#groupedfrontierpoint)[] | yes |  |
 
 ### `InvestigateRequest`
 
@@ -286,13 +257,14 @@ The echo response: the full, updated grades map.
 | `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Omit to use the server default independently of `put_model`; setting `put_model` never changes the simulator.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `put_model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
+| `tags` | map&lt;string, string&gt; | no | Caller-owned campaign tags. Keys use `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes. `label` is the special editable display label shown by the UI. POST rejects every system-owned key: `put_model`/`sim_model` are the resolved provider-qualified model names; `put_thinking`/`sim_thinking` are a reasoning keyword or `provider_default`; `prompt_hash` is SHA-256 of canonical PUT template/tools/design_goals (not cosmetic PUT id); and `workspace_hash` is SHA-256 of sorted uploaded workspace path/content pairs (including the stable empty-workspace hash). |
 
 ### `InvestigateResponse`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `attempts` | [`AttemptView`](#attemptview)[] | yes | Every completed run — the evidence. The caller reads these traces and judges; the harness produces no verdict. |
-| `result` | [`RunResult`](#runresult) | yes |  |
+| `result` | [`RunResult`](#runresult) | yes | Run-level outcome and scenario failures. In GET /api/investigations/{id}, the exact failure path is `result.result.failures`, NOT `result.failures`. Completed traces are the sibling `result.attempts` array. |
 | `scenarios_run` | integer | yes | How many of the input scenarios completed a trace. |
 | `usage` | [`UsageByRole`](#usagebyrole) | yes | Cumulative token usage and call counts across the whole run, split by model role: the prompt under test (`put`) and the tool simulator (`sim`). Read them separately — the sim is the test environment (often the bigger spender, since every tool response and input resolution goes through it), the PUT is the agent under test. |
 
@@ -305,11 +277,28 @@ An investigation: run the given scenarios against the PUT and surface the result
 | `budget` | [`Budget`](#budget) | yes |  |
 | `reason` | string? | no | Free-form justification for the run — WHY it exists and what a reader should know when comparing it with earlier runs: what it aims to accomplish, what changed compared to previous runs (a prompt edit, new scenarios, a different model), anything that frames how to read the traces. There is no strict standard — write whatever makes the run intelligible later.  Advisory only: surfaced with the result to guide reading the traces, NEVER used as an oracle. The harness runs scenarios and surfaces evidence; the caller is the judge. Optional — omit it when you just want to observe behavior with no particular framing.  e.g. "baseline before adding the explicit-confirmation rule" or "re-run after softening the refusal instruction; compare with v3". |
 
+### `InvestigationPatch`
+
+PATCH can update either independently optional map, but validates BOTH before modifying the job so a mixed grades/tags update is atomic.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | object? | no | Axis name → number to set/overwrite, or null to delete. |
+| `tags` | object? | no | Caller-owned tag name → string to set/overwrite, or null to delete. `label` names the job in the UI. It affects group identity only when explicitly selected in `group_by`. System provenance keys are read-only. |
+
+### `InvestigationPatchView`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grades` | map&lt;string, number&gt; | yes |  |
+| `tags` | map&lt;string, string&gt; | yes |  |
+
 ### `JobCreated`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes |  |
+| `tags` | map&lt;string, string&gt; | yes | The stored provenance + caller tags, including resolved model names and stable prompt/workspace hashes, available without a follow-up GET. |
 
 ### `JobStatus`
 
@@ -323,6 +312,7 @@ Values: `running`, `done`, `failed`
 | `scenarios` | integer | yes | How many scenarios this job is running. |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
+| `tags` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign tags, sufficient for a list view to group/filter before fetching full job evidence. |
 
 ### `JobView`
 
@@ -330,7 +320,7 @@ Values: `running`, `done`, `failed`
 |---|---|---|---|
 | `conversation_controls` | [`ResolvedConversationControls`](#resolvedconversationcontrols) | yes | Resolved controls for the PUT and simulator conversations. |
 | `error` | string? | no |  |
-| `grades` | map&lt;string, number&gt; | yes | Caller-graded axes on this investigation (PATCHed via PATCH /api/investigations/{id}). Free-form names, caller-chosen scales (0..1, 1..5, anything); consumed by POST /api/frontier as judged axes alongside the reserved measured ones. The harness stores them and never interprets them. |
+| `grades` | map&lt;string, number&gt; | yes | Caller-graded axes on this investigation (PATCHed via PATCH /api/investigations/{id}). Free-form names, caller-chosen scales (0..1, 1..5, anything); the harness stores them and never interprets them. |
 | `id` | string | yes | The job's id (same value as the `{id}` path segment and the id in `JobSummary`). Echoed in the body so a consumer holding only this representation knows which job it is — without it, a dashboard that reconciles a list of views by key has nothing stable to key on and silently falls back to positional matching (which leaks per-item UI state such as an unfolded conversation to whatever job sorts into that slot next). |
 | `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in (see RunPhase: scenarios). This is the observable status of the job's LLM work. Mirrors `progress.phase`. |
 | `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + PUT model turns simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
@@ -344,6 +334,7 @@ Values: `running`, `done`, `failed`
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
+| `tags` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign tags. `label` is the special editable display label; reserved provenance keys cannot change. |
 | `workspace_files` | integer | yes | How many files seeded the simulation workspace (0 = no zip upload; the simulator answered from narrative alone). The workspace is an in-memory filesystem the SIMULATOR consults via read/write/list_dir/ grep — it is NOT the PUT's tools. See the endpoint description. |
 
 ### `LuaExecutionRecord`

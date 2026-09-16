@@ -1,199 +1,181 @@
-# Multi-dimensional prompt optimization: grades + Pareto frontier
+# Live grouped Pareto frontier
 
-Status: implemented (v0). This doc records the design decisions and their
-rationale, as agreed between the operator and the implementing agent.
+Investigations are evidence; grades are the caller's judgment recorded. The
+frontier does deterministic bookkeeping over those numbers, not judging.
 
-## What this is
+## The simple model
 
-Support for the CALLER doing multi-dimensional optimization of a single
-prompt. Optimizing a prompt is never only about correctness: the caller
-also cares about cost (measured by the harness for free) and about "soft"
-properties — tone of voice, self-containedness, repeatability, … — which
-only the caller can judge.
+Every investigation in server memory is a candidate. Pick **grouping tag
+names** and **axes**. Each unique combination of tag values becomes a point.
+Coordinates are arithmetic means over completed investigations having a value
+on **every** requested axis. Each included investigation has equal weight.
+No explicit investigation selection, filter language, or weighting framework.
+Delete investigations that should not contribute.
 
-The feature has two halves:
+This supports one point for a prompt/model configuration evaluated across
+several workspace uploads. Workspace identity need not be a grouping key.
 
-1. **Grades** — the caller PATCHes an investigation with numeric grades
-   on caller-chosen axes. The harness stores them and never interprets
-   them.
-2. **Frontier** — the caller submits a list of investigation ids plus a
-   list of axes (any mix of graded and reserved/measured axes, with a
-   direction per axis); the harness resolves every (investigation, axis)
-   value, computes Pareto dominance, and returns JSON points or an SVG
-   scatter plot.
+The scenario API is unchanged in this increment: one investigation can still
+contain multiple scenarios. These are means of investigation metrics, not
+per-scenario normalization. A separate change may make each investigation one
+scenario. Benchmark coverage, repeated-run weighting, grading scales, and
+simulator comparability remain the caller's responsibility.
 
-The harness's philosophy is unchanged: **the caller is the judge.** The
-harness records the caller's judgment and does arithmetic on it — that is
-deterministic bookkeeping (like diffs and budget counting), not semantic
-work. Nothing is graded, ranked, or interpreted in-harness beyond Pareto
-dominance over caller-supplied numbers.
+## Tags
 
-## The load-bearing distinction: measured vs judged axes
+Tags are string-valued key/value pairs, exposed on investigation views and
+summaries. Keys use `^[a-z][a-z0-9_]{0,63}$`.
 
-- **Measured (reserved) axes** are harness-computed from run data:
-  token usage, estimated USD cost, steps-per-trace statistics. Their
-  better-direction is baked in and known. They can never be PATCHed.
-- **Judged (graded) axes** are caller-PATCHed scalars on free-form axis
-  names. The harness stores, merges, and computes dominance over them.
-  Their direction is supplied per-request by the caller (`better:
-  "lower" | "higher"`), NOT stored — direction only matters at
-  dominance/plot time, and storing it would create axis-registration
-  machinery (first-PATCH-wins? conflicting declarations?) for zero gain.
+System-owned tags cannot be supplied, changed, or removed by callers:
 
-A single global convention ("higher is better") was considered and
-rejected: the measured axes already break it (`put_cost_usd` is lower-is-
-better, `put_cache_read_tokens` is higher-is-better), so direction is
-per-axis by request. Dominance normalizes internally: each value is
-negated on lower-is-better axes, then standard componentwise dominance.
+- `put_model`, `sim_model`: resolved provider/model names.
+- `put_thinking`, `sim_thinking`: recorded effort keyword, or
+  `provider_default` when omitted. Explicit `none` is distinct.
+- `prompt_hash`: SHA-256 of canonical prompt content excluding cosmetic `id`.
+- `workspace_hash`: SHA-256 of sorted extracted paths and file bytes, independent
+  of zip ordering, compression, timestamps, and archive name. No workspace
+  corresponds to the empty-content hash. This fingerprints the uploaded seed,
+  not later simulated writes.
 
-### Reserved axes (v0)
+`label` is editable but special: the UI displays it as the investigation's
+name. Other custom tags have no implicit meaning. A label edit does not change
+the default grouping identity. If the caller explicitly groups by `label`, it
+becomes an identity key like any other selected tag; editing it then regroups.
 
-| axis | better | source |
+```json
+{"tags":{"label":"Warm variant","campaign":"support"}}
+```
+
+Supply editable tags on creation, or PATCH them later. PATCH accepts `grades`
+and/or `tags`, each merged by key; `null` deletes an editable entry. Validation
+happens before either map changes, so a rejected readonly-tag change cannot
+partially apply accompanying grades. Responses echo both full maps.
+
+## Axes and grades
+
+Graded axes are caller-PATCHed finite numbers. Names use the same allow-pattern
+as tag keys. Arbitrary scales are supported; no grade is interpreted against
+traces. Measured axes cannot be PATCHed:
+
+| Axis | Better | Source |
 |---|---|---|
-| `put_input_tokens`, `sim_input_tokens` | lower | `UsageByRole` totals |
-| `put_output_tokens`, `sim_output_tokens` | lower | `UsageByRole` totals |
-| `put_cache_read_tokens`, `sim_cache_read_tokens` | higher | cached input is cheaper input |
-| `put_cost_usd`, `sim_cost_usd` | lower | catalog pricing; **absent when the model is unpriced** |
-| `steps_per_trace_avg`, `_min`, `_max`, `_stdev` | lower | per-trace step counts (completed attempts only) |
+| `put_input_tokens`, `sim_input_tokens` | lower | Run totals by role |
+| `put_output_tokens`, `sim_output_tokens` | lower | Run totals by role |
+| `put_cache_read_tokens`, `sim_cache_read_tokens` | higher | Run totals by role |
+| `put_cost_usd`, `sim_cost_usd` | lower | Catalog-estimated cost, absent if unpriced |
+| `steps_per_trace_avg`, `_min`, `_max`, `_stdev` | lower | Completed traces; population stdev |
 
-Naming rule: `<metric>_<statistic>`, so future per-trace normalizations
-(`put_output_tokens_avg`) slot in without renames. A "step" reuses the
-`max_steps_per_trace` definition: one tool call OR one final completion.
-`stdev` is population stdev (÷N; 0.0 at N=1) so it is well-defined for
-every corpus and never opens an undefined-value path in the error
-contract.
+A step remains one tool call or one final completion. Direction is supplied
+at frontier request time, not stored with a grade. Reserved directions cannot
+be contradicted.
 
-Comparability caveat (surfaced, not enforced): usage totals are only
-comparable across a fixed scenario corpus and budget; the frontier
-endpoint happily plots across differing corpora — the caller owns that
-judgment.
+## Request
 
-## Grades (PATCH)
-
-```
-PATCH /api/investigations/{id}
-{ "grades": { "tone_of_voice": 0.8, "stale_axis": null } }
-```
-
-- Merge per axis; `null` deletes; response echoes the full updated map.
-- Axis names: `^[a-z][a-z0-9_]{0,63}$` (allow-pattern, not deny-list).
-- Values: finite JSON numbers. NaN/Infinity are not JSON, and
-  out-of-range exponents like `1e999` are rejected by the JSON parser
-  itself ("number out of range"); the is-finite check in
-  `validate_grades_patch` remains as defense for programmatic
-  construction of a `GradesPatch` (the struct is public).
-- A reserved axis name in a PATCH is a 400 naming the collision and the
-  reserved direction.
-- Grading is allowed on any job status (live-tagging while running is
-  fine; a grade on a failed job is the caller's prerogative).
-- No range enforcement: the caller may choose 0..1, 1..5, or anything;
-  dominance needs comparability, not range.
-
-## Frontier (POST)
-
-GET-with-body was considered and rejected: browsers' `fetch()` throws on
-GET bodies, so the web UI could never call it. The endpoint is POST.
-
-```
-POST /api/frontier?format=json|svg    (default json)
+```json
 {
-  "investigations": [
-    "uuid1",
-    { "id": "uuid2", "label": "v3-tone-pass", "color": "#e07a5f" }
-  ],
+  "group_by": ["put_model", "put_thinking", "prompt_hash"],
   "axes": [
-    { "name": "put_cost_usd", "better": "lower" },
-    { "name": "tone_of_voice", "better": "higher" }
+    {"name":"put_cost_usd", "better":"lower"},
+    {"name":"quality", "better":"higher"}
   ]
 }
 ```
 
-- `investigations`: bare id strings or `{id, label?, color?}` objects
-  (untagged). **Uniqueness enforced** — duplicate ids are a 422 naming
-  the duplicate (the caller's explicit micro-decision).
-- `axes`: exactly 2 for `format=svg`; any count ≥ 1 for `format=json`.
-  The 2-axis limit is a v0 RENDERING constraint only — the dominance
-  computation is N-dimensional from day one, so parallel coordinates or
-  other renderers slot in without touching the math.
-- Labels: `^[A-Za-z0-9_-]{1,64}$` (allow-pattern; injection defense).
-  Colors: `^#[0-9a-fA-F]{6}$`. Defaults: label = `put.id` (deduplicated
-  with `#2`, `#3`… when several points share one, since default labels
-  come from the same PUT lineage) else uuid prefix; color = deterministic
-  palette by index.
-- Requesting a reserved axis with a `better` that contradicts its
-  measured direction is a 422 (`direction_conflict`) with the fix named.
-- Only `done` jobs can be points: running jobs have incomplete usage,
-  failed jobs have no judgeable traces. Both are typed problems.
+`POST /api/frontier?format=json` supports one or more axes. `format=svg`
+requires exactly two. Omitted `group_by` defaults to the example above;
+`group_by: []` makes one group. Missing tags form explicit null-valued groups,
+not silent exclusions; null is distinct from the string `"null"` or `""`.
 
-### The error contract
+Malformed/unknown request fields are rejected. Invalid axes, duplicate grouping
+keys, and direction conflicts yield typed validation problems. In particular,
+the former `investigations` selection field is rejected, not ignored. The empty
+job store is valid and produces an empty plot.
 
-Every fixable problem comes back in ONE 422 envelope with typed reasons
-and a `detail` that names the fix — including the exact PATCH to make:
+## Response and backlog
 
-```json
-{ "error": "frontier_request_invalid",
-  "problems": [
-    { "investigation": "uuid3", "axis": "tone_of_voice",
-      "reason": "no_grade",
-      "detail": "no caller grade named 'tone_of_voice'; PATCH /api/investigations/uuid3 with {\"grades\":{\"tone_of_voice\": <number>}} (higher = better on your scale); graded axes on this investigation: clarity, brevity" },
-    ...
-  ] }
-```
+Each point exposes:
 
-Reasons: `unknown_investigation`, `duplicate_investigation`, `job_running`,
-`job_failed`, `no_grade`, `axis_absent` (measured axis with no value —
-e.g. unpriced model, or no completed traces), `direction_conflict`,
-`bad_axis_name`, `duplicate_axis`, `axis_arity` (svg ≠ 2), `bad_label`,
-`bad_color`, `empty_investigations`, `empty_axes`.
+- `id`: stable group identity derived only from grouping tag names/values.
+- `tags`: grouping values, with missing values represented as JSON null.
+- `label`, `color`: presentation, not identity.
+- `investigations`: all member ids, including unfinished/excluded members.
+- `included`: exactly the cohort used for every coordinate.
+- `excluded`: one entry per non-contributor, naming its investigation, status,
+  `missing_grades`, and `missing_axes` (unavailable measured values).
+- `values`: means per requested axis, or null when there are no contributors.
+- `on_frontier`: dominance result, or null when pending.
+- `dominated_by`: group ids, not investigation ids or labels.
+- `preliminary`: true while any group member is excluded.
 
-`no_grade` details list the axes already graded (typo detection) and the
-reserved axis vocabulary (typo detection for measured names).
+Exclusion status distinguishes `running`, `failed`, `awaiting_grades`, and
+`unavailable`. A worker that finished without any completed traces (all-error
+or zero-scenario no-op) is excluded as `failed`, even if its job lifecycle says
+`done`. Partial runs with traces can contribute; judging their adequacy remains
+the caller's job. Missing grade names are surfaced even for running/failed members.
+A completed investigation lacking either requested coordinate contributes to
+neither mean. Never average X over one cohort and Y over another.
 
-### JSON response
+Missing data is **not** a whole-request error. An agent reads `excluded`, GETs
+the named investigations' traces, PATCHes missing grades, and refreshes the
+same frontier request. Failed jobs and unpriced costs remain visible; a group
+can remain preliminary until such members are removed or become usable.
 
-```json
-{ "points": [
-    { "investigation": "uuid2", "label": "v3-tone-pass", "color": "#e07a5f",
-      "values": { "put_cost_usd": 0.42, "tone_of_voice": 0.8 },
-      "on_frontier": true, "dominated_by": [] },
-    { "investigation": "uuid1", "label": "cancel-bot", "color": "#1f77b4",
-      "values": { "put_cost_usd": 0.31, "tone_of_voice": 0.5 },
-      "on_frontier": false, "dominated_by": ["uuid2"] } ] }
-```
+## Dynamic behavior and drawing
 
-`dominated_by` uses uuids (labels are not unique by design). Ties
-dominate nothing: equal points are both on the frontier.
+The frontier is recomputed from a consistent snapshot of all jobs on every
+POST. The UI polls investigation data and refreshes after arrivals, completion,
+external grade/tag PATCHes, and deletion. No new subscription protocol is needed.
+Late HTTP responses must not replace a newer selection/plot; polling must not
+resurrect a deleted investigation. Turning auto-refresh off pauses polling.
 
-### SVG
+All groups with coordinates participate in dominance, including preliminary
+ones. A dominates B iff it is no worse on every requested axis and strictly
+better on at least one. Identical means do not dominate each other. A group's
+position **and frontier membership** can change as evidence arrives.
 
-Hand-rolled (no charting dependency): scatter + stepped frontier
-polyline through the non-dominated set, tick marks via nice-numbers, and
-**orientation inversion so up-and-right is always better** regardless of
-which directions the axes have — the frontier always reads as an
-upper-right envelope. All text is XML-escaped; labels/colors are
-allow-pattern-validated before ever reaching the renderer (defense in
-depth). Output is deterministic (golden-tested).
+SVG uses a scatter and a non-dominated staircase. Lower-is-better axes are
+reversed so up-and-right is always better. Filled circles denote frontier
+points; hollow circles denote dominated points. Preliminary markers add reduced
+opacity and a dashed outer ring; this distinction is separate from dominance.
+Groups with no contributors are listed as pending without fake coordinates.
+The UI shows member counts and the missing-grade backlog beside the plot.
 
-## Where things live
+## Architecture and durability
 
-- `core/src/frontier/` — request/response types (utoipa-annotated),
-  axis vocabulary, validation, dominance, SVG generation. Pure and
-  golden-tested; no server dependency.
-- `server/` — thin: `grades` map on the job store, the PATCH and
-  frontier handlers, snapshot assembly (jobs → `InvestigationSnapshot`).
-- Durability: NONE, deliberately. The job store is in memory (a
-  documented, conscious limitation); the frontier is computed from live
-  jobs on demand. The CALLER's session holds the set ("these five uuids
-  are my campaign") because it created them — ad-hoc caller-owned sets,
-  zero grouping/lineage machinery in the harness. If a durable
-  optimization ledger is ever wanted, that is its own scoped decision.
+`core/src/frontier/` owns tag rules, grouping, means, dominance, and rendering.
+The HTTP layer holds jobs, assembles snapshots, and routes requests; the UI
+renders the response. Legacy core single-investigation helpers can remain for
+standalone callers, but the HTTP/UI contract is grouped.
 
-## What this is not
+No persistence is added. Restarting loses jobs, tags, and grades. Group ids are
+stable for unchanged grouping values, but are not durable stored records.
+No in-harness verdict, grade oracle, automatic grading, or comparability judge
+is introduced.
 
-- No verdicts: grades are the caller's judgment recorded, never checked
-  against traces or questions.
-- No persistence: restart loses jobs and grades (caller re-runs or
-  re-grades).
-- No aggregation semantics: grading per-scenario ("scenario_3_correct")
-  is just an axis name; aggregating per-scenario grades into a
-  prompt-level number stays the caller's job.
+## Validation and dogfood findings
+
+- Deterministic core/HTTP regressions cover common-cohort means, stable ids and
+  colors, null grouping values, missing grades, running/failed/pending members,
+  deletion, immutable tags, atomic PATCHes, canonical workspace hashes,
+  all-error/zero-trace exclusions, extreme finite numbers, and SVG escaping.
+- A live two-workspace run used the same PUT with different cosmetic ids. Both
+  traces returned the requested `DONE`. The workspace hashes differed, prompt
+  hashes matched, and both runs formed one point. Test grades 0.2 and 0.8
+  produced mean 0.5 only after both were supplied. Renaming kept the group id;
+  deleting one member recomputed the mean to 0.2. These grades were test
+  coordinates, not a claim about model quality.
+- Full-spec before/after caller probes ran through prompt-explore with
+  Luna/low, the same operational question, and the manual verbatim in the user
+  message. Before: grouping, persistent labels, and a grouped backlog were
+  correctly reported unsupported. Initial after: the caller found those
+  affordances but interpreted `put_/sim_cost_usd` shorthand as a literal axis.
+  Explicit concrete axis names fixed the request construction. A separate
+  stumble on nested failures prompted an explicit `result.result.failures`
+  description; the final probe used that path. These probes inspected generated
+  commands, not executed shell sessions; the live API exercise above separately
+  checked actual grouping/PATCH/delete behavior.
+- Browser checks cover both themes, 375px layout, real Rust-rendered SVG,
+  preliminary markers, incoming/completed jobs, external grading, regrouping,
+  deletion, pending/empty state, auth changes, and in-flight GET/PATCH races.
+  Polls are serialized; dirty edits survive refreshes and save only their changed
+  keys, retaining unrelated concurrent metadata edits.

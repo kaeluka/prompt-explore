@@ -23,6 +23,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::llm::ToolDef;
@@ -140,6 +141,23 @@ impl Workspace {
     /// Returns references into the shared seed; cheap.
     pub fn seed_paths(&self) -> Vec<String> {
         self.seed.files.keys().cloned().collect()
+    }
+
+    /// Stable SHA-256 identity of the current workspace contents. Paths are
+    /// visited in lexical order and every path/content pair is length-delimited,
+    /// so zip ordering, timestamps, compression, and other archive metadata
+    /// cannot affect the result. Overlay writes and deletes are included.
+    pub fn content_hash(&self) -> String {
+        let mut hash = Sha256::new();
+        self.visit_known_paths(|path| {
+            let bytes = self.file_bytes(path).expect("visited path exists");
+            hash.update((path.len() as u64).to_be_bytes());
+            hash.update(path.as_bytes());
+            hash.update((bytes.len() as u64).to_be_bytes());
+            hash.update(bytes);
+            true
+        });
+        format!("{:x}", hash.finalize())
     }
 
     /// Internal bounded consumers (e.g. the Lua loader) can check size before
@@ -994,6 +1012,17 @@ mod tests {
             other.exec_read(&json!({"path": "seed.txt"}))["content"],
             json!("original")
         );
+    }
+
+    #[test]
+    fn content_hash_is_sorted_and_tracks_overlay_content() {
+        let a = ws(&[("b.txt", "two"), ("a.txt", "one")]);
+        let b = ws(&[("a.txt", "one"), ("b.txt", "two")]);
+        assert_eq!(a.content_hash(), b.content_hash());
+        let original = a.content_hash();
+        let mut changed = a.clone();
+        changed.exec_write(&json!({"path": "a.txt", "content": "changed"}));
+        assert_ne!(original, changed.content_hash());
     }
 
     #[test]
