@@ -152,9 +152,7 @@ isotropic or degenerate clouds. Pending groups follow by label. Entries fill
 top-to-bottom, adding columns rather than shrinking the plot. Column width is
 derived from the complete longest label (including conservative Unicode width),
 so labels are never truncated or clipped; the container scrolls horizontally
-when necessary. During validation,
-a temporary dashed `legend PCA` helper line shows the exact fitted axis used for
-ordering; remove it once the visual order is accepted. Each marker and
+when necessary. Each marker and
 legend entry shares one focusable SVG group, so hover/focus highlights both and
 dims unrelated groups while retaining frontier/dominated/preliminary shapes.
 The UI shows member counts and the missing-grade backlog beside the plot.

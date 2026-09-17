@@ -453,10 +453,7 @@ fn ordered_legend<'a>(
     yhi: f64,
     x: &PlotAxis,
     y: &PlotAxis,
-) -> (
-    Vec<&'a super::grouped::GroupedFrontierPoint>,
-    Option<(f64, f64, f64, f64)>, // mean x/y + principal direction in common-scale screen coordinates
-) {
+) -> Vec<&'a super::grouped::GroupedFrontierPoint> {
     let plot_w = W - L - R;
     let plot_h = H - T - B;
     // Preserve the aspect ratio the reader actually sees. Dividing both pixel
@@ -472,7 +469,6 @@ fn ordered_legend<'a>(
         })
         .collect();
 
-    let mut principal_axis = None;
     if positioned.len() >= 2 {
         let n = positioned.len() as f64;
         let mx = positioned.iter().map(|(_, sx, _, _)| sx).sum::<f64>() / n;
@@ -498,7 +494,6 @@ fn ordered_legend<'a>(
                 vx = -vx;
                 vy = -vy;
             }
-            principal_axis = Some((mx, my, vx, vy));
             for (_, sx, sy, projection) in &mut positioned {
                 *projection = (*sx - mx) * vx + (*sy - my) * vy;
             }
@@ -524,7 +519,7 @@ fn ordered_legend<'a>(
     let mut pending = unplotted.to_vec();
     pending.sort_by(|a, b| a.label.cmp(&b.label).then(a.id.cmp(&b.id)));
     ordered.extend(pending);
-    (ordered, principal_axis)
+    ordered
 }
 
 /// Render grouped frontier points with a PCA-ordered legend to the right.
@@ -597,7 +592,6 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
 .frontier-group.pending .legend-label {{ fill:{DIM_LABEL_COLOR}; }}
 </style>"#
     ));
-    s.push_str(&format!(r#"<defs><clipPath id="pca-plot-clip"><rect x="{L}" y="{T}" width="{plot_w}" height="{plot_h}"/></clipPath></defs>"#));
     s.push_str(&format!(
         r#"<rect width="{svg_w}" height="{svg_h}" fill="{PAGE_BG}"/>"#
     ));
@@ -637,7 +631,7 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
         (xt, xlo, xhi, yt, ylo, yhi)
     };
 
-    let (legend, principal_axis) = ordered_legend(&usable, &unplotted, xlo, xhi, ylo, yhi, x, y);
+    let legend = ordered_legend(&usable, &unplotted, xlo, xhi, ylo, yhi, x, y);
 
     if !usable.is_empty() {
         let step_x = xt.get(1).copied().unwrap_or(xhi) - xt.first().copied().unwrap_or(xhi);
@@ -658,17 +652,6 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
             ));
             s.push_str(&format!(r#"<text x="{}" y="{:.1}" font-size="11" fill="{TICK_COLOR}" text-anchor="end">{}</text>"#, L - 8.0, at + 4.0, esc(&fmt_tick(tick, step_y))));
         }
-        // Temporary visual aid while validating legend order. It uses the
-        // exact PCA mean/direction that drives projection sorting, clipped to
-        // the plot rectangle so the right-side legend remains untouched.
-        if let Some((mx, my, vx, vy)) = principal_axis {
-            let common_scale = plot_w.max(plot_h);
-            let cx = L + mx * common_scale;
-            let cy = T + my * common_scale;
-            let reach = 2000.0;
-            s.push_str(&format!(r##"<g class="pca-helper" opacity="0.72" pointer-events="none" clip-path="url(#pca-plot-clip)"><line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#b58900" stroke-width="1.5" stroke-dasharray="7 5"/><text x="{:.1}" y="{:.1}" font-size="10" fill="#b58900">legend PCA</text></g>"##, cx - vx * reach, cy - vy * reach, cx + vx * reach, cy + vy * reach, cx + 7.0, cy - 7.0));
-        }
-
         let mut frontier: Vec<(f64, f64)> = usable
             .iter()
             .filter(|(p, _, _)| p.on_frontier == Some(true))
@@ -1039,7 +1022,7 @@ mod tests {
         // Higher y maps upward, so these raw values form a top-left to
         // bottom-right line in screen space. Input order is deliberately mixed.
         let usable = vec![(&c, 10.0, 0.0), (&a, 0.0, 10.0), (&b, 5.0, 5.0)];
-        let (ordered, axis) = ordered_legend(
+        let ordered = ordered_legend(
             &usable,
             &[],
             0.0,
@@ -1049,7 +1032,6 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Higher),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
-        assert!(axis.is_some());
         assert_eq!(
             ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
@@ -1058,7 +1040,7 @@ mod tests {
         // Lower-is-better x is inverted before PCA; visual order is still
         // left-to-right. A vertical cloud is deterministically top-to-bottom.
         let lower_x = vec![(&c, 0.0, 0.0), (&a, 10.0, 10.0), (&b, 5.0, 5.0)];
-        let (ordered, axis) = ordered_legend(
+        let ordered = ordered_legend(
             &lower_x,
             &[],
             0.0,
@@ -1068,13 +1050,12 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Lower),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
-        assert!(axis.is_some());
         assert_eq!(
             ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
         );
         let vertical = vec![(&c, 5.0, 0.0), (&b, 5.0, 5.0), (&a, 5.0, 10.0)];
-        let (ordered, axis) = ordered_legend(
+        let ordered = ordered_legend(
             &vertical,
             &[],
             0.0,
@@ -1084,7 +1065,6 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Higher),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
-        assert!(axis.is_some());
         assert_eq!(
             ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
@@ -1125,7 +1105,7 @@ mod tests {
             (&sh, 278.0, 487.0),
             (&sl, 175.0, 716.0),
         ];
-        let (ordered, axis) = ordered_legend(
+        let ordered = ordered_legend(
             &usable,
             &[],
             150.0,
@@ -1135,7 +1115,6 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Lower),
             &PlotAxis::new("y", BetterDirection::Lower),
         );
-        assert!(axis.is_some());
         let ids = ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>();
         assert_eq!(&ids[..2], &["mug-high", "lamp-high"]);
     }
@@ -1165,8 +1144,6 @@ mod tests {
         );
         assert!(svg.contains("width=\"1222\""));
         assert!(svg.contains("data-legend-column=\"1\""));
-        assert!(svg.contains("class=\"pca-helper\""));
-        assert!(svg.contains("legend PCA"));
         assert_eq!(svg.matches("class=\"legend-entry\"").count(), 18);
         assert!(!svg.contains("legend-label-clip"));
         assert!(svg.contains("variant-17"));
