@@ -670,7 +670,7 @@
           },
           "label": {
             "type": "string",
-            "description": "Compact slash-separated grouping values in the request's `group_by`\norder (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`). Known model\nnamespaces and content hashes are shortened for presentation; the full\nvalues remain in `attributes`, and `id` remains the stable identity.\nPresentation collisions receive a stable group-id suffix."
+            "description": "Slash-separated grouping values in the request's `group_by` order (for\nexample `gpt-5.6-luna/low/prompt-a1b2c3d4`). Caller-owned values are\ncomplete and never ellipsis-truncated. Known model namespaces and\ncontent hashes use documented basename/prefix forms; their full source\nvalues remain in `attributes`, and `id` remains the stable identity.\nPresentation collisions receive a stable group-id suffix."
           },
           "on_frontier": {
             "type": [

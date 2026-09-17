@@ -135,8 +135,10 @@ $ curl -X POST 'http://127.0.0.1:8099/api/frontier?format=json' \
 ```
 
 Each returned point carries its grouping `attributes`, a stable `id`, and a
-compact slash-separated value label in `group_by` order (for example
-`gpt-5.6-luna/low/prompt-a1b2c3d4`), plus all member `investigations`, the `included` ids used for **every** coordinate, and an
+slash-separated value label in `group_by` order (for example
+`gpt-5.6-luna/low/prompt-a1b2c3d4`). Caller-owned values are displayed in full;
+only model names and hashes use their documented basename/prefix forms. Wide
+legends scroll horizontally rather than truncating text. Each point also carries all member `investigations`, the `included` ids used for **every** coordinate, and an
 `excluded` backlog. `values` contains arithmetic means, not totals across the
 group. `on_frontier` and `dominated_by` describe dominance between **group ids**.
 Ties dominate nothing. `group_by: []` means one group; an absent grouping attribute

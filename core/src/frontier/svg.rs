@@ -419,11 +419,16 @@ fn pending_description(point: &super::grouped::GroupedFrontierPoint) -> String {
 /// their filled/hollow dominance shape but the entire marker group is subdued.
 const LEGEND_GAP: f64 = 22.0;
 const MIN_LEGEND_COLUMN_WIDTH: f64 = 220.0;
+const LEGEND_TEXT_CELL_WIDTH: f64 = 8.0;
+const LEGEND_COLUMN_PADDING: f64 = 48.0;
 const LEGEND_ROW_HEIGHT: f64 = 24.0;
 
-/// Reserve enough horizontal space for the complete longest label. SVG uses a
-/// monospace stack, but non-ASCII fallback glyphs can be roughly double-width;
-/// counting them as two cells keeps columns separate without clipping text.
+/// Reserve deliberately conservative horizontal space for the complete longest
+/// label. The rendered font is 11px, but browser/platform monospace metrics and
+/// fallback glyphs vary; 8px per ASCII cell plus 48px for marker/gaps/right
+/// breathing room keeps the root SVG viewport from clipping a label. Non-ASCII
+/// glyphs count as two cells. Extra width scrolls in the HTML container rather
+/// than truncating evidence.
 fn legend_column_width(points: &[super::grouped::GroupedFrontierPoint]) -> f64 {
     let max_cells = points
         .iter()
@@ -436,7 +441,7 @@ fn legend_column_width(points: &[super::grouped::GroupedFrontierPoint]) -> f64 {
         })
         .max()
         .unwrap_or(0);
-    (max_cells as f64 * 6.8 + 32.0).max(MIN_LEGEND_COLUMN_WIDTH)
+    (max_cells as f64 * LEGEND_TEXT_CELL_WIDTH + LEGEND_COLUMN_PADDING).max(MIN_LEGEND_COLUMN_WIDTH)
 }
 
 /// Order the legend along the first principal component of normalized SCREEN
@@ -1018,7 +1023,7 @@ mod tests {
         let ascii = make("a", "a".repeat(60));
         let wide = make("b", "界".repeat(40));
         let width = legend_column_width(&[ascii, wide]);
-        assert!(width >= 40.0 * 2.0 * 6.8 + 32.0);
+        assert_eq!(width, 40.0 * 2.0 * 8.0 + 48.0);
     }
 
     #[test]

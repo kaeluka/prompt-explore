@@ -148,8 +148,10 @@ The API map is named `attributes` (not `tags`; do not add a compatibility alias)
 System attributes (resolved model/thinking settings, prompt/workspace hashes) are
 immutable. Custom attributes are editable; `label` is the UI display name. It
 changes group identity only if explicitly selected as a grouping key.
-Visible group labels are compact slash-separated attribute VALUES in `group_by`
-order (never the opaque group hash); the full values remain in `attributes`.
+Visible group labels are slash-separated attribute VALUES in `group_by` order
+(never the opaque group hash). Caller-owned values are shown completely—never
+ellipsis-truncated; model names use their basename and content hashes use a
+labeled 8-character prefix, with full source values retained in `attributes`.
 Missing grouping attributes form null-valued groups. Missing grades, running/failed
 jobs, and unavailable measured axes remain an explicit per-group backlog, never
 silently dropped and never a whole-request error. Groups with no contributors

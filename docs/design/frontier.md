@@ -100,11 +100,12 @@ Each point exposes:
 
 - `id`: stable group identity derived only from grouping attribute names/values.
 - `attributes`: grouping values, with missing values represented as JSON null.
-- `label`, `color`: presentation, not identity. The label is the compact
-  slash-separated combination of selected attribute values in `group_by` order
-  (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`), not an opaque group hash.
-  Full values remain in `attributes`; presentation collisions receive a stable
-  suffix.
+- `label`, `color`: presentation, not identity. The label is the slash-separated
+  combination of selected attribute values in `group_by` order (for example
+  `gpt-5.6-luna/low/prompt-a1b2c3d4`), not an opaque group hash. Caller-owned
+  values are shown completely; model names use their basename and hashes use a
+  labeled prefix. Full source values remain in `attributes`; presentation
+  collisions receive a stable suffix.
 - `investigations`: all member ids, including unfinished/excluded members.
 - `included`: exactly the cohort used for every coordinate.
 - `excluded`: one entry per non-contributor, naming its investigation, status,
@@ -215,8 +216,8 @@ is introduced.
   list/view/frontier responses expose only `attributes`.
 - A same-spec label probe initially identified `point.label` correctly but said
   its formatting was unspecified. After the label contract was documented, it
-  selected `point.label`, described the compact slash-separated attribute-value
-  form, kept full values in `attributes` and stable identity in `id`, and
+  selected `point.label`, described the slash-separated attribute-value form,
+  kept full values in `attributes` and stable identity in `id`, and
   explicitly rejected deriving a visible `g-<hash>` label. The live 8080 SVG
   and table separately displayed the expected value-derived labels.
 - Legend rendering was checked through Chromium's DevTools Protocol. A 38-point

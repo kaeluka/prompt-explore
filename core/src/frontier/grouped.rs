@@ -71,9 +71,10 @@ pub struct GroupedFrontierPoint {
     pub id: String,
     /// The requested group attributes. Missing source values appear as JSON null.
     pub attributes: BTreeMap<String, Option<String>>,
-    /// Compact slash-separated grouping values in the request's `group_by`
-    /// order (for example `gpt-5.6-luna/low/prompt-a1b2c3d4`). Known model
-    /// namespaces and content hashes are shortened for presentation; the full
+    /// Slash-separated grouping values in the request's `group_by` order (for
+    /// example `gpt-5.6-luna/low/prompt-a1b2c3d4`). Caller-owned values are
+    /// complete and never ellipsis-truncated. Known model namespaces and
+    /// content hashes use documented basename/prefix forms; their full source
     /// values remain in `attributes`, and `id` remains the stable identity.
     /// Presentation collisions receive a stable group-id suffix.
     pub label: String,
@@ -417,9 +418,9 @@ fn display_attribute_value(key: &str, value: Option<&str>) -> String {
             .to_string(),
         "prompt_hash" => format!("prompt-{}", value.chars().take(8).collect::<String>()),
         "workspace_hash" => format!("workspace-{}", value.chars().take(8).collect::<String>()),
-        _ if value.chars().count() > 32 => {
-            format!("{}…", value.chars().take(31).collect::<String>())
-        }
+        // Caller-owned values are evidence, not prose to summarize. Preserve
+        // them in full; the SVG sizes legend columns conservatively and its
+        // HTML container scrolls horizontally when necessary.
         _ => value.to_string(),
     }
 }
@@ -638,18 +639,41 @@ mod tests {
     }
 
     #[test]
-    fn compact_label_collisions_receive_stable_suffixes() {
+    fn custom_attribute_labels_are_never_truncated() {
+        let full = format!("variant-{}-{}", "x".repeat(64), "界".repeat(24));
+        let mut run = snapshot("run");
+        run.attributes.insert("variant".into(), full.clone());
+        run.snapshot.grades.insert("x".into(), 1.0);
+        let point = compute_for(&request(&["x"]), vec![run])
+            .points
+            .pop()
+            .unwrap();
+        assert_eq!(point.label, full);
+        assert!(!point.label.contains('…'));
+    }
+
+    #[test]
+    fn compact_semantic_label_collisions_receive_stable_suffixes() {
         let mut a = snapshot("a");
         let mut b = snapshot("b");
         a.attributes
-            .insert("variant".into(), format!("{}a", "x".repeat(40)));
+            .insert("put_model".into(), "provider_a::shared-model".into());
         b.attributes
-            .insert("variant".into(), format!("{}b", "x".repeat(40)));
+            .insert("put_model".into(), "provider_b::shared-model".into());
         a.snapshot.grades.insert("x".into(), 1.0);
         b.snapshot.grades.insert("x".into(), 2.0);
-        let result = compute_for(&request(&["x"]), vec![a, b]);
+        let req = GroupedFrontierRequest {
+            group_by: vec!["put_model".into()],
+            axes: request(&["x"]).axes,
+        };
+        let result = compute_for(&req, vec![a, b]);
         assert_ne!(result.points[0].label, result.points[1].label);
-        assert!(result.points.iter().all(|p| p.label.contains('~')));
+        assert!(
+            result
+                .points
+                .iter()
+                .all(|p| p.label.starts_with("shared-model~"))
+        );
     }
 
     #[test]
