@@ -154,7 +154,9 @@ are pending (no coordinates); any exclusions make a group preliminary. The UI
 polls and redraws as jobs, attributes, and grades change. Preliminary means participate
 in dominance and use faded markers with dashed outer rings. SVG labels belong
 in a right-side PCA-ordered legend (normalized rendered coordinates), never
-beside dots; marker/legend hover and keyboard focus are linked. The caller owns
+beside dots; marker/legend hover and keyboard focus are linked. The staircase
+is the observed dominated-region boundary (turn at the current point, never
+interpolate) and reveals its shade only on hover/focus. The caller owns
 comparability and grading; the harness does only grouping and arithmetic.
 
 ## Experimental Lua simulation

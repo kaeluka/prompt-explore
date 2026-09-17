@@ -522,6 +522,23 @@ fn ordered_legend<'a>(
     ordered
 }
 
+/// Axis-aligned boundary of the union of rectangles dominated by the observed
+/// frontier points (screen coordinates: worse is left/down). The boundary
+/// turns vertically AT the current point, then continues horizontally to the
+/// next; it stops at the rightmost observed point—never in unobserved padding.
+fn frontier_paths(points: &[(f64, f64)]) -> Option<(String, String)> {
+    let (x0, y0) = *points.first()?;
+    let mut line = format!("M {L:.1} {y0:.1} L {x0:.1} {y0:.1}");
+    let mut previous_x = x0;
+    for &(cx, cy) in points.iter().skip(1) {
+        line.push_str(&format!(" L {previous_x:.1} {cy:.1} L {cx:.1} {cy:.1}"));
+        previous_x = cx;
+    }
+    let bottom = H - B;
+    let area = format!("{line} L {previous_x:.1} {bottom:.1} L {L:.1} {bottom:.1} Z");
+    Some((line, area))
+}
+
 /// Render grouped frontier points with a PCA-ordered legend to the right.
 /// Point-adjacent labels are intentionally absent: the legend is the single
 /// uncluttered label surface. Each marker and its legend entry share one SVG
@@ -590,6 +607,12 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
 .frontier-group:hover .focus-halo, .frontier-group:focus .focus-halo {{ opacity:1; }}
 .legend-label {{ fill:{LABEL_COLOR}; font-size:11px; }}
 .frontier-group.pending .legend-label {{ fill:{DIM_LABEL_COLOR}; }}
+.frontier-envelope {{ cursor:help; outline:none; }}
+.dominated-region {{ opacity:0; pointer-events:all; transition:opacity .12s ease; }}
+.frontier-envelope:hover .dominated-region,
+.frontier-envelope:focus .dominated-region,
+svg:has(.frontier-group.on-frontier:hover) .dominated-region,
+svg:has(.frontier-group.on-frontier:focus) .dominated-region {{ opacity:.12; }}
 </style>"#
     ));
     s.push_str(&format!(
@@ -663,15 +686,8 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
             })
             .collect();
         frontier.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        if let Some((x0, y0)) = frontier.first() {
-            let mut d = format!("M {L:.1} {y0:.1} L {x0:.1} {y0:.1}");
-            let mut prev_y = *y0;
-            for &(cx, cy) in frontier.iter().skip(1) {
-                d.push_str(&format!(" L {cx:.1} {prev_y:.1} L {cx:.1} {cy:.1}"));
-                prev_y = cy;
-            }
-            d.push_str(&format!(" L {:.1} {prev_y:.1}", W - R));
-            s.push_str(&format!(r#"<path d="{d}" fill="none" stroke="{FRONTIER_STROKE}" stroke-width="2" opacity="0.85"/>"#));
+        if let Some((line, area)) = frontier_paths(&frontier) {
+            s.push_str(&format!(r#"<g class="frontier-envelope" tabindex="0" role="img" aria-label="Pareto-dominated region; hover or focus to shade"><title>Observed Pareto-dominated region</title><path class="dominated-region" d="{area}" fill="{FRONTIER_STROKE}"/><path class="frontier-staircase" d="{line}" fill="none" stroke="{FRONTIER_STROKE}" stroke-width="2" opacity="0.85"/></g>"#));
         }
     }
 
@@ -701,6 +717,10 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
         }
         if pending {
             classes.push_str(" pending");
+        } else if frontier {
+            classes.push_str(" on-frontier");
+        } else {
+            classes.push_str(" dominated");
         }
         let plot_state = match point.on_frontier {
             Some(true) => "frontier",
@@ -960,7 +980,10 @@ mod tests {
         }
         assert!(svg.contains(r##"fill="#268bd2""##));
         assert!(svg.contains("rotate(-90)"));
-        assert!(svg.contains("<path d=\"M ")); // staircase
+        assert!(svg.contains("class=\"frontier-staircase\""));
+        assert!(svg.contains("class=\"dominated-region\""));
+        assert!(svg.contains("frontier-envelope:hover .dominated-region"));
+        assert!(svg.contains("on-frontier"));
         assert!(svg.contains("frontier-group preliminary"));
         assert!(svg.contains(".frontier-group:hover"));
         assert!(svg.contains(".frontier-group:focus"));
@@ -998,6 +1021,21 @@ mod tests {
         let wide = make("b", "界".repeat(40));
         let width = legend_column_width(&[ascii, wide]);
         assert!(width >= 40.0 * 2.0 * 6.8 + 32.0);
+    }
+
+    #[test]
+    fn staircase_turns_at_current_point_and_shades_only_observed_dominance() {
+        let (line, area) =
+            frontier_paths(&[(100.0, 100.0), (200.0, 200.0), (300.0, 250.0)]).unwrap();
+        assert_eq!(
+            line,
+            "M 78.0 100.0 L 100.0 100.0 L 100.0 200.0 L 200.0 200.0 L 200.0 250.0 L 300.0 250.0"
+        );
+        assert_eq!(area, format!("{line} L 300.0 456.0 L 78.0 456.0 Z"));
+        assert!(
+            !line.contains("732.0"),
+            "must not extend into right-side unobserved padding"
+        );
     }
 
     #[test]

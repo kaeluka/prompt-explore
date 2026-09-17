@@ -139,9 +139,14 @@ ones. A dominates B iff it is no worse on every requested axis and strictly
 better on at least one. Identical means do not dominate each other. A group's
 position **and frontier membership** can change as evidence arrives.
 
-SVG uses a scatter and a non-dominated staircase. Lower-is-better axes are
-reversed so up-and-right is always better. Filled circles denote frontier
-points; hollow circles denote dominated points. Preliminary markers add reduced
+SVG uses a scatter and the axis-aligned boundary of the observed dominated
+region. Lower-is-better axes are reversed so up-and-right is always better.
+The staircase turns vertically at each current frontier point before continuing
+to the next and stops at the rightmost observation; it never claims an
+interpolated or unobserved configuration. Hovering/focusing the envelope—or a
+frontier marker/legend entry—reveals a light shade over the union of rectangles
+dominated by observed frontier points. Filled circles denote frontier points;
+hollow circles denote dominated points. Preliminary markers add reduced
 opacity and a dashed outer ring; this distinction is separate from dominance.
 Groups with no contributors are listed as pending without fake coordinates.
 Point-adjacent labels are deliberately omitted to avoid clutter. A legend sits
