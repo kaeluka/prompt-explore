@@ -152,7 +152,9 @@ jobs, and unavailable measured axes remain an explicit per-group backlog, never
 silently dropped and never a whole-request error. Groups with no contributors
 are pending (no coordinates); any exclusions make a group preliminary. The UI
 polls and redraws as jobs, attributes, and grades change. Preliminary means participate
-in dominance and use faded markers with dashed outer rings. The caller owns
+in dominance and use faded markers with dashed outer rings. SVG labels belong
+in a right-side PCA-ordered legend (normalized rendered coordinates), never
+beside dots; marker/legend hover and keyboard focus are linked. The caller owns
 comparability and grading; the harness does only grouping and arithmetic.
 
 ## Experimental Lua simulation

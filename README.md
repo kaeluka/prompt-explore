@@ -37,7 +37,10 @@ supports this without ever judging for you:
   (`"better": "lower" | "higher"`). `?format=json` supports N axes;
   `?format=svg` renders exactly two. **Up-and-right is always better**:
   lower-is-better axes are reversed. Filled dots are non-dominated; hollow
-  dots are dominated. The frontier is relative to the chosen axes, not a verdict.
+  dots are dominated. Labels live in a PCA-ordered legend to the right—not
+  beside the dots—and flow into additional columns as groups grow. Hovering or
+  keyboard-focusing a legend entry highlights its dot and vice versa. The
+  frontier is relative to the chosen axes, not a verdict.
 - **The plot is live.** The UI refreshes as jobs finish, grades/attributes change,
   or jobs are deleted. Groups with running or excluded members are preliminary
   (faded dots with dashed outer rings). Groups with no usable results are

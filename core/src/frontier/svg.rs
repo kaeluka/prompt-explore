@@ -11,6 +11,8 @@
 //! and colors are allow-pattern-validated before they ever reach the
 //! renderer.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::grouped::GroupedFrontierResponse;
 use super::{BetterDirection, FrontierPoint};
 
@@ -415,6 +417,108 @@ fn pending_description(point: &super::grouped::GroupedFrontierPoint) -> String {
 /// means; groups with no common cohort are listed as a wrapped backlog below
 /// the plot rather than receiving invented coordinates. Preliminary points keep
 /// their filled/hollow dominance shape but the entire marker group is subdued.
+const LEGEND_GAP: f64 = 22.0;
+const LEGEND_COLUMN_WIDTH: f64 = 300.0;
+const LEGEND_ROW_HEIGHT: f64 = 24.0;
+
+fn compact_legend_text(label: &str) -> String {
+    const MAX_CHARS: usize = 39;
+    let chars: Vec<char> = label.chars().collect();
+    if chars.len() <= MAX_CHARS {
+        label.to_string()
+    } else {
+        // Preserve both the readable beginning and distinguishing version or
+        // collision suffix. Rendered-width clipping below prevents wide
+        // Unicode glyphs from entering the next legend column.
+        let left: String = chars[..26].iter().collect();
+        let right: String = chars[chars.len() - 12..].iter().collect();
+        format!("{left}…{right}")
+    }
+}
+
+/// Order the legend along the first principal component of normalized SCREEN
+/// coordinates. This is orthogonal regression, so vertical clouds are handled
+/// as naturally as horizontal ones. The sign is deterministic: left-to-right,
+/// or top-to-bottom when effectively vertical. Isotropic/degenerate clouds use
+/// the stable x-then-y fallback. Pending groups follow plotted groups by label.
+fn ordered_legend<'a>(
+    usable: &[(&'a super::grouped::GroupedFrontierPoint, f64, f64)],
+    unplotted: &[&'a super::grouped::GroupedFrontierPoint],
+    xlo: f64,
+    xhi: f64,
+    ylo: f64,
+    yhi: f64,
+    x: &PlotAxis,
+    y: &PlotAxis,
+) -> Vec<&'a super::grouped::GroupedFrontierPoint> {
+    let plot_w = W - L - R;
+    let plot_h = H - T - B;
+    let mut positioned: Vec<_> = usable
+        .iter()
+        .map(|(point, xv, yv)| {
+            let sx = (px(*xv, xlo, xhi, L, W - R, x.better) - L) / plot_w;
+            let sy = (px(*yv, ylo, yhi, H - B, T, y.better) - T) / plot_h;
+            (*point, sx, sy, 0.0)
+        })
+        .collect();
+
+    if positioned.len() >= 2 {
+        let n = positioned.len() as f64;
+        let mx = positioned.iter().map(|(_, sx, _, _)| sx).sum::<f64>() / n;
+        let my = positioned.iter().map(|(_, _, sy, _)| sy).sum::<f64>() / n;
+        let sxx = positioned
+            .iter()
+            .map(|(_, sx, _, _)| (sx - mx).powi(2))
+            .sum::<f64>();
+        let syy = positioned
+            .iter()
+            .map(|(_, _, sy, _)| (sy - my).powi(2))
+            .sum::<f64>();
+        let sxy = positioned
+            .iter()
+            .map(|(_, sx, sy, _)| (sx - mx) * (sy - my))
+            .sum::<f64>();
+        let total = sxx + syy;
+        let anisotropy = ((sxx - syy).powi(2) + 4.0 * sxy.powi(2)).sqrt();
+        if total > 0.0 && anisotropy > total * 1e-9 {
+            let angle = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+            let (mut vx, mut vy) = (angle.cos(), angle.sin());
+            if vx < -1e-12 || (vx.abs() <= 1e-12 && vy < 0.0) {
+                vx = -vx;
+                vy = -vy;
+            }
+            for (_, sx, sy, projection) in &mut positioned {
+                *projection = (*sx - mx) * vx + (*sy - my) * vy;
+            }
+            positioned.sort_by(|a, b| {
+                a.3.total_cmp(&b.3)
+                    .then(a.1.total_cmp(&b.1))
+                    .then(a.2.total_cmp(&b.2))
+                    .then(a.0.id.cmp(&b.0.id))
+            });
+        } else {
+            positioned.sort_by(|a, b| {
+                a.1.total_cmp(&b.1)
+                    .then(a.2.total_cmp(&b.2))
+                    .then(a.0.id.cmp(&b.0.id))
+            });
+        }
+    }
+
+    let mut ordered: Vec<_> = positioned
+        .into_iter()
+        .map(|(point, _, _, _)| point)
+        .collect();
+    let mut pending = unplotted.to_vec();
+    pending.sort_by(|a, b| a.label.cmp(&b.label).then(a.id.cmp(&b.id)));
+    ordered.extend(pending);
+    ordered
+}
+
+/// Render grouped frontier points with a PCA-ordered legend to the right.
+/// Point-adjacent labels are intentionally absent: the legend is the single
+/// uncluttered label surface. Each marker and its legend entry share one SVG
+/// group, making hover and keyboard focus bidirectional even in standalone SVG.
 pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &PlotAxis) -> String {
     let usable: Vec<_> = response
         .points
@@ -426,12 +530,24 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
             (xv.is_finite() && yv.is_finite()).then_some((p, xv, yv))
         })
         .collect();
-    let pending: Vec<_> = response
+    let usable_ids: BTreeSet<&str> = usable
+        .iter()
+        .map(|(point, _, _)| point.id.as_str())
+        .collect();
+    // Public core callers can construct malformed/non-finite value maps even
+    // though production grouping cannot. Keep those groups visible as pending
+    // instead of silently omitting their legend/backlog evidence.
+    let unplotted: Vec<_> = response
         .points
         .iter()
-        .filter(|p| p.values.is_none() || !p.excluded.is_empty())
+        .filter(|p| !usable_ids.contains(p.id.as_str()))
         .collect();
-    let pending_lines: Vec<String> = pending
+    let backlog: Vec<_> = response
+        .points
+        .iter()
+        .filter(|p| !usable_ids.contains(p.id.as_str()) || !p.excluded.is_empty())
+        .collect();
+    let pending_lines: Vec<String> = backlog
         .iter()
         .flat_map(|p| wrap_pending(&pending_description(p)))
         .collect();
@@ -440,18 +556,47 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
     } else {
         22.0 + pending_lines.len() as f64 * 13.0
     };
+    let legend_rows = ((H - T - B) / LEGEND_ROW_HEIGHT).floor().max(1.0) as usize;
+    let legend_columns = if response.points.is_empty() {
+        0
+    } else {
+        response.points.len().div_ceil(legend_rows)
+    };
+    let svg_w = W + if legend_columns == 0 {
+        0.0
+    } else {
+        LEGEND_GAP + legend_columns as f64 * LEGEND_COLUMN_WIDTH
+    };
     let plot_w = W - L - R;
     let plot_h = H - T - B;
-    let mut s = String::with_capacity(4096 + pending_lines.len() * 100);
-    s.push_str(&format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{svg_h}" viewBox="0 0 {W} {svg_h}" font-family="ui-monospace, Menlo, Consolas, monospace">"#));
+    let mut s = String::with_capacity(8192 + pending_lines.len() * 100);
+    s.push_str(&format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{svg_w}" height="{svg_h}" viewBox="0 0 {svg_w} {svg_h}" font-family="ui-monospace, Menlo, Consolas, monospace">"#));
     s.push_str(&format!(
-        r#"<rect width="{W}" height="{svg_h}" fill="{PAGE_BG}"/>"#
+        r#"<style>
+.frontier-group {{ cursor:pointer; outline:none; transition:opacity .12s ease; }}
+.frontier-group.preliminary {{ opacity:.48; }}
+.frontier-group:hover, .frontier-group:focus {{ opacity:1; }}
+svg:has(.frontier-group:hover) .frontier-group:not(:hover),
+svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
+.focus-halo {{ opacity:0; }}
+.frontier-group:hover .focus-halo, .frontier-group:focus .focus-halo {{ opacity:1; }}
+.legend-label {{ fill:{LABEL_COLOR}; font-size:11px; }}
+.frontier-group.pending .legend-label {{ fill:{DIM_LABEL_COLOR}; }}
+</style>"#
+    ));
+    s.push_str(&format!(
+        r#"<rect width="{svg_w}" height="{svg_h}" fill="{PAGE_BG}"/>"#
     ));
     s.push_str(&format!(r#"<text x="{L}" y="21" font-size="13" font-weight="700" fill="{LABEL_COLOR}">Grouped Pareto frontier</text>"#));
     s.push_str(&format!(r#"<text x="{}" y="21" font-size="11" fill="{TICK_COLOR}" text-anchor="end">up &amp; right is better</text>"#, W - R));
+    if legend_columns > 0 {
+        s.push_str(&format!(r#"<text x="{}" y="21" font-size="11" font-weight="700" fill="{LABEL_COLOR}">groups</text>"#, W + LEGEND_GAP));
+    }
     s.push_str(&format!(r#"<rect x="{L}" y="{T}" width="{plot_w}" height="{plot_h}" fill="{PANEL_BG}" stroke="{GRID_COLOR}"/>"#));
-    if usable.is_empty() {
+
+    let (xt, xlo, xhi, yt, ylo, yhi) = if usable.is_empty() {
         s.push_str(&format!(r#"<text x="{:.1}" y="{:.1}" font-size="13" fill="{DIM_LABEL_COLOR}" text-anchor="middle">no groups have a complete cohort for these axes</text>"#, L + plot_w / 2.0, T + plot_h / 2.0));
+        (vec![0.0, 1.0], 0.0, 1.0, vec![0.0, 1.0], 0.0, 1.0)
     } else {
         let (xt, xlo, xhi) = nice_ticks(
             usable
@@ -475,6 +620,10 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
                 .fold(f64::NEG_INFINITY, f64::max),
             5,
         );
+        (xt, xlo, xhi, yt, ylo, yhi)
+    };
+
+    if !usable.is_empty() {
         let step_x = xt.get(1).copied().unwrap_or(xhi) - xt.first().copied().unwrap_or(xhi);
         let step_y = yt.get(1).copied().unwrap_or(yhi) - yt.first().copied().unwrap_or(yhi);
         for &tick in &xt {
@@ -503,11 +652,7 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
                 )
             })
             .collect();
-        frontier.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap()
-                .then(a.1.partial_cmp(&b.1).unwrap())
-        });
+        frontier.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
         if let Some((x0, y0)) = frontier.first() {
             let mut d = format!("M {L:.1} {y0:.1} L {x0:.1} {y0:.1}");
             let mut prev_y = *y0;
@@ -518,26 +663,70 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
             d.push_str(&format!(" L {:.1} {prev_y:.1}", W - R));
             s.push_str(&format!(r#"<path d="{d}" fill="none" stroke="{FRONTIER_STROKE}" stroke-width="2" opacity="0.85"/>"#));
         }
-        for (point, xv, yv) in usable {
-            let cx = px(xv, xlo, xhi, L, W - R, x.better);
-            let cy = px(yv, ylo, yhi, H - B, T, y.better);
-            let frontier = point.on_frontier == Some(true);
-            let opacity = if point.preliminary { "0.48" } else { "1" };
-            s.push_str(&format!(
-                r#"<g opacity="{opacity}"><title>{}</title>"#,
-                esc(&format!(
-                    "{}; attributes: {}; members: {}; included: {}",
-                    point.label,
-                    point
-                        .attributes
-                        .iter()
-                        .map(|(k, v)| format!("{k}={}", v.as_deref().unwrap_or("null")))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    point.investigations.len(),
-                    point.included.len()
-                ))
-            ));
+    }
+
+    let coordinate_by_id: BTreeMap<&str, (f64, f64)> = usable
+        .iter()
+        .map(|(point, xv, yv)| {
+            (
+                point.id.as_str(),
+                (
+                    px(*xv, xlo, xhi, L, W - R, x.better),
+                    px(*yv, ylo, yhi, H - B, T, y.better),
+                ),
+            )
+        })
+        .collect();
+    let legend = ordered_legend(&usable, &unplotted, xlo, xhi, ylo, yhi, x, y);
+    for (index, point) in legend.iter().enumerate() {
+        let row = index % legend_rows;
+        let column = index / legend_rows;
+        let lx = W + LEGEND_GAP + column as f64 * LEGEND_COLUMN_WIDTH + 7.0;
+        let ly = T + row as f64 * LEGEND_ROW_HEIGHT + 11.0;
+        let coordinates = coordinate_by_id.get(point.id.as_str()).copied();
+        let frontier = point.on_frontier == Some(true);
+        let pending = coordinates.is_none();
+        let mut classes = String::from("frontier-group");
+        if point.preliminary {
+            classes.push_str(" preliminary");
+        }
+        if pending {
+            classes.push_str(" pending");
+        }
+        let plot_state = match point.on_frontier {
+            Some(true) => "frontier",
+            Some(false) => "dominated",
+            None => "pending",
+        };
+        let evidence_state = if point.preliminary {
+            "preliminary"
+        } else {
+            "final"
+        };
+        let coordinate_text = coordinates
+            .map(|_| {
+                let values = point.values.as_ref().expect("plotted point has values");
+                format!(
+                    "; {}={}; {}={}",
+                    x.name, values[&x.name], y.name, values[&y.name]
+                )
+            })
+            .unwrap_or_default();
+        let title = format!(
+            "{}; {plot_state}; {evidence_state}{coordinate_text}; attributes: {}; members: {}; included: {}",
+            point.label,
+            point
+                .attributes
+                .iter()
+                .map(|(k, v)| format!("{k}={}", v.as_deref().unwrap_or("null")))
+                .collect::<Vec<_>>()
+                .join(", "),
+            point.investigations.len(),
+            point.included.len()
+        );
+        s.push_str(&format!(r#"<g class="{classes}" data-group-id="{}" data-legend-column="{column}" tabindex="0" role="group" aria-label="{}"><title>{}</title>"#, esc(&point.id), esc(&title), esc(&title)));
+        if let Some((cx, cy)) = coordinates {
+            s.push_str(&format!(r#"<g class="plot-marker"><circle class="hit-target" cx="{cx:.1}" cy="{cy:.1}" r="11" fill="transparent" stroke="none" pointer-events="all"/><circle class="focus-halo" cx="{cx:.1}" cy="{cy:.1}" r="11" fill="none" stroke="{}" stroke-width="2.5"/>"#, esc(&point.color)));
             if frontier {
                 s.push_str(&format!(r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="6" fill="{}" stroke="{PANEL_BG}" stroke-width="1.5"/>"#, esc(&point.color)));
             } else {
@@ -547,20 +736,33 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
                 s.push_str(&format!(r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="8.5" fill="none" stroke="{}" stroke-width="1.4" stroke-dasharray="3 2"/>"#, esc(&point.color)));
             }
             s.push_str("</g>");
-            let label = &point.label;
-            let (lx, anchor) = if cx + 9.0 + label.len() as f64 * 6.8 > W - 6.0 {
-                (cx - 9.0, "end")
-            } else {
-                (cx + 9.0, "start")
-            };
-            let ly = if cy - 20.0 < T + 8.0 {
-                cy + 20.0
-            } else {
-                cy - 9.0
-            };
-            s.push_str(&format!(r#"<text x="{lx:.1}" y="{ly:.1}" font-size="11" fill="{}" text-anchor="{anchor}">{}</text>"#, if frontier { LABEL_COLOR } else { DIM_LABEL_COLOR }, esc(&label)));
         }
+        s.push_str(&format!(r#"<g class="legend-entry" transform="translate({lx:.1} {ly:.1})"><circle class="focus-halo" cx="0" cy="0" r="9" fill="none" stroke="{}" stroke-width="2.5"/>"#, esc(&point.color)));
+        if pending {
+            s.push_str(&format!(r#"<circle cx="0" cy="0" r="5" fill="none" stroke="{DIM_LABEL_COLOR}" stroke-width="1.5" stroke-dasharray="2 2"/>"#));
+        } else if frontier {
+            s.push_str(&format!(
+                r#"<circle cx="0" cy="0" r="5" fill="{}" stroke="{PANEL_BG}" stroke-width="1.2"/>"#,
+                esc(&point.color)
+            ));
+        } else {
+            s.push_str(&format!(
+                r#"<circle cx="0" cy="0" r="4" fill="none" stroke="{}" stroke-width="1.6"/>"#,
+                esc(&point.color)
+            ));
+        }
+        if point.preliminary && !pending {
+            s.push_str(&format!(r#"<circle cx="0" cy="0" r="7.5" fill="none" stroke="{}" stroke-width="1.2" stroke-dasharray="3 2"/>"#, esc(&point.color)));
+        }
+        // Clip by rendered width as well as character count: wide Unicode
+        // glyphs must never spill into the next legend column.
+        s.push_str(&format!(
+            r#"<svg class="legend-label-clip" x="13" y="-10" width="{}" height="20" overflow="hidden"><text class="legend-label" x="0" y="14">{}</text></svg></g></g>"#,
+            LEGEND_COLUMN_WIDTH - 26.0,
+            esc(&compact_legend_text(&point.label))
+        ));
     }
+
     s.push_str(&format!(r#"<text x="{:.1}" y="{}" font-size="12" fill="{TICK_COLOR}" text-anchor="middle">{} &#8212; {} is better &#8594;</text>"#, L + plot_w / 2.0, H - 14.0, esc(&x.name), x.better.as_str()));
     let y_mid = (T + (H - B)) / 2.0;
     s.push_str(&format!(r#"<text transform="translate(16 {y_mid:.1}) rotate(-90)" font-size="12" fill="{TICK_COLOR}" text-anchor="middle">{} &#8212; {} is better &#8593;</text>"#, esc(&y.name), y.better.as_str()));
@@ -753,13 +955,157 @@ mod tests {
         assert!(svg.contains(r##"fill="#268bd2""##));
         assert!(svg.contains("rotate(-90)"));
         assert!(svg.contains("<path d=\"M ")); // staircase
-        assert!(svg.contains("<g opacity=\"0.48\""));
+        assert!(svg.contains("frontier-group preliminary"));
+        assert!(svg.contains(".frontier-group:hover"));
+        assert!(svg.contains(".frontier-group:focus"));
+        assert!(svg.contains("data-group-id=\"group-1234567890abcdef\""));
+        assert!(svg.contains("frontier; preliminary; x=1; y=2"));
         assert!(svg.contains("stroke-dasharray=\"3 2\""));
+        assert!(svg.contains("class=\"legend-label\""));
+        assert!(svg.contains("class=\"hit-target\""));
+        assert!(!svg.contains("class=\"point-label\""));
         assert!(svg.contains("model-with-a-very-long-hash"));
         assert!(svg.contains("needs-grade"));
         assert!(svg.contains("(awaiting_grades)"));
         assert!(svg.contains("grades=x"));
         assert!(svg.contains("&lt;über-long"));
         assert!(!svg.contains('\u{1}'));
+    }
+
+    #[test]
+    fn compact_legend_text_preserves_distinguishing_tail() {
+        let prefix = "界".repeat(40);
+        let a = compact_legend_text(&format!("{prefix}-version-a"));
+        let b = compact_legend_text(&format!("{prefix}-version-b"));
+        assert_ne!(a, b);
+        assert!(a.chars().count() <= 39 && b.chars().count() <= 39);
+    }
+
+    #[test]
+    fn legend_uses_principal_component_order_in_screen_space() {
+        use crate::frontier::grouped::GroupedFrontierPoint;
+        let make = |id: &str| GroupedFrontierPoint {
+            id: id.into(),
+            attributes: Default::default(),
+            label: id.into(),
+            color: "#268bd2".into(),
+            investigations: vec![id.into()],
+            included: vec![id.into()],
+            excluded: vec![],
+            preliminary: false,
+            values: None,
+            on_frontier: Some(true),
+            dominated_by: vec![],
+        };
+        let a = make("a");
+        let b = make("b");
+        let c = make("c");
+        // Higher y maps upward, so these raw values form a top-left to
+        // bottom-right line in screen space. Input order is deliberately mixed.
+        let usable = vec![(&c, 10.0, 0.0), (&a, 0.0, 10.0), (&b, 5.0, 5.0)];
+        let ordered = ordered_legend(
+            &usable,
+            &[],
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert_eq!(
+            ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+
+        // Lower-is-better x is inverted before PCA; visual order is still
+        // left-to-right. A vertical cloud is deterministically top-to-bottom.
+        let lower_x = vec![(&c, 0.0, 0.0), (&a, 10.0, 10.0), (&b, 5.0, 5.0)];
+        let ordered = ordered_legend(
+            &lower_x,
+            &[],
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            &PlotAxis::new("x", BetterDirection::Lower),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert_eq!(
+            ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        let vertical = vec![(&c, 5.0, 0.0), (&b, 5.0, 5.0), (&a, 5.0, 10.0)];
+        let ordered = ordered_legend(
+            &vertical,
+            &[],
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert_eq!(
+            ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn legend_adds_columns_instead_of_shrinking_plot() {
+        use crate::frontier::grouped::{GroupedFrontierPoint, GroupedFrontierResponse};
+        let points = (0..18)
+            .map(|i| GroupedFrontierPoint {
+                id: format!("group-{i:02}"),
+                attributes: Default::default(),
+                label: format!("variant-{i:02}"),
+                color: "#268bd2".into(),
+                investigations: vec![format!("i-{i}")],
+                included: vec![format!("i-{i}")],
+                excluded: vec![],
+                preliminary: false,
+                values: Some([("x".into(), i as f64), ("y".into(), (18 - i) as f64)].into()),
+                on_frontier: Some(true),
+                dominated_by: vec![],
+            })
+            .collect();
+        let svg = render_grouped(
+            &GroupedFrontierResponse { points },
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert!(svg.contains("width=\"1382\""));
+        assert!(svg.contains("data-legend-column=\"1\""));
+        assert_eq!(svg.matches("class=\"legend-entry\"").count(), 18);
+        assert!(svg.contains("class=\"legend-label-clip\""));
+    }
+
+    #[test]
+    fn malformed_value_map_remains_visible_as_pending_evidence() {
+        use crate::frontier::grouped::{GroupedFrontierPoint, GroupedFrontierResponse};
+        let point = GroupedFrontierPoint {
+            id: "group-malformed".into(),
+            attributes: Default::default(),
+            label: "malformed".into(),
+            color: "#268bd2".into(),
+            investigations: vec!["i".into()],
+            included: vec!["i".into()],
+            excluded: vec![],
+            preliminary: false,
+            values: Some([("x".into(), 1.0)].into()),
+            on_frontier: Some(true),
+            dominated_by: vec![],
+        };
+        let svg = render_grouped(
+            &GroupedFrontierResponse {
+                points: vec![point],
+            },
+            &PlotAxis::new("x", BetterDirection::Higher),
+            &PlotAxis::new("y", BetterDirection::Higher),
+        );
+        assert!(svg.contains("frontier-group pending"));
+        assert!(svg.contains("malformed"));
+        assert!(svg.contains("pending / preliminary backlog"));
     }
 }

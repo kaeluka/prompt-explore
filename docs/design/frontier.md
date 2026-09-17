@@ -144,6 +144,14 @@ reversed so up-and-right is always better. Filled circles denote frontier
 points; hollow circles denote dominated points. Preliminary markers add reduced
 opacity and a dashed outer ring; this distinction is separate from dominance.
 Groups with no contributors are listed as pending without fake coordinates.
+Point-adjacent labels are deliberately omitted to avoid clutter. A legend sits
+to the right: plotted groups are ordered by projection onto the first principal
+component of normalized rendered coordinates (after direction inversion), with
+a deterministic left-to-right/top-to-bottom sign and x/y fallback for
+isotropic or degenerate clouds. Pending groups follow by label. Entries fill
+top-to-bottom, adding columns rather than shrinking the plot. Each marker and
+legend entry shares one focusable SVG group, so hover/focus highlights both and
+dims unrelated groups while retaining frontier/dominated/preliminary shapes.
 The UI shows member counts and the missing-grade backlog beside the plot.
 Inline SVG surfaces, grid, text, and point outlines inherit the UI's light/dark
 theme via semantic CSS variables, so toggling needs no refetch. Point hues,
@@ -202,3 +210,10 @@ is introduced.
   form, kept full values in `attributes` and stable identity in `id`, and
   explicitly rejected deriving a visible `g-<hash>` label. The live 8080 SVG
   and table separately displayed the expected value-derived labels.
+- Legend rendering was checked through Chromium's DevTools Protocol. A 38-point
+  synthetic plot filled three columns top-to-bottom without shrinking the plot;
+  a real low/high eight-investigation run verified no text beside dots, the
+  PCA-ordered right legend, bidirectional legend/dot hover, keyboard focus,
+  unrelated-point dimming, accessible state/coordinates, and dark-theme colors.
+  That live check caught transparent hollow-dot centers falling through to the
+  panel; every marker now has an explicit pointer hit area.
