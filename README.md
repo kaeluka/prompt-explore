@@ -228,7 +228,7 @@ Whichever path you take, `--help` prints usage and the environment variables
 
 ```
 $ prompt-explore-server --help
-prompt-explore-server 0.4.2
+prompt-explore-server 0.5.0
 
 Property-based testing for agent behavior. HTTP API + web UI.
 
