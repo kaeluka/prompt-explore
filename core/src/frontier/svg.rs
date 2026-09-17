@@ -607,12 +607,8 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
 .frontier-group:hover .focus-halo, .frontier-group:focus .focus-halo {{ opacity:1; }}
 .legend-label {{ fill:{LABEL_COLOR}; font-size:11px; }}
 .frontier-group.pending .legend-label {{ fill:{DIM_LABEL_COLOR}; }}
-.frontier-envelope {{ cursor:help; outline:none; }}
-.dominated-region {{ opacity:0; pointer-events:all; transition:opacity .12s ease; }}
-.frontier-envelope:hover .dominated-region,
-.frontier-envelope:focus .dominated-region,
-svg:has(.frontier-group.on-frontier:hover) .dominated-region,
-svg:has(.frontier-group.on-frontier:focus) .dominated-region {{ opacity:.12; }}
+.frontier-envelope {{ pointer-events:none; }}
+.dominated-region {{ opacity:.07; }}
 </style>"#
     ));
     s.push_str(&format!(
@@ -687,7 +683,7 @@ svg:has(.frontier-group.on-frontier:focus) .dominated-region {{ opacity:.12; }}
             .collect();
         frontier.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
         if let Some((line, area)) = frontier_paths(&frontier) {
-            s.push_str(&format!(r#"<g class="frontier-envelope" tabindex="0" role="img" aria-label="Pareto-dominated region; hover or focus to shade"><title>Observed Pareto-dominated region</title><path class="dominated-region" d="{area}" fill="{FRONTIER_STROKE}"/><path class="frontier-staircase" d="{line}" fill="none" stroke="{FRONTIER_STROKE}" stroke-width="2" opacity="0.85"/></g>"#));
+            s.push_str(&format!(r#"<g class="frontier-envelope" aria-hidden="true"><path class="dominated-region" d="{area}" fill="{FRONTIER_STROKE}"/><path class="frontier-staircase" d="{line}" fill="none" stroke="{FRONTIER_STROKE}" stroke-width="2" opacity="0.85"/></g>"#));
         }
     }
 
@@ -982,7 +978,9 @@ mod tests {
         assert!(svg.contains("rotate(-90)"));
         assert!(svg.contains("class=\"frontier-staircase\""));
         assert!(svg.contains("class=\"dominated-region\""));
-        assert!(svg.contains("frontier-envelope:hover .dominated-region"));
+        assert!(svg.contains(".dominated-region { opacity:.07; }"));
+        assert!(!svg.contains("Observed Pareto-dominated region"));
+        assert!(!svg.contains("cursor:help"));
         assert!(svg.contains("on-frontier"));
         assert!(svg.contains("frontier-group preliminary"));
         assert!(svg.contains(".frontier-group:hover"));

@@ -39,10 +39,10 @@ supports this without ever judging for you:
   lower-is-better axes are reversed. Filled dots are non-dominated; hollow
   dots are dominated. Labels live in a PCA-ordered legend to the right—not
   beside the dots—and flow into additional columns as groups grow. Hovering or
-  keyboard-focusing a legend entry highlights its dot and vice versa. Hover or
-  focus the corrected axis-aligned staircase to shade the region dominated by
-  observed frontier points. The frontier is relative to the chosen axes, not a
-  verdict.
+  keyboard-focusing a legend entry highlights its dot and vice versa. The
+  corrected axis-aligned staircase lightly shades the region dominated by
+  observed frontier points at all times. The frontier is relative to the
+  chosen axes, not a verdict.
 - **The plot is live.** The UI refreshes as jobs finish, grades/attributes change,
   or jobs are deleted. Groups with running or excluded members are preliminary
   (faded dots with dashed outer rings). Groups with no usable results are

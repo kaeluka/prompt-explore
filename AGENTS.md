@@ -156,7 +156,7 @@ in dominance and use faded markers with dashed outer rings. SVG labels belong
 in a right-side PCA-ordered legend (normalized rendered coordinates), never
 beside dots; marker/legend hover and keyboard focus are linked. The staircase
 is the observed dominated-region boundary (turn at the current point, never
-interpolate) and reveals its shade only on hover/focus. The caller owns
+interpolate) and always has a light, non-interactive fill. The caller owns
 comparability and grading; the harness does only grouping and arithmetic.
 
 ## Experimental Lua simulation
