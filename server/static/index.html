@@ -39,7 +39,11 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.55; }
-  .wrap { max-width: 940px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  /* The standard 760px plot plus one complete legend column needs roughly
+     1100px after card padding. Keep ordinary labels visible without making the
+     user discover a horizontal scrollbar; genuinely long values still scroll
+     inside .frontier-svg rather than being truncated. */
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   header { display: flex; align-items: baseline; gap: 0.7rem; margin-bottom: 1.2rem; flex-wrap: wrap; }
   header h1 { font-size: 1.15rem; margin: 0; }
   header .sub { color: var(--text-dim); font-size: 0.85rem; }
@@ -783,6 +787,10 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, activeGroupId, onActi
   const groupOptionsFor = i => knownAttributeKeys.filter(k => groupBy[i] === k || !groupBy.some((selected, x) => x !== i && selected === k));
   const unusedAttributeKeys = knownAttributeKeys.filter(k => !groupBy.includes(k));
   const addGroupingAttribute = () => { if (unusedAttributeKeys.length) setGroupBy(groupBy.concat([unusedAttributeKeys[0]])); };
+  const transposeAxes = () => {
+    if (axes.length < 2) return;
+    setAxes([axes[1], axes[0], ...axes.slice(2)]);
+  };
   const counts = point => (point.excluded || []).reduce((out, e) => ({ ...out, [e.status]: (out[e.status] || 0) + 1 }), {});
   const groupAttributeText = point => groupBy.length
     ? groupBy.map(k => `${k}=${point.attributes && point.attributes[k] != null ? point.attributes[k] : 'null'}`).join(' · ')
@@ -803,7 +811,10 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, activeGroupId, onActi
       <button class="toggle" disabled=${!unusedAttributeKeys.length} title=${unusedAttributeKeys.length ? 'add another grouping dimension' : 'all available attribute keys are already selected'} onClick=${addGroupingAttribute}>+ grouping attribute</button>
     </div>
     <div style="margin:0.45rem 0">${axes.map((_, i) => axisRow(i))}
-      <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="dominance supports N axes; SVG is two-axis only">+ axis</button>
+      <div class="grow" style="margin-top:0.3rem">
+        <button class="toggle" aria-label="transpose plot axes" disabled=${axes.length < 2} onClick=${transposeAxes} title="swap the x and y axes; each metric keeps its better-direction">⇄ transpose x / y</button>
+        <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="dominance supports N axes; SVG is two-axis only">+ axis</button>
+      </div>
     </div>
     <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'SVG shows two axes; the table and dominance calculation support any number.' : `${names.length} axes — N-dimensional dominance; SVG is available at exactly two axes.`}</div>
     ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}

@@ -143,7 +143,9 @@ position **and frontier membership** can change as evidence arrives.
 
 SVG uses a scatter and the axis-aligned boundary of the observed dominated
 region. Lower-is-better axes are reversed so up-and-right is always better.
-The staircase turns vertically at each current frontier point before continuing
+The UI's transpose control swaps the first two selected metrics while each
+metric retains its own better-direction. The staircase turns vertically at each
+current frontier point before continuing
 to the next and stops at the rightmost observation; it never claims an
 interpolated or unobserved configuration. A permanent low-opacity fill lightly
 shades the union of rectangles dominated by observed frontier points; it has no
