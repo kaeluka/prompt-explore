@@ -418,22 +418,25 @@ fn pending_description(point: &super::grouped::GroupedFrontierPoint) -> String {
 /// the plot rather than receiving invented coordinates. Preliminary points keep
 /// their filled/hollow dominance shape but the entire marker group is subdued.
 const LEGEND_GAP: f64 = 22.0;
-const LEGEND_COLUMN_WIDTH: f64 = 300.0;
+const MIN_LEGEND_COLUMN_WIDTH: f64 = 220.0;
 const LEGEND_ROW_HEIGHT: f64 = 24.0;
 
-fn compact_legend_text(label: &str) -> String {
-    const MAX_CHARS: usize = 39;
-    let chars: Vec<char> = label.chars().collect();
-    if chars.len() <= MAX_CHARS {
-        label.to_string()
-    } else {
-        // Preserve both the readable beginning and distinguishing version or
-        // collision suffix. Rendered-width clipping below prevents wide
-        // Unicode glyphs from entering the next legend column.
-        let left: String = chars[..26].iter().collect();
-        let right: String = chars[chars.len() - 12..].iter().collect();
-        format!("{left}…{right}")
-    }
+/// Reserve enough horizontal space for the complete longest label. SVG uses a
+/// monospace stack, but non-ASCII fallback glyphs can be roughly double-width;
+/// counting them as two cells keeps columns separate without clipping text.
+fn legend_column_width(points: &[super::grouped::GroupedFrontierPoint]) -> f64 {
+    let max_cells = points
+        .iter()
+        .map(|point| {
+            point
+                .label
+                .chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    (max_cells as f64 * 6.8 + 32.0).max(MIN_LEGEND_COLUMN_WIDTH)
 }
 
 /// Order the legend along the first principal component of normalized SCREEN
@@ -450,18 +453,26 @@ fn ordered_legend<'a>(
     yhi: f64,
     x: &PlotAxis,
     y: &PlotAxis,
-) -> Vec<&'a super::grouped::GroupedFrontierPoint> {
+) -> (
+    Vec<&'a super::grouped::GroupedFrontierPoint>,
+    Option<(f64, f64, f64, f64)>, // mean x/y + principal direction in common-scale screen coordinates
+) {
     let plot_w = W - L - R;
     let plot_h = H - T - B;
+    // Preserve the aspect ratio the reader actually sees. Dividing both pixel
+    // axes by ONE common scale keeps magnitudes bounded without warping the
+    // plot into a unit square (which can swap near-adjacent projections).
+    let common_scale = plot_w.max(plot_h);
     let mut positioned: Vec<_> = usable
         .iter()
         .map(|(point, xv, yv)| {
-            let sx = (px(*xv, xlo, xhi, L, W - R, x.better) - L) / plot_w;
-            let sy = (px(*yv, ylo, yhi, H - B, T, y.better) - T) / plot_h;
+            let sx = (px(*xv, xlo, xhi, L, W - R, x.better) - L) / common_scale;
+            let sy = (px(*yv, ylo, yhi, H - B, T, y.better) - T) / common_scale;
             (*point, sx, sy, 0.0)
         })
         .collect();
 
+    let mut principal_axis = None;
     if positioned.len() >= 2 {
         let n = positioned.len() as f64;
         let mx = positioned.iter().map(|(_, sx, _, _)| sx).sum::<f64>() / n;
@@ -487,6 +498,7 @@ fn ordered_legend<'a>(
                 vx = -vx;
                 vy = -vy;
             }
+            principal_axis = Some((mx, my, vx, vy));
             for (_, sx, sy, projection) in &mut positioned {
                 *projection = (*sx - mx) * vx + (*sy - my) * vy;
             }
@@ -512,7 +524,7 @@ fn ordered_legend<'a>(
     let mut pending = unplotted.to_vec();
     pending.sort_by(|a, b| a.label.cmp(&b.label).then(a.id.cmp(&b.id)));
     ordered.extend(pending);
-    ordered
+    (ordered, principal_axis)
 }
 
 /// Render grouped frontier points with a PCA-ordered legend to the right.
@@ -562,10 +574,11 @@ pub fn render_grouped(response: &GroupedFrontierResponse, x: &PlotAxis, y: &Plot
     } else {
         response.points.len().div_ceil(legend_rows)
     };
+    let legend_column_width = legend_column_width(&response.points);
     let svg_w = W + if legend_columns == 0 {
         0.0
     } else {
-        LEGEND_GAP + legend_columns as f64 * LEGEND_COLUMN_WIDTH
+        LEGEND_GAP + legend_columns as f64 * legend_column_width
     };
     let plot_w = W - L - R;
     let plot_h = H - T - B;
@@ -584,6 +597,7 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
 .frontier-group.pending .legend-label {{ fill:{DIM_LABEL_COLOR}; }}
 </style>"#
     ));
+    s.push_str(&format!(r#"<defs><clipPath id="pca-plot-clip"><rect x="{L}" y="{T}" width="{plot_w}" height="{plot_h}"/></clipPath></defs>"#));
     s.push_str(&format!(
         r#"<rect width="{svg_w}" height="{svg_h}" fill="{PAGE_BG}"/>"#
     ));
@@ -623,6 +637,8 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
         (xt, xlo, xhi, yt, ylo, yhi)
     };
 
+    let (legend, principal_axis) = ordered_legend(&usable, &unplotted, xlo, xhi, ylo, yhi, x, y);
+
     if !usable.is_empty() {
         let step_x = xt.get(1).copied().unwrap_or(xhi) - xt.first().copied().unwrap_or(xhi);
         let step_y = yt.get(1).copied().unwrap_or(yhi) - yt.first().copied().unwrap_or(yhi);
@@ -642,6 +658,17 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
             ));
             s.push_str(&format!(r#"<text x="{}" y="{:.1}" font-size="11" fill="{TICK_COLOR}" text-anchor="end">{}</text>"#, L - 8.0, at + 4.0, esc(&fmt_tick(tick, step_y))));
         }
+        // Temporary visual aid while validating legend order. It uses the
+        // exact PCA mean/direction that drives projection sorting, clipped to
+        // the plot rectangle so the right-side legend remains untouched.
+        if let Some((mx, my, vx, vy)) = principal_axis {
+            let common_scale = plot_w.max(plot_h);
+            let cx = L + mx * common_scale;
+            let cy = T + my * common_scale;
+            let reach = 2000.0;
+            s.push_str(&format!(r##"<g class="pca-helper" opacity="0.72" pointer-events="none" clip-path="url(#pca-plot-clip)"><line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#b58900" stroke-width="1.5" stroke-dasharray="7 5"/><text x="{:.1}" y="{:.1}" font-size="10" fill="#b58900">legend PCA</text></g>"##, cx - vx * reach, cy - vy * reach, cx + vx * reach, cy + vy * reach, cx + 7.0, cy - 7.0));
+        }
+
         let mut frontier: Vec<(f64, f64)> = usable
             .iter()
             .filter(|(p, _, _)| p.on_frontier == Some(true))
@@ -677,11 +704,10 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
             )
         })
         .collect();
-    let legend = ordered_legend(&usable, &unplotted, xlo, xhi, ylo, yhi, x, y);
     for (index, point) in legend.iter().enumerate() {
         let row = index % legend_rows;
         let column = index / legend_rows;
-        let lx = W + LEGEND_GAP + column as f64 * LEGEND_COLUMN_WIDTH + 7.0;
+        let lx = W + LEGEND_GAP + column as f64 * legend_column_width + 7.0;
         let ly = T + row as f64 * LEGEND_ROW_HEIGHT + 11.0;
         let coordinates = coordinate_by_id.get(point.id.as_str()).copied();
         let frontier = point.on_frontier == Some(true);
@@ -754,12 +780,9 @@ svg:has(.frontier-group:focus) .frontier-group:not(:focus) {{ opacity:.18; }}
         if point.preliminary && !pending {
             s.push_str(&format!(r#"<circle cx="0" cy="0" r="7.5" fill="none" stroke="{}" stroke-width="1.2" stroke-dasharray="3 2"/>"#, esc(&point.color)));
         }
-        // Clip by rendered width as well as character count: wide Unicode
-        // glyphs must never spill into the next legend column.
         s.push_str(&format!(
-            r#"<svg class="legend-label-clip" x="13" y="-10" width="{}" height="20" overflow="hidden"><text class="legend-label" x="0" y="14">{}</text></svg></g></g>"#,
-            LEGEND_COLUMN_WIDTH - 26.0,
-            esc(&compact_legend_text(&point.label))
+            r#"<text class="legend-label" x="13" y="4">{}</text></g></g>"#,
+            esc(&point.label)
         ));
     }
 
@@ -973,12 +996,25 @@ mod tests {
     }
 
     #[test]
-    fn compact_legend_text_preserves_distinguishing_tail() {
-        let prefix = "界".repeat(40);
-        let a = compact_legend_text(&format!("{prefix}-version-a"));
-        let b = compact_legend_text(&format!("{prefix}-version-b"));
-        assert_ne!(a, b);
-        assert!(a.chars().count() <= 39 && b.chars().count() <= 39);
+    fn legend_width_preserves_complete_ascii_and_wide_unicode_labels() {
+        use crate::frontier::grouped::GroupedFrontierPoint;
+        let make = |id: &str, label: String| GroupedFrontierPoint {
+            id: id.into(),
+            attributes: Default::default(),
+            label,
+            color: "#268bd2".into(),
+            investigations: vec![],
+            included: vec![],
+            excluded: vec![],
+            preliminary: false,
+            values: None,
+            on_frontier: None,
+            dominated_by: vec![],
+        };
+        let ascii = make("a", "a".repeat(60));
+        let wide = make("b", "界".repeat(40));
+        let width = legend_column_width(&[ascii, wide]);
+        assert!(width >= 40.0 * 2.0 * 6.8 + 32.0);
     }
 
     #[test]
@@ -1003,7 +1039,7 @@ mod tests {
         // Higher y maps upward, so these raw values form a top-left to
         // bottom-right line in screen space. Input order is deliberately mixed.
         let usable = vec![(&c, 10.0, 0.0), (&a, 0.0, 10.0), (&b, 5.0, 5.0)];
-        let ordered = ordered_legend(
+        let (ordered, axis) = ordered_legend(
             &usable,
             &[],
             0.0,
@@ -1013,6 +1049,7 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Higher),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
+        assert!(axis.is_some());
         assert_eq!(
             ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
@@ -1021,7 +1058,7 @@ mod tests {
         // Lower-is-better x is inverted before PCA; visual order is still
         // left-to-right. A vertical cloud is deterministically top-to-bottom.
         let lower_x = vec![(&c, 0.0, 0.0), (&a, 10.0, 10.0), (&b, 5.0, 5.0)];
-        let ordered = ordered_legend(
+        let (ordered, axis) = ordered_legend(
             &lower_x,
             &[],
             0.0,
@@ -1031,12 +1068,13 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Lower),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
+        assert!(axis.is_some());
         assert_eq!(
             ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
         );
         let vertical = vec![(&c, 5.0, 0.0), (&b, 5.0, 5.0), (&a, 5.0, 10.0)];
-        let ordered = ordered_legend(
+        let (ordered, axis) = ordered_legend(
             &vertical,
             &[],
             0.0,
@@ -1046,10 +1084,60 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Higher),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
+        assert!(axis.is_some());
         assert_eq!(
             ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
         );
+    }
+
+    #[test]
+    fn pca_order_preserves_rendered_aspect_ratio() {
+        use crate::frontier::grouped::GroupedFrontierPoint;
+        let make = |id: &str| GroupedFrontierPoint {
+            id: id.into(),
+            attributes: Default::default(),
+            label: id.into(),
+            color: "#268bd2".into(),
+            investigations: vec![id.into()],
+            included: vec![id.into()],
+            excluded: vec![],
+            preliminary: false,
+            values: None,
+            on_frontier: Some(true),
+            dominated_by: vec![],
+        };
+        let kh = make("keyboard-high");
+        let kl = make("keyboard-low");
+        let lh = make("lamp-high");
+        let ll = make("lamp-low");
+        let mh = make("mug-high");
+        let ml = make("mug-low");
+        let sh = make("socks-high");
+        let sl = make("socks-low");
+        let usable = vec![
+            (&kh, 281.0, 427.0),
+            (&kl, 245.0, 550.0),
+            (&lh, 310.0, 163.0),
+            (&ll, 239.0, 223.0),
+            (&mh, 316.0, 194.0),
+            (&ml, 186.0, 202.0),
+            (&sh, 278.0, 487.0),
+            (&sl, 175.0, 716.0),
+        ];
+        let (ordered, axis) = ordered_legend(
+            &usable,
+            &[],
+            150.0,
+            350.0,
+            0.0,
+            800.0,
+            &PlotAxis::new("x", BetterDirection::Lower),
+            &PlotAxis::new("y", BetterDirection::Lower),
+        );
+        assert!(axis.is_some());
+        let ids = ordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(&ids[..2], &["mug-high", "lamp-high"]);
     }
 
     #[test]
@@ -1075,10 +1163,13 @@ mod tests {
             &PlotAxis::new("x", BetterDirection::Higher),
             &PlotAxis::new("y", BetterDirection::Higher),
         );
-        assert!(svg.contains("width=\"1382\""));
+        assert!(svg.contains("width=\"1222\""));
         assert!(svg.contains("data-legend-column=\"1\""));
+        assert!(svg.contains("class=\"pca-helper\""));
+        assert!(svg.contains("legend PCA"));
         assert_eq!(svg.matches("class=\"legend-entry\"").count(), 18);
-        assert!(svg.contains("class=\"legend-label-clip\""));
+        assert!(!svg.contains("legend-label-clip"));
+        assert!(svg.contains("variant-17"));
     }
 
     #[test]

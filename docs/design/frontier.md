@@ -149,7 +149,12 @@ to the right: plotted groups are ordered by projection onto the first principal
 component of normalized rendered coordinates (after direction inversion), with
 a deterministic left-to-right/top-to-bottom sign and x/y fallback for
 isotropic or degenerate clouds. Pending groups follow by label. Entries fill
-top-to-bottom, adding columns rather than shrinking the plot. Each marker and
+top-to-bottom, adding columns rather than shrinking the plot. Column width is
+derived from the complete longest label (including conservative Unicode width),
+so labels are never truncated or clipped; the container scrolls horizontally
+when necessary. During validation,
+a temporary dashed `legend PCA` helper line shows the exact fitted axis used for
+ordering; remove it once the visual order is accepted. Each marker and
 legend entry shares one focusable SVG group, so hover/focus highlights both and
 dims unrelated groups while retaining frontier/dominated/preliminary shapes.
 The UI shows member counts and the missing-grade backlog beside the plot.
@@ -216,4 +221,6 @@ is introduced.
   PCA-ordered right legend, bidirectional legend/dot hover, keyboard focus,
   unrelated-point dimming, accessible state/coordinates, and dark-theme colors.
   That live check caught transparent hollow-dot centers falling through to the
-  panel; every marker now has an explicit pointer hit area.
+  panel; every marker now has an explicit pointer hit area. Headed inspection
+  also caught label clipping; truncation and nested clips were removed, and
+  live bounding-box checks now verify every full label stays inside the SVG.
