@@ -40,8 +40,10 @@ use prompt_explore::llm::{
     cost_usd, list_all_map,
 };
 use prompt_explore::model::input::{Investigation, PromptUnderTest};
-use prompt_explore::model::output::RunResult;
-use prompt_explore::model::simulation::{RunProgress, Scenario, SimulationProgram, TraceTurn};
+use prompt_explore::model::output::RunFailure;
+use prompt_explore::model::simulation::{
+    RunPhase, RunProgress, Scenario, SimulationProgram, TraceTurn,
+};
 use prompt_explore::simulate::lua::LuaOptions;
 use prompt_explore::simulate::{
     DEFAULT_MAX_WORKSPACE_TURNS, RunnerOptions, Workspace, WorkspaceToolLimits,
@@ -100,7 +102,6 @@ struct AppState {
 struct Job {
     status: JobStatus,
     result: Option<InvestigateResponse>,
-    error: Option<String>,
     /// Live progress: populated as PUT model turns are simulated.
     progress: Arc<std::sync::Mutex<RunProgress>>,
     /// Wall-clock start, epoch millis.
@@ -113,9 +114,9 @@ struct Job {
     reason: Option<String>,
     /// The prompt under test.
     put: PromptUnderTest,
-    /// The full input scenarios (narrative, world_state, simulator_notes),
-    /// so the ground truth is visible while the run unfolds.
-    scenarios: Vec<Scenario>,
+    /// The input scenario (narrative, world_state, simulator_notes), so the
+    /// ground truth is visible while the run unfolds.
+    scenario: Scenario,
     /// The resolved model name running the prompt under test (the `put_model`
     /// from the request, or the server default). Stored so the dashboard
     /// can show which model produced the traces — set at job creation,
@@ -228,11 +229,10 @@ struct InvestigateRequest {
     /// resolved on the job view so traces remain reproducible.
     #[serde(default)]
     conversation_controls: ConversationControls,
-    /// The test cases to run. Required; ALL of them are run (an explicit
-    /// list is a contract — the step/token budget applies per trace, not
-    /// to the count). Scenarios are authored outside this API and are
-    /// editable before running: reviewing them is the intended workflow.
-    scenarios: Vec<Scenario>,
+    /// The required test case to run: one world specification, input domain,
+    /// and protagonist. A job represents exactly one scenario; `scenarios` is
+    /// not a compatibility alias and is rejected as an unknown field.
+    scenario: Scenario,
     /// Caller-owned campaign attributes. This field is literally `attributes`;
     /// there is no `tags` alias and unknown fields are rejected. Keys use
     /// `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.
@@ -263,8 +263,8 @@ struct ConversationControls {
     /// Crashes/limits also delegate, with a distinct error record; staged Lua
     /// writes are rolled back before fallback. Computed replies enter the SAME
     /// simulator conversation without another LLM call. No random/time/host IO.
-    /// Inspect simulation_program beside resolved_inputs on attempts and live
-    /// progress, and each tool_exchanges[].lua_execution for exact revision,
+    /// Inspect simulation_program beside resolved_inputs on result.trace and
+    /// live progress, and each tool_exchanges[].lua_execution for exact revision,
     /// computed/fallback/error outcome and discarded operations. Generated code
     /// is unverified simulation evidence, not ground truth or a verdict.
     #[serde(default)]
@@ -354,30 +354,26 @@ impl Default for ResolvedConversationControls {
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct InvestigateResponse {
-    /// Run-level outcome and scenario failures. In GET /api/investigations/{id},
-    /// the exact failure path is `result.result.failures`, NOT `result.failures`.
-    /// Completed traces are the sibling `result.attempts` array.
-    result: RunResult,
-    /// How many of the input scenarios completed a trace.
-    scenarios_run: usize,
-    /// Every completed run — the evidence. The caller reads these traces
-    /// and judges; the harness produces no verdict.
-    attempts: Vec<AttemptView>,
-    /// Cumulative token usage and call counts across the whole run,
-    /// split by model role: the prompt under test (`put`) and the tool
-    /// simulator (`sim`). Read them separately — the sim is the test
-    /// environment (often the bigger spender, since every tool response
-    /// and input resolution goes through it), the PUT is the agent
-    /// under test.
+    /// The completed evidence, if the scenario ran to a trace. Null when the
+    /// run failed before a trace could be produced.
+    #[schema(required = true)]
+    trace: Option<TraceView>,
+    /// Failure evidence, if the conversation failed (job status `failed`).
+    /// Null when `trace` is present. There is no completed trace on failure:
+    /// read `progress.turns`, `progress.resolved_inputs`, and
+    /// `progress.simulation_program` on the job for evidence collected before
+    /// the error. If a later tool call in one completion failed, the last
+    /// progress turn may contain only that completion's successful exchanges.
+    /// Do not discard those exchanges or setup artifacts.
+    #[schema(required = true)]
+    failure: Option<RunFailure>,
+    /// Cumulative token usage and call counts, split by the prompt under test
+    /// (`put`) and the simulator (`sim`). Present even when `failure` is set.
     usage: UsageByRole,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
-struct AttemptView {
-    /// The scenario this attempt ran, BY VALUE (no id) — the attempt is
-    /// self-describing: here is the world, the input domain, the opening
-    /// turn, and the trace they produced.
-    scenario: Scenario,
+struct TraceView {
     /// Structured PUT model turns, rendered as whole turn objects by the UI.
     /// Tool calls requested by one completion are nested together.
     turns: Vec<TraceTurn>,
@@ -416,8 +412,8 @@ struct JobView {
     /// into that slot next).
     id: String,
     status: JobStatus,
-    /// Which LLM phase the investigation is currently in (see RunPhase:
-    /// scenarios). This is the observable status of the job's LLM work.
+    /// Which LLM phase the scenario is currently in (see RunPhase). This is
+    /// the observable status of the job's LLM work.
     /// Mirrors `progress.phase`.
     phase: prompt_explore::model::simulation::RunPhase,
     started_at: u64,
@@ -465,26 +461,24 @@ struct JobView {
     attributes: BTreeMap<String, String>,
     /// The prompt under test.
     put: PromptUnderTest,
-    /// The full input scenarios (narrative = ground truth, etc.).
-    scenarios: Vec<Scenario>,
-    /// Live progress — per-scenario state + PUT model turns simulated so far.
-    /// Populated while running; frozen (all scenarios done/failed) when
-    /// the job finishes. Lets a dashboard show a tool-call log as it
+    /// The input scenario, by value: its narrative is the ground truth for
+    /// interpreting the trace and progress.
+    scenario: Scenario,
+    /// Live progress for this scenario, populated while running and frozen
+    /// when the job finishes. Lets a dashboard show a tool-call log as it
     /// happens.
     progress: RunProgress,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<InvestigateResponse>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct JobSummary {
     id: String,
     status: JobStatus,
+    /// Observable current LLM phase; never infer job work from bare `running`.
+    phase: RunPhase,
     started_at: u64,
-    /// How many scenarios this job is running.
-    scenarios: usize,
     /// Immutable provenance plus caller-owned campaign attributes, sufficient for
     /// a list view to group/filter before fetching full job evidence.
     attributes: BTreeMap<String, String>,
@@ -517,19 +511,18 @@ struct InvestigationPatchView {
     info(
         title = "prompt-explore API",
         version = env!("CARGO_PKG_VERSION"),
-        description = "Property-based testing for agent behavior. You AUTHOR scenarios \
-                       (test cases: a world, an input domain, and a protagonist — see the \
-                       Scenario schema) and submit them with a prompt under test (PUT) and an \
-                       optional free-form `reason` justifying the run. Every scenario is run: the simulator picks \
-                       concrete inputs from the input domain, renders the world's tools, and the \
-                       PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every \
-                       scenario — the world, the input domain, the resolved inputs, and the full \
-                       trace of model turns. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
+        description = "Property-based testing for agent behavior. You AUTHOR one scenario \
+                       (a test case: a world, an input domain, and a protagonist — see the \
+                       Scenario schema) and submit it with a prompt under test (PUT) and an \
+                       optional free-form `reason` justifying the run. A job runs that one scenario: the simulator \
+                       picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in \
+                       it. The harness then surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, \
+                       and full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
                        The `reason` justifies the run — what it aims to accomplish, what \
                        changed compared to previous runs, what a reader should know (there \
                        is no strict standard) — and is surfaced with the result to guide \
                        reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; \
-                       the deliverable is the set of traces, and the caller reads them and \
+                       the deliverable is the conversation trace, and the caller reads it and \
                        decides what (if anything) to fix. The API is job-based: POST returns \
                        a job id immediately; poll GET /api/investigations/{id} for the result.
 
@@ -554,11 +547,10 @@ struct InvestigationPatchView {
                        PleaseSimulateException; runtime errors delegate with explicit error \
                        evidence and rolled-back Lua writes. The generated source and revision \
                        history are visible in simulation_program, beside resolved_inputs, on \
-                       both progress.scenarios[] and result.attempts[]. Each exchange records \
-                       lua_execution when tried. All computed/LLM responses enter the same \
-                       simulator conversation. Each progress scenario reports its phase: \
-                       resolving_inputs, preparing_tools, or put_loop (scenarios can be in \
-                       different phases concurrently). Lua has only bounded workspace \
+                       both progress and result.trace. Each exchange records lua_execution when \
+                       tried. All computed/LLM responses enter the same simulator conversation. \
+                       Progress reports its phase: resolving_inputs, preparing_tools, or put_loop. \
+                       Lua has only bounded workspace \
                        capabilities, no host IO, randomness, or clock. The caller judges code \
                        and traces against the narrative; example_responses remain realism \
                        hints, NOT pinned outputs.
@@ -747,43 +739,40 @@ fn build_app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// A DONE job fabricated for tests and the `--demo-frontier` mode:
-/// `steps_per_trace` attempts of the given step counts, and a PUT that
-/// burned `out_tokens` output tokens. Realistic shapes, made-up numbers
-/// (clearly a fixture — no LLM was billed).
+/// A DONE job fabricated for tests and the `--demo-frontier` mode: one
+/// scenario with a trace of `steps` completions and a PUT that burned
+/// `out_tokens` output tokens. Realistic shapes, made-up numbers (clearly a
+/// fixture — no LLM was billed).
 #[allow(dead_code)]
 fn fabricate_done_job(
     job_id: &str,
     put_id: &str,
     template: &str,
     out_tokens: u64,
-    steps_per_trace: &[usize],
+    steps: usize,
 ) -> (String, Job) {
-    let attempts: Vec<AttemptView> = steps_per_trace
-        .iter()
-        .map(|n| AttemptView {
-            scenario: Scenario {
-                world: "Demo world: order O-1 exists and belongs to the user. Facts: \
-                        the user has NOT asked to cancel anything."
-                    .into(),
-                input_domain: HashMap::new(),
-                user_message: Some("yes".into()),
-                simulator_notes: String::new(),
-            },
-            turns: vec![
-                TraceTurn {
-                    model_output: "Order O-1 is confirmed cancelled.".into(),
-                    thinking: None,
-                    tool_exchanges: vec![],
-                };
-                *n
-            ],
-            final_world_state: HashMap::new(),
-            tool_calls: 0,
-            resolved_inputs: HashMap::new(),
-            simulation_program: None,
-        })
-        .collect();
+    let scenario = Scenario {
+        world: "Demo world: order O-1 exists and belongs to the user. Facts: \
+                the user has NOT asked to cancel anything."
+            .into(),
+        input_domain: HashMap::new(),
+        user_message: Some("yes".into()),
+        simulator_notes: String::new(),
+    };
+    let trace = TraceView {
+        turns: vec![
+            TraceTurn {
+                model_output: "Order O-1 is confirmed cancelled.".into(),
+                thinking: None,
+                tool_exchanges: vec![],
+            };
+            steps
+        ],
+        final_world_state: HashMap::new(),
+        tool_calls: 0,
+        resolved_inputs: HashMap::new(),
+        simulation_program: None,
+    };
     let usage = UsageByRole {
         put: prompt_explore::llm::UsageTotals {
             input_tokens: 4200,
@@ -796,23 +785,15 @@ fn fabricate_done_job(
             ..Default::default()
         },
     };
-    let n = attempts.len();
     (
         job_id.to_string(),
         Job {
             status: JobStatus::Done,
             result: Some(InvestigateResponse {
-                result: RunResult {
-                    status: prompt_explore::model::output::RunStatus::Completed,
-                    scenarios_tried: n as u32,
-                    failures: vec![],
-                    final_state: None,
-                },
-                scenarios_run: n,
-                attempts,
+                trace: Some(trace),
+                failure: None,
                 usage,
             }),
-            error: None,
             progress: Arc::new(Mutex::new(RunProgress::default())),
             started_at: 0,
             reason: Some(
@@ -826,7 +807,7 @@ fn fabricate_done_job(
                 design_goals: "Cancel orders only on explicit user request.".into(),
             },
             grades: BTreeMap::new(),
-            scenarios: vec![],
+            scenario,
             put_model: "zai_coding::glm-5.2".into(),
             sim_model: "zai_coding::glm-5.2".into(),
             put_thinking_level: None,
@@ -1125,10 +1106,17 @@ async fn index() -> impl axum::response::IntoResponse {
         .into_response()
 }
 
-/// Start an investigation: run every given scenario against the PUT and
-/// surface the resulting traces. There is no judge — the caller reads
-/// the traces and judges. Runs in the background; poll the returned id.
-/// The result includes every attempt (scenario + trace) and token usage.
+/// Start an investigation: run its required scenario against the PUT and
+/// surface the resulting trace or failure evidence. There is no judge — the
+/// caller reads the trace and judges. Runs in the background; poll the returned
+/// id. The result includes token usage even on failure.
+///
+/// One investigation is one conversation: send `scenario`, not `scenarios`.
+/// For different worlds/workspaces or repeated samples, submit independent
+/// investigations and group them using attributes. Each repeated submission
+/// resolves inputs and simulates afresh; it does not isolate PUT variability
+/// with fixed inputs/tool responses. There is no sample-count field, batch
+/// endpoint, or reusable workspace handle. Every upload is independent.
 ///
 /// Two request shapes are accepted:
 /// - `application/json` — the body is an `InvestigateRequest` (no workspace).
@@ -1164,7 +1152,7 @@ async fn index() -> impl axum::response::IntoResponse {
         description = "Send as `application/json` (no workspace), OR as `multipart/form-data` with a `request` part (this JSON) and an optional `workspace` part (a .zip that seeds the simulator's in-memory filesystem). See the endpoint description.",
         examples((
             "minimal" = (
-                summary = "A tool-less PUT, one scenario, no model overrides",
+                summary = "A cancellation tool, one scenario, no model overrides",
                 value = json!({
                     "investigation": {
                         "reason": "After tightening the confirmation rule: does the agent still confirm a destructive action the user never actually asked for?",
@@ -1183,12 +1171,10 @@ async fn index() -> impl axum::response::IntoResponse {
                             }
                         ]
                     },
-                    "scenarios": [
-                        {
-                            "user_message": "yes",
-                            "world": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
-                        }
-                    ]
+                    "scenario": {
+                        "user_message": "yes",
+                        "world": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
+                    }
                 })
             )
         ))
@@ -1196,7 +1182,7 @@ async fn index() -> impl axum::response::IntoResponse {
     security(("api_token" = [])),
     responses(
         (status = 202, description = "Investigation job created", body = JobCreated),
-        (status = 400, description = "Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.result.failures."),
+        (status = 400, description = "Malformed request body (including legacy `scenarios`), invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.failure."),
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
@@ -1517,12 +1503,11 @@ fn spawn_investigation(
         Job {
             status: JobStatus::Running,
             result: None,
-            error: None,
             progress: progress.clone(),
             started_at,
             reason: req.investigation.reason.clone(),
             put: req.put.clone(),
-            scenarios: req.scenarios.clone(),
+            scenario: req.scenario.clone(),
             put_model: put_model.clone(),
             sim_model: sim_model.clone(),
             put_thinking_level,
@@ -1565,23 +1550,18 @@ fn spawn_investigation(
             .investigate(
                 &req.investigation,
                 &req.put,
-                &req.scenarios,
+                &req.scenario,
                 Some(progress.clone()),
             )
             .await;
 
-        let attempts = outcome
-            .attempts
-            .iter()
-            .map(|a| AttemptView {
-                scenario: a.scenario.clone(),
-                turns: a.trace.turns.clone(),
-                final_world_state: a.trace.final_world_state.clone(),
-                tool_calls: a.trace.tool_call_count(),
-                resolved_inputs: a.trace.resolved_inputs.clone(),
-                simulation_program: a.trace.simulation_program.clone(),
-            })
-            .collect();
+        let trace = outcome.trace.as_ref().map(|trace| TraceView {
+            turns: trace.turns.clone(),
+            final_world_state: trace.final_world_state.clone(),
+            tool_calls: trace.tool_call_count(),
+            resolved_inputs: trace.resolved_inputs.clone(),
+            simulation_program: trace.simulation_program.clone(),
+        });
 
         // Attach estimated USD cost where the model catalog prices the
         // model that produced the usage. Absent (field omitted) for
@@ -1613,11 +1593,14 @@ fn spawn_investigation(
 
         let mut jobs = state2.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id2) {
-            job.status = JobStatus::Done;
+            job.status = if trace.is_some() {
+                JobStatus::Done
+            } else {
+                JobStatus::Failed
+            };
             job.result = Some(InvestigateResponse {
-                result: outcome.result,
-                scenarios_run: outcome.scenarios.len(),
-                attempts,
+                trace,
+                failure: outcome.failure,
                 usage,
             });
         }
@@ -1626,26 +1609,79 @@ fn spawn_investigation(
     id
 }
 
-/// List all jobs (for the dashboard). Running jobs first, then by
-/// recency. Returns summaries only — poll a job's id for full progress.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ListInvestigationsQuery {
+    /// Optional URL-encoded JSON object of exact stored attribute matches.
+    attributes: Option<String>,
+}
+
+fn parse_attribute_filters(raw: &str) -> Result<BTreeMap<String, String>, String> {
+    let filters: BTreeMap<String, String> = serde_json::from_str(raw).map_err(|error| {
+        format!("attributes query must be a JSON object of string key/value pairs: {error}")
+    })?;
+    for (key, value) in &filters {
+        if !attributes::valid_attribute_name(key) {
+            return Err(format!(
+                "attributes query key '{key}' fails ^[a-z][a-z0-9_]{{0,63}}$"
+            ));
+        }
+        if value.len() > attributes::MAX_ATTRIBUTE_VALUE_BYTES {
+            return Err(format!(
+                "attributes query value for '{key}' exceeds {} UTF-8 bytes",
+                attributes::MAX_ATTRIBUTE_VALUE_BYTES
+            ));
+        }
+    }
+    Ok(filters)
+}
+
+/// List all jobs (for the dashboard). Running jobs first, then by recency.
+/// Returns summaries only — poll a job's id for full progress. Optionally pass
+/// `attributes` as a URL-encoded JSON object of string key/value pairs; every
+/// pair must exactly match a stored attribute (AND semantics). Omit it to list
+/// all jobs. This filters only this listing, never POST /api/frontier.
 #[utoipa::path(
     get,
     path = "/api/investigations",
+    params(("attributes" = Option<String>, Query, description = "Optional URL-encoded JSON object of exact attribute string matches, e.g. `?attributes=%7B%22campaign%22%3A%22spring%22%7D`. Pairs are ANDed; omit to list all. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`; malformed JSON/shapes/keys return 400. This does NOT filter POST /api/frontier.")),
     security(("api_token" = [])),
     responses(
-        (status = 200, description = "All jobs", body = [JobSummary]),
+        (status = 200, description = "All matching job summaries", body = [JobSummary]),
+        (status = 400, description = "Malformed attributes query JSON, shape, or key"),
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
-async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<JobSummary>> {
+async fn list_investigations(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListInvestigationsQuery>,
+) -> Response {
+    let filters = match query.attributes {
+        None => BTreeMap::new(),
+        Some(raw) => match parse_attribute_filters(&raw) {
+            Ok(filters) => filters,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": error })),
+                )
+                    .into_response();
+            }
+        },
+    };
     let jobs = state.jobs.lock().unwrap();
     let mut rows: Vec<JobSummary> = jobs
         .iter()
+        .filter(|(_, job)| {
+            filters
+                .iter()
+                .all(|(key, value)| job.attributes.get(key) == Some(value))
+        })
         .map(|(id, j)| JobSummary {
             id: id.clone(),
             status: j.status,
+            phase: j.progress.lock().unwrap().phase,
             started_at: j.started_at,
-            scenarios: j.progress.lock().unwrap().scenarios.len(),
             attributes: j.attributes.clone(),
         })
         .collect();
@@ -1655,18 +1691,19 @@ async fn list_investigations(State(state): State<Arc<AppState>>) -> Json<Vec<Job
         let br = b.status == JobStatus::Running;
         br.cmp(&ar).then_with(|| b.started_at.cmp(&a.started_at))
     });
-    Json(rows)
+    Json(rows).into_response()
 }
 
 /// Poll an investigation job. `progress` is always present (live model turns
-/// while running, frozen when done); `result` is present once done.
+/// while running, frozen on completion); `result` is present once the job is
+/// `done` (trace) or `failed` (failure evidence).
 #[utoipa::path(
     get,
     path = "/api/investigations/{id}",
     params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
     security(("api_token" = [])),
     responses(
-        (status = 200, description = "Job status + live progress (+ result when done)", body = JobView),
+        (status = 200, description = "Job status + live progress (+ result when done or failed)", body = JobView),
         (status = 404, description = "Unknown job id"),
         (status = 401, description = "Missing or invalid bearer token")
     )
@@ -1698,10 +1735,9 @@ async fn get_investigation(
         grades: job.grades.clone(),
         attributes: job.attributes.clone(),
         put: job.put.clone(),
-        scenarios: job.scenarios.clone(),
+        scenario: job.scenario.clone(),
         progress: progress_snapshot,
         result: job.result.clone(),
-        error: job.error.clone(),
     }))
 }
 
@@ -1889,20 +1925,9 @@ fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
         id: id.to_string(),
         status: match job.status {
             JobStatus::Running => SnapshotStatus::Running,
-            // The job lifecycle says the worker finished, not that it produced
-            // traces. All-scenario errors are failed evidence, never cheap
-            // zero-token candidates. Partial runs remain caller-judgeable.
-            JobStatus::Done
-                if result.is_some_and(|r| {
-                    r.attempts.is_empty()
-                        || matches!(
-                            r.result.status,
-                            prompt_explore::model::output::RunStatus::Error
-                        )
-                }) =>
-            {
-                SnapshotStatus::Failed
-            }
+            // A done job has one completed trace. Failed evidence is retained
+            // on the job result but never becomes a cheap frontier candidate.
+            JobStatus::Done if result.is_none_or(|r| r.trace.is_none()) => SnapshotStatus::Failed,
             JobStatus::Done => SnapshotStatus::Done,
             JobStatus::Failed => SnapshotStatus::Failed,
         },
@@ -1911,20 +1936,18 @@ fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
         usage: result.map(|r| r.usage),
         put_model: Some(job.put_model.clone()),
         sim_model: Some(job.sim_model.clone()),
-        // Budget-step count remains one per tool call or one per final
-        // completion. Multi-tool turns are atomic but still consume one unit
-        // per nested exchange. Completed attempts only.
+        // One job has one trace, so its snapshot contributes one step count.
+        // A tool exchange is one step; a text-only completion is one step.
         steps_per_trace: result
-            .map(|r| {
-                r.attempts
-                    .iter()
-                    .map(|a| {
-                        a.turns
-                            .iter()
-                            .map(|turn| turn.tool_exchanges.len().max(1) as u64)
-                            .sum()
-                    })
-                    .collect()
+            .and_then(|r| r.trace.as_ref())
+            .map(|trace| {
+                vec![
+                    trace
+                        .turns
+                        .iter()
+                        .map(|turn| turn.tool_exchanges.len().max(1) as u64)
+                        .sum(),
+                ]
             })
             .unwrap_or_default(),
     }
@@ -1945,10 +1968,10 @@ struct FrontierQuery {
 /// put model, thinking setting, and behavior-only prompt hash). Each point
 /// retains its member ids and explicit exclusions. Running/failed/ungraded
 /// members are successful evidence, not a 422: poll jobs, PATCH grades, then
-/// POST this same request again to update preliminary coordinates. An all-error
-/// run (`result.result.status=error`) or a no-op with zero completed traces is
-/// a failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if
-/// all requested values exist; judging their adequacy belongs to the caller.
+/// POST this same request again to update preliminary coordinates. A failed
+/// run (`result.failure` is present and `result.trace` is null) is a failed
+/// exclusion; a done job contributes its single trace. Judging trace adequacy
+/// remains the caller's responsibility.
 #[utoipa::path(
     post,
     path = "/api/frontier",
@@ -2092,16 +2115,10 @@ mod tests {
         }
     }
 
-    /// Seed a DONE job whose attempts have `steps_len` steps each and
-    /// whose PUT model burned `out` output tokens.
-    fn seed_done_job(
-        state: &Arc<AppState>,
-        id: &str,
-        put_id: &str,
-        out: u64,
-        steps_len: Vec<usize>,
-    ) {
-        let (id, job) = fabricate_done_job(id, put_id, "demo template", out, &steps_len);
+    /// Seed a DONE job with one trace of `steps` completions. A fixture job
+    /// never fabricates multiple conversations.
+    fn seed_done_job(state: &Arc<AppState>, id: &str, put_id: &str, out: u64, steps: usize) {
+        let (id, job) = fabricate_done_job(id, put_id, "demo template", out, steps);
         state.jobs.lock().unwrap().insert(id, job);
     }
 
@@ -2147,7 +2164,7 @@ mod tests {
         let request = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 1}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenarios": []
+            "scenario": {"world": "Fixture world."}
         })
         .to_string();
         let mut body = Vec::new();
@@ -2215,7 +2232,7 @@ mod tests {
     #[tokio::test]
     async fn patch_grades_merges_deletes_and_echoes() {
         let state = test_state();
-        seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "job-1", "cancel-bot", 100, 2);
         let app = build_app(state);
 
         // Set two axes.
@@ -2275,6 +2292,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn job_view_has_singular_trace_progress_and_failure_shapes() {
+        let state = test_state();
+        seed_done_job(&state, "done", "cancel-bot", 100, 2);
+        seed_done_job(&state, "failed", "cancel-bot", 100, 2);
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            let failed = jobs.get_mut("failed").unwrap();
+            failed.status = JobStatus::Failed;
+            let result = failed.result.as_mut().unwrap();
+            result.trace = None;
+            result.failure = Some(RunFailure {
+                stage: "runner".into(),
+                error: "fixture failure".into(),
+            });
+        }
+        let app = build_app(state);
+        for (id, status) in [("done", "done"), ("failed", "failed")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::get(format!("/api/investigations/{id}"))
+                        .body(String::new())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["status"], status);
+            assert!(body["scenario"].is_object());
+            assert!(body.get("scenarios").is_none());
+            assert!(body["progress"].get("scenarios").is_none());
+            assert!(body["progress"]["turns"].is_array());
+            assert!(body["result"]["usage"].is_object());
+            assert!(body["result"].get("result").is_none());
+            assert!(body["result"].get("attempts").is_none());
+            assert!(body["result"].get("failures").is_none());
+            if id == "done" {
+                assert!(body["result"]["trace"].is_object());
+                assert!(body["result"]["failure"].is_null());
+            } else {
+                assert!(body["result"]["trace"].is_null());
+                assert_eq!(body["result"]["failure"]["stage"], "runner");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn list_investigations_filters_attributes_with_exact_and_semantics() {
+        let state = test_state();
+        seed_done_job(&state, "one", "cancel-bot", 100, 1);
+        seed_done_job(&state, "two", "cancel-bot", 100, 1);
+        seed_done_job(&state, "three", "cancel-bot", 100, 1);
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            jobs.get_mut("one").unwrap().attributes.extend([
+                ("campaign".into(), "spring".into()),
+                ("variant".into(), "a".into()),
+            ]);
+            jobs.get_mut("two").unwrap().attributes.extend([
+                ("campaign".into(), "spring".into()),
+                ("variant".into(), "b".into()),
+            ]);
+            jobs.get_mut("three")
+                .unwrap()
+                .attributes
+                .insert("campaign".into(), "fall".into());
+        }
+        let app = build_app(state);
+        let get = |uri: &str| HttpRequest::get(uri).body(String::new()).unwrap();
+        let all = app
+            .clone()
+            .oneshot(get("/api/investigations"))
+            .await
+            .unwrap();
+        let all: Value = serde_json::from_slice(
+            &axum::body::to_bytes(all.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(all.as_array().unwrap().len(), 3);
+        assert!(all[0]["phase"].is_string());
+        assert!(all[0].get("scenarios").is_none());
+
+        let filtered = app
+            .clone()
+            .oneshot(get("/api/investigations?attributes=%7B%22campaign%22%3A%22spring%22%2C%22variant%22%3A%22a%22%7D"))
+            .await
+            .unwrap();
+        let filtered: Value = serde_json::from_slice(
+            &axum::body::to_bytes(filtered.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(filtered.as_array().unwrap().len(), 1);
+        assert_eq!(filtered[0]["id"], "one");
+
+        let malformed = app
+            .clone()
+            .oneshot(get("/api/investigations?attributes=%5B%5D"))
+            .await
+            .unwrap();
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        let bad_key = app
+            .oneshot(get(
+                "/api/investigations?attributes=%7B%22bad%20key%22%3A%22x%22%7D",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(bad_key.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn multipart_workspace_attributes_ignore_archive_metadata_but_track_content() {
         let early = zip::DateTime::from_date_and_time(2024, 1, 2, 3, 4, 6).unwrap();
         let late = zip::DateTime::from_date_and_time(2025, 2, 3, 4, 5, 8).unwrap();
@@ -2327,7 +2464,7 @@ mod tests {
     #[tokio::test]
     async fn attributes_merge_delete_and_invalid_siblings_are_atomic() {
         let state = test_state();
-        seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "job-1", "cancel-bot", 100, 2);
         let app = build_app(state.clone());
 
         let (code, view) = patch_job(
@@ -2400,7 +2537,7 @@ mod tests {
         let body = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 2}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenarios": [],
+            "scenario": {"world": "Fixture world."},
             "attributes": {"put_model": "forged"}
         });
         let response = app
@@ -2419,7 +2556,7 @@ mod tests {
         let legacy = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 2}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenarios": [],
+            "scenario": {"world": "Fixture world."},
             "tags": {"label": "legacy"}
         });
         let response = app
@@ -2588,7 +2725,12 @@ mod tests {
                 put_thinking_level: put_level,
                 sim_thinking_level: sim_level,
                 conversation_controls: ConversationControls::default(),
-                scenarios: vec![],
+                scenario: Scenario {
+                    world: "Fixture world.".into(),
+                    input_domain: HashMap::new(),
+                    user_message: None,
+                    simulator_notes: String::new(),
+                },
                 attributes: BTreeMap::new(),
             }
         };
@@ -2696,12 +2838,41 @@ mod tests {
     fn unknown_thinking_level_word_is_a_parse_error() {
         // The vocabulary fails fast at deserialization, before any
         // provider logic runs.
-        let bad = r#"{"investigation": {"budget": {"max_steps_per_trace": 2}}, "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []}, "scenarios": [], "put_thinking_level": "ultra"}"#;
+        let bad = r#"{"investigation": {"budget": {"max_steps_per_trace": 2}}, "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []}, "scenario": {"world": "Fixture world."}, "put_thinking_level": "ultra"}"#;
         assert!(serde_json::from_str::<InvestigateRequest>(bad).is_err());
         let good = bad.replace("\"ultra\"", "\"xhigh\"");
         let req: InvestigateRequest = serde_json::from_str(&good).unwrap();
         assert_eq!(req.put_thinking_level, Some(ThinkingLevel::Xhigh));
         assert_eq!(req.sim_thinking_level, None);
+    }
+
+    #[tokio::test]
+    async fn post_requires_one_scenario_and_rejects_legacy_scenarios_as_unknown() {
+        let app = build_app(test_state());
+        let body = serde_json::json!({
+            "investigation": {"budget": {"max_steps_per_trace": 1}},
+            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "scenario": {"world": "Fixture world."},
+            "scenarios": [{"world": "legacy world"}]
+        });
+        let response = app
+            .oneshot(
+                HttpRequest::post("/api/investigations")
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("unknown field `scenarios`"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]
@@ -2711,7 +2882,7 @@ mod tests {
         let body = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 2}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenarios": [],
+            "scenario": {"world": "Fixture world."},
             "put_model": "bedrock_sigv4::global.meta.llama3-1-70b",
             "put_thinking_level": "high"
         });
@@ -2746,7 +2917,7 @@ mod tests {
             let body = serde_json::json!({
                 "investigation": {"budget": {"max_steps_per_trace": 2}},
                 "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-                "scenarios": [],
+                "scenario": {"world": "Fixture world."},
                 "put_model": model,
                 "sim_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
                 "put_thinking_level": "high",
@@ -2806,7 +2977,7 @@ mod tests {
         let request = serde_json::json!({
             "investigation": {"budget": {"max_steps_per_trace": 0}},
             "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenarios": [],
+            "scenario": {"world": "Fixture world."},
             "put_model": "bedrock_sigv4::global.meta.llama3-1-70b",
             "put_thinking_level": "high"
         })
@@ -2848,7 +3019,7 @@ mod tests {
     #[tokio::test]
     async fn patch_grades_rejects_reserved_and_bad_names() {
         let state = test_state();
-        seed_done_job(&state, "job-1", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "job-1", "cancel-bot", 100, 2);
         let app = build_app(state);
 
         let (code, v) = patch_job(&app, "job-1", r#"{"grades": {"put_cost_usd": 1.0}}"#).await;
@@ -2867,16 +3038,17 @@ mod tests {
     #[tokio::test]
     async fn all_error_runs_are_failed_exclusions_not_zero_cost_candidates() {
         let state = test_state();
-        seed_done_job(&state, "failed-run", "p", 0, vec![1]);
+        seed_done_job(&state, "failed-run", "p", 0, 1);
         {
             let mut jobs = state.jobs.lock().unwrap();
             let job = jobs.get_mut("failed-run").unwrap();
-            // The production worker always finishes with job status done;
-            // the result is where all-scenario failure is recorded.
+            job.status = JobStatus::Failed;
             let result = job.result.as_mut().unwrap();
-            result.result.status = prompt_explore::model::output::RunStatus::Error;
-            result.attempts.clear();
-            result.scenarios_run = 0;
+            result.trace = None;
+            result.failure = Some(RunFailure {
+                stage: "runner".into(),
+                error: "fixture failure".into(),
+            });
         }
         let app = build_app(state);
         let (status, _, body) = post_frontier(
@@ -2897,48 +3069,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_scenario_noop_is_visible_but_cannot_dominate_real_runs() {
-        let state = test_state();
-        seed_done_job(&state, "empty-run", "empty", 0, vec![]);
-        seed_done_job(&state, "real-run", "real", 10, vec![1]);
-        let app = build_app(state);
-        let (code, _, body) = post_frontier(
-            &app, "?format=json",
-            r#"{"group_by":["prompt_hash"],"axes":[{"name":"put_output_tokens","better":"lower"}]}"#,
-        ).await;
-        assert_eq!(code, StatusCode::OK);
-        let body: Value = serde_json::from_str(&body).unwrap();
-        let points = body["points"].as_array().unwrap();
-        // Different cosmetic prompt IDs need not split the groups. Regardless
-        // of grouping, the empty run remains an explicit failed exclusion.
-        assert!(points.iter().any(|p| {
-            p["excluded"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|e| e["investigation"] == "empty-run" && e["status"] == "failed")
-        }));
-        let real = points
-            .iter()
-            .find(|p| {
-                p["included"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|id| id == "real-run")
-            })
-            .unwrap();
-        assert_eq!(real["values"]["put_output_tokens"], 10.0);
-        assert_eq!(real["on_frontier"], true);
-        assert_eq!(real["dominated_by"], serde_json::json!([]));
-    }
-
-    #[tokio::test]
     async fn frontier_json_and_svg_round_trip() {
         let state = test_state();
-        seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2, 4]);
-        seed_done_job(&state, "v2", "cancel-bot", 2300, vec![2, 4]);
-        seed_done_job(&state, "v3", "cancel-bot", 3100, vec![3, 3]); // dominated by v2
+        seed_done_job(&state, "v1", "cancel-bot", 1450, 2);
+        seed_done_job(&state, "v2", "cancel-bot", 2300, 2);
+        seed_done_job(&state, "v3", "cancel-bot", 3100, 3); // dominated by v2
         let app = build_app(state.clone());
         patch_job(&app, "v1", r#"{"grades": {"tone_of_voice": 0.4}}"#).await;
         patch_job(&app, "v2", r#"{"grades": {"tone_of_voice": 0.85}}"#).await;
@@ -2998,19 +3133,23 @@ mod tests {
     #[tokio::test]
     async fn frontier_typed_problems_over_http() {
         let state = test_state();
-        seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2]);
+        seed_done_job(&state, "v1", "cancel-bot", 1450, 2);
         state.jobs.lock().unwrap().insert(
             "still-running".into(),
             Job {
                 status: JobStatus::Running,
                 result: None,
-                error: None,
                 progress: Arc::new(Mutex::new(RunProgress::default())),
                 started_at: 0,
                 reason: None,
                 put: put("cancel-bot"),
                 grades: BTreeMap::new(),
-                scenarios: vec![],
+                scenario: Scenario {
+                    world: "Fixture world.".into(),
+                    input_domain: HashMap::new(),
+                    user_message: None,
+                    simulator_notes: String::new(),
+                },
                 put_model: "zai_coding::glm-5.2".into(),
                 sim_model: "zai_coding::glm-5.2".into(),
                 put_thinking_level: None,
@@ -3062,8 +3201,8 @@ mod tests {
     #[tokio::test]
     async fn grouped_frontier_backlog_updates_same_group_after_patch() {
         let state = test_state();
-        seed_done_job(&state, "complete", "cancel-bot", 100, vec![2]);
-        seed_done_job(&state, "later", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "complete", "cancel-bot", 100, 2);
+        seed_done_job(&state, "later", "cancel-bot", 100, 2);
         {
             let mut jobs = state.jobs.lock().unwrap();
             let complete = jobs.get_mut("complete").unwrap();
@@ -3113,7 +3252,7 @@ mod tests {
     #[tokio::test]
     async fn grouped_frontier_svg_renders_all_pending_backlog() {
         let state = test_state();
-        seed_done_job(&state, "pending", "cancel-bot", 100, vec![2]);
+        seed_done_job(&state, "pending", "cancel-bot", 100, 2);
         state
             .jobs
             .lock()
@@ -3136,8 +3275,8 @@ mod tests {
     #[tokio::test]
     async fn grouped_frontier_stops_showing_deleted_jobs() {
         let state = test_state();
-        seed_done_job(&state, "keep", "cancel-bot", 100, vec![2]);
-        seed_done_job(&state, "remove", "cancel-bot", 200, vec![2]);
+        seed_done_job(&state, "keep", "cancel-bot", 100, 2);
+        seed_done_job(&state, "remove", "cancel-bot", 200, 2);
         for id in ["keep", "remove"] {
             let mut jobs = state.jobs.lock().unwrap();
             let job = jobs.get_mut(id).unwrap();
@@ -3181,7 +3320,7 @@ mod tests {
     #[tokio::test]
     async fn frontier_rejects_svg_with_non_two_axes() {
         let state = test_state();
-        seed_done_job(&state, "v1", "cancel-bot", 1450, vec![2]);
+        seed_done_job(&state, "v1", "cancel-bot", 1450, 2);
         let app = build_app(state);
         let (code, _ct, body) = post_frontier(
             &app,

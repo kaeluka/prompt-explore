@@ -72,12 +72,10 @@
     "sim_max_tokens": 8192,
     "lua_simulation": {}
   },
-  "scenarios": [
-    {
+  "scenario": {
       "world": "The entire inventory consists of A with stock 3, B with stock 0, C with stock 7, and D with stock 2. These are ALL items. lookup returns exactly an object with sku and stock. Any other SKU returns {\"error\":\"not found\"}. No inventory changes occur unless set_stock is called. Never invent items, orders or other facts. set_stock replaces the stock count of an existing SKU, reflected in future lookup and audit. It never creates missing items. audit reports only events that actually occurred and the current stock. Use world-state keys equal to SKU names for changed counts.",
       "input_domain": {},
       "user_message": "First set A to stock 11. After that succeeds, look up A. Finally audit A and report the new stock plus the sequence of actions.",
       "simulator_notes": ""
-    }
-  ]
+  }
 }

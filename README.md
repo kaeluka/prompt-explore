@@ -14,6 +14,19 @@ A user of `prompt-explore` can steer the simulator's behaviour by controlling th
 
 The tool is 100% sandboxed, no tool calls can ever reach the outside, no hard drive or IO access to any tools. This makes it easy and secure to run many scenarios in parallel.
 
+## One investigation, one conversation
+
+Each investigation runs **one authored scenario** against one prompt under test,
+with one optional workspace upload. Submit separate investigations concurrently
+for different worlds/workspaces or repeated runs; use attributes to group them.
+There is no batch or sample-count field. Repeating a scenario samples its inputs
+and simulation anew, not just the PUT's response to fixed inputs.
+
+The request uses `scenario` (not `scenarios`). Inspect the complete conversation
+at `result.trace`, or the failure at `result.failure`; live and failed partial
+evidence remains in the flat `progress` object. The job's `phase` reports
+`resolving_inputs`, `preparing_tools`, or `put_loop`.
+
 ## Multi-dimensional prompt optimization (grades + Pareto frontier)
 
 Optimizing a prompt is never only about correctness — you also care about
@@ -58,6 +71,18 @@ like any other selected attribute. Model attributes use resolved names;
 missing thinking settings are `provider_default` (different from explicit
 `none`). Prompt hashes exclude the cosmetic PUT id; workspace hashes describe
 extracted paths and contents, not zip metadata.
+
+The UI groups investigation cards by the same selected attributes as the plot.
+Hover/focus links a point or legend entry to its card group; activate it to scroll
+there. For API browsing, filter the list with exact attribute matches:
+
+```bash
+curl -sS -G http://127.0.0.1:8080/api/investigations \
+  --data-urlencode 'attributes={"campaign":"support"}'
+```
+
+Multiple pairs are ANDed; missing attributes do not match. This filters only
+the list response, never frontier candidacy.
 
 Everything remains in memory: restarting loses investigations, attributes, and grades.
 Groups and their frontier are computed on demand; an API caller polls the same
@@ -129,13 +154,15 @@ The same request with `?format=svg` renders the plot and pending/backlog
 information. The UI shows membership and the grading backlog alongside it.
 
 **Aggregation is deliberately simple:** every included investigation has equal
-weight. All requested coordinates use the same complete cohort. Until the
-separate single-scenario change, investigations can still contain several
-scenarios—means of investigation totals are not per-scenario normalization.
+weight. All requested coordinates use the same complete cohort. Each
+investigation contributes one conversation's measurements and caller grades.
 Keep scenarios, budgets, grading scales, and simulator settings comparable;
 the harness surfaces membership but does not judge comparability.
 
-**API migration:** the former `investigations` selection field on frontier
+**API migration:** investigations now require singular `scenario`; read
+`result.trace` or `result.failure` and flat `progress`. Split old scenario arrays
+into separate submissions. See [the single-conversation contract](docs/design/single-conversation.md).
+The former `investigations` selection field on frontier
 requests is replaced by `group_by`; old selection requests are rejected rather
 than silently broadened to all jobs. Groups with missing data now appear in a
 successful response, not a missing-grade 422. Invalid axes/grouping still
@@ -361,11 +388,11 @@ curl --fail-with-body -sS http://127.0.0.1:8080/api/investigations \
   "put_thinking_level": "high",
   "sim_thinking_level": "none",
   "conversation_controls": {"put_max_tokens": 2048, "sim_max_tokens": 2048},
-  "scenarios": [{
+  "scenario": {
     "world": "SKU-7 is a Solar Lantern with stock 3. This is the complete inventory; no other SKUs exist and stock never changes. lookup_stock returns the requested SKU and its stock count, or an unknown-SKU error. Never invent items or contradict these facts.",
     "input_domain": {},
     "user_message": "Is SKU-7 in stock?"
-  }]
+  }
 }
 JSON
 ```
@@ -377,9 +404,10 @@ is `done` or `failed`, or watch the run in the web UI:
 curl -sS http://127.0.0.1:8080/api/investigations/REPLACE_WITH_ID
 ```
 
-Read `result.attempts[].turns[]` for the model output and tool exchanges,
-and **check `result.result.failures` even when the job is `done`**. The caller
-judges the trace; the harness does not grade whether Luna behaved correctly.
+Read `result.trace.turns[]` for the model output and tool exchanges. A failed
+job exposes `result.failure`; inspect `progress.turns`, `progress.resolved_inputs`,
+and `progress.simulation_program` for the evidence collected before it failed.
+The caller judges the trace; the harness does not grade whether Luna behaved correctly.
 If server authentication is enabled, add your `Authorization: Bearer ...`
 header to both requests.
 
@@ -399,7 +427,7 @@ The pin will be removed once an upstream crates.io release includes it.
 
 It usually is a good idea to design an experiment up front:
 
-- Select or scenarios for evaluation. Make sure the scenarios are appropriately varied.
+- Author scenarios for evaluation. Make sure the scenarios are appropriately varied.
 - Define what success looks like:
   - for hard to define or composite qualities, consider designing a rubric to optimize for up front. Write the rubric down.
   - for classification problems: do you have reliable ground truth? Chances are, you can decide the ground truth and write a scenario to match it!

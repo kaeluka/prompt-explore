@@ -68,9 +68,10 @@ pub enum SideEffect {
     Write,
 }
 
-/// An investigation: run the given scenarios against the PUT and
-/// surface the resulting traces. Nothing is judged in-harness — the
-/// caller reads the traces and judges.
+/// An investigation's controls: run one supplied scenario against the PUT
+/// and surface its resulting trace. Callers that want a corpus run invoke the
+/// singular operation once per scenario. Nothing is judged in-harness — the
+/// caller reads the trace and judges.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Investigation {
     /// Free-form justification for the run — WHY it exists and what a
@@ -81,7 +82,7 @@ pub struct Investigation {
     /// write whatever makes the run intelligible later.
     ///
     /// Advisory only: surfaced with the result to guide reading the
-    /// traces, NEVER used as an oracle. The harness runs scenarios and
+    /// traces, NEVER used as an oracle. The harness runs a scenario and
     /// surfaces evidence; the caller is the judge. Optional — omit it
     /// when you just want to observe behavior with no particular
     /// framing.

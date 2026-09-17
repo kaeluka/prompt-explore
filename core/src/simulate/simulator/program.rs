@@ -2,12 +2,12 @@
 //! Every attempt uses a fresh Lua VM and a staged workspace. Only validated
 //! computed replies commit; explicit delegation and errors both use the LLM.
 use super::*;
-use crate::model::simulation::{LuaOutcome, ProgramRevision, ScenarioPhase};
+use crate::model::simulation::{LuaOutcome, ProgramRevision, RunPhase};
 use crate::simulate::lua::{self, LuaExecution, PROGRAM_PATH};
 
 impl SimSession {
-    pub(crate) fn set_progress(&mut self, progress: Option<Arc<Mutex<RunProgress>>>, index: usize) {
-        self.progress = progress.map(|p| (p, index));
+    pub(crate) fn set_progress(&mut self, progress: Option<Arc<Mutex<RunProgress>>>) {
+        self.progress = progress;
     }
 
     pub fn simulation_program(&self) -> Option<&SimulationProgram> {
@@ -24,9 +24,9 @@ impl SimSession {
         if tools.is_empty() {
             return Ok(());
         }
-        if let Some((progress, index)) = &self.progress {
+        if let Some(progress) = &self.progress {
             if let Ok(mut p) = progress.lock() {
-                p.set_scenario_phase(*index, ScenarioPhase::PreparingTools);
+                p.set_phase(RunPhase::PreparingTools);
             }
         }
         if self.workspace.file_bytes(PROGRAM_PATH).is_none() {
@@ -94,10 +94,9 @@ impl SimSession {
     }
 
     fn publish_program(&self) {
-        if let (Some(program), Some((progress, index))) = (&self.simulation_program, &self.progress)
-        {
+        if let (Some(program), Some(progress)) = (&self.simulation_program, &self.progress) {
             if let Ok(mut p) = progress.lock() {
-                p.set_program(*index, program.clone());
+                p.set_program(program.clone());
             }
         }
     }

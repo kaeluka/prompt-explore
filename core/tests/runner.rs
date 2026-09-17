@@ -1,7 +1,7 @@
 //! End-to-end runner test with scripted PUT-model and simulator
 //! responses: no network, fully deterministic.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
@@ -88,7 +88,7 @@ async fn tool_call_loop_runs_and_mutates_state() {
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget(), 0, None)
+        .run(&support_put(), &scenario(), &budget(), None)
         .await
         .unwrap();
 
@@ -140,7 +140,7 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget(), 0, None)
+        .run(&support_put(), &scenario(), &budget(), None)
         .await
         .unwrap();
 
@@ -177,7 +177,7 @@ async fn runner_options_reach_put_requests() {
     );
 
     runner
-        .run(&put, &scenario(), &budget(), 0, None)
+        .run(&put, &scenario(), &budget(), None)
         .await
         .unwrap();
 
@@ -210,12 +210,103 @@ async fn empty_tool_array_means_single_shot() {
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&put, &scenario(), &budget(), 0, None)
+        .run(&put, &scenario(), &budget(), None)
         .await
         .unwrap();
 
     assert_eq!(trace.turns.len(), 1);
     assert!(trace.turns[0].tool_exchanges.is_empty());
+}
+
+#[tokio::test]
+async fn failed_sibling_keeps_completed_exchanges_in_one_progress_turn() {
+    let put_model = MockLlmClient::scripted(vec![ChatResponse {
+        content: Some("I will cancel both orders.".into()),
+        thinking: Some("Both cancellations are requested together.".into()),
+        tool_calls: vec![
+            ToolCallRequest {
+                id: "call_1".into(),
+                name: "cancel_order".into(),
+                arguments: r#"{"order_id":"A-1234"}"#.into(),
+            },
+            ToolCallRequest {
+                id: "call_2".into(),
+                name: "cancel_order".into(),
+                arguments: r#"{"order_id":"B-5678"}"#.into(),
+            },
+        ],
+        usage: None,
+    }]);
+    // The first simulation consults its workspace and succeeds with a write
+    // patch. The second simulator call exhausts this script and fails.
+    let sim_model = MockLlmClient::scripted(vec![
+        ChatResponse {
+            content: None,
+            thinking: None,
+            tool_calls: vec![ToolCallRequest {
+                id: "workspace_1".into(),
+                name: "write".into(),
+                arguments: r#"{"path":"audit","content":"first cancellation"}"#.into(),
+            }],
+            usage: None,
+        },
+        ChatResponse {
+            content: Some(
+                r#"{"response":{"cancelled":"A-1234"},"state_patch":{"orders":{"A-1234":{"status":"cancelled"}}}}"#.into(),
+            ),
+            thinking: None,
+            tool_calls: vec![],
+            usage: None,
+        },
+    ]);
+    let runner = Runner::new(
+        Arc::new(put_model),
+        "put-model",
+        None,
+        Arc::new(sim_model),
+        "sim-model",
+        None,
+        Workspace::empty(),
+        RunnerOptions::default(),
+    );
+    let progress = Arc::new(Mutex::new(RunProgress::default()));
+
+    let error = runner
+        .run(
+            &support_put(),
+            &scenario(),
+            &budget(),
+            Some(progress.clone()),
+        )
+        .await
+        .expect_err("the second simulator call fails");
+
+    assert!(error.to_string().contains("mock script exhausted"));
+    let progress = progress.lock().unwrap();
+    assert_eq!(
+        progress.turns.len(),
+        1,
+        "one model completion stays one turn"
+    );
+    let turn = &progress.turns[0];
+    assert_eq!(turn.model_output, "I will cancel both orders.");
+    assert_eq!(
+        turn.thinking.as_deref(),
+        Some("Both cancellations are requested together.")
+    );
+    assert_eq!(
+        turn.tool_exchanges.len(),
+        1,
+        "no failed exchange is invented"
+    );
+    let exchange = &turn.tool_exchanges[0];
+    assert_eq!(exchange.call.args["order_id"], "A-1234");
+    assert_eq!(exchange.response["cancelled"], "A-1234");
+    assert_eq!(
+        exchange.world_state_after.as_ref().unwrap()["orders"]["A-1234"]["status"],
+        "cancelled"
+    );
+    assert_eq!(exchange.workspace_ops[0].tool, "write");
 }
 
 #[tokio::test]
@@ -269,7 +360,6 @@ async fn multi_tool_completion_is_one_atomic_turn() {
                 max_steps_per_trace: 1,
                 max_tokens: None,
             },
-            0,
             None,
         )
         .await

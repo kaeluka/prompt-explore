@@ -45,13 +45,13 @@ pub async fn run() {
     // The campaign: one PUT lineage ("cancel-bot"), four template
     // variants. Output tokens rise as the tone instructions grow; the
     // caller grades the soft axes after reading each variant's traces.
-    let campaign: Vec<(&str, &str, &str, u64, &[usize])> = vec![
+    let campaign: Vec<(&str, &str, &str, u64, usize)> = vec![
         (
             "v1-terse",
             "cancel-bot",
             "You cancel orders. Confirm before cancelling.",
             1450,
-            &[2, 4],
+            2,
         ),
         (
             "v2-warm",
@@ -59,7 +59,7 @@ pub async fn run() {
             "You cancel orders. Confirm before cancelling. Sound warm and \
              apologetic; acknowledge the inconvenience.",
             2300,
-            &[2, 4],
+            2,
         ),
         (
             "v3-balanced",
@@ -67,7 +67,7 @@ pub async fn run() {
             "You cancel orders. Confirm before cancelling. Be polite but \
              brief; one sentence of acknowledgment at most.",
             1800,
-            &[2, 3],
+            2,
         ),
         (
             "v4-verbose",
@@ -76,7 +76,7 @@ pub async fn run() {
              refund timeline, restate the order contents, offer alternatives \
              before cancelling, and summarize in a closing paragraph.",
             3100,
-            &[3, 3, 5],
+            3,
         ),
     ];
     for (job_id, put_id, template, out, steps) in campaign {

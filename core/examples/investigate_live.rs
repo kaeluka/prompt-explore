@@ -102,29 +102,23 @@ async fn main() {
     };
 
     let InvestigateOutcome {
-        result, attempts, ..
+        scenario,
+        trace,
+        failure,
     } = investigator
-        .investigate(&investigation, &put, &[scenario], None)
+        .investigate(&investigation, &put, &scenario, None)
         .await;
 
-    println!(
-        "\n=== RESULT: {:?} ({} scenarios tried, {} trace(s)) ===",
-        result.status,
-        result.scenarios_tried,
-        attempts.len()
-    );
-
-    // The harness surfaces every trace; the caller is the judge.
-    for (i, att) in attempts.iter().enumerate() {
-        println!("\n=== TRACE {i} ===");
-        println!("resolved inputs: {:?}", att.trace.resolved_inputs);
-        println!("{}", render_transcript(&att.trace));
-    }
-
-    if !result.failures.is_empty() {
-        println!("\n=== FAILURES ===");
-        for f in &result.failures {
-            println!("[{}] {}", f.stage, f.error);
+    println!("\n=== SCENARIO ===\n{}", scenario.world);
+    match (trace, failure) {
+        (Some(trace), None) => {
+            println!("\n=== TRACE ===");
+            println!("resolved inputs: {:?}", trace.resolved_inputs);
+            println!("{}", render_transcript(&trace));
         }
+        (None, Some(failure)) => {
+            println!("\n=== FAILURE ===\n[{}] {}", failure.stage, failure.error);
+        }
+        _ => unreachable!("an investigation has exactly one trace or failure"),
     }
 }

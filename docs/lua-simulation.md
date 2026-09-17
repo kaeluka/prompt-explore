@@ -98,15 +98,17 @@ computed exchange.
 
 ## Evidence and UI
 
-- `progress.scenarios[].simulation_program` is published during preparation,
+- `progress.simulation_program` is published during preparation,
   including on failures before the first PUT turn.
-- `result.attempts[].simulation_program` preserves source revisions and setup
+- `result.trace.simulation_program` preserves source revisions and setup
   workspace operations/reasoning alongside `resolved_inputs`.
 - `tool_exchanges[].lua_execution` identifies the **zero-based revision** tried,
   `computed` / `fallback` / `error`, diagnostic, and discarded operations.
   Committed operations remain in ordinary `workspace_ops`.
-- Each scenario's `phase` reports `resolving_inputs`, `preparing_tools`, or
-  `put_loop`; concurrent scenarios can be in different phases.
+- The investigation's `phase` (also `progress.phase`) reports `resolving_inputs`,
+  `preparing_tools`, or `put_loop`; concurrent investigations can be in different
+  phases. On failure, `result.failure` explains the error and the flat `progress`
+  retains resolved inputs, source revisions, setup work, and completed PUT turns.
 - The UI displays escaped, copyable source and earlier revisions near resolved
   inputs, with neutral execution labels. Source is never browser markup.
 

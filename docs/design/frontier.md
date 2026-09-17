@@ -9,17 +9,18 @@ Every investigation in server memory is a candidate. Pick **grouping attribute
 names** and **axes**. Each unique combination of attribute values becomes a point.
 Coordinates are arithmetic means over completed investigations having a value
 on **every** requested axis. Each included investigation has equal weight.
-No explicit investigation selection, filter language, or weighting framework.
-Delete investigations that should not contribute.
+No frontier candidate selection, filter language, or weighting framework.
+The GET-list attribute filter only changes browsing; it never changes this
+cohort. Delete investigations that should not contribute.
 
 This supports one point for a prompt/model configuration evaluated across
 several workspace uploads. Workspace identity need not be a grouping key.
 
-The scenario API is unchanged in this increment: one investigation can still
-contain multiple scenarios. These are means of investigation metrics, not
-per-scenario normalization. A separate change may make each investigation one
-scenario. Benchmark coverage, repeated-run weighting, grading scales, and
-simulator comparability remain the caller's responsibility.
+Each investigation runs one scenario and produces one conversation. Means of
+investigation metrics therefore weight conversations equally. Repeat a scenario
+by submitting separate investigations; no nested samples are required. Benchmark
+coverage, repeated-run weighting, grading scales, and simulator comparability
+remain the caller's responsibility.
 
 ## Attributes
 

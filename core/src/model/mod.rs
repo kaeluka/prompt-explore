@@ -1,10 +1,10 @@
 //! The pure model layer.
 //!
 //! Data types for one investigation iteration:
-//! `input` (PUT + investigation) → `simulation` (scenarios + traces) →
-//! `output` (status, attempts, failures). There is no predicate layer
-//! and no verdict: the harness runs scenarios and surfaces traces; the
-//! caller is the judge.
+//! `input` (PUT + investigation + one scenario) → `simulation` (trace) →
+//! `output` (a run failure, when no trace was produced). There is no predicate
+//! layer and no verdict: the harness runs one scenario and surfaces its trace;
+//! the caller is the judge.
 //!
 //! This layer has no runtime dependencies: no LLM clients, no I/O,
 //! no async. Everything here is plain serializable data.

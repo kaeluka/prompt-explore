@@ -99,7 +99,7 @@ async fn main() {
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&put, &scenario, &budget, 0, None)
+        .run(&put, &scenario, &budget, None)
         .await
         .expect("run failed");
 

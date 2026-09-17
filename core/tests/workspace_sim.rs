@@ -105,7 +105,7 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         seeded_workspace(),
         RunnerOptions::default(),
     );
-    let trace = runner.run(&put, &scenario, &budget, 0, None).await.unwrap();
+    let trace = runner.run(&put, &scenario, &budget, None).await.unwrap();
 
     // The first turn's tool exchange must carry the workspace read the
     // simulator performed, with the REAL seeded content as the result.
@@ -178,11 +178,113 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
         Workspace::empty(),
         RunnerOptions::default(),
     );
-    let trace = runner
-        .run(&put, &scenario, &budget(), 0, None)
-        .await
-        .unwrap();
+    let trace = runner.run(&put, &scenario, &budget(), None).await.unwrap();
     assert!(trace.turns[0].tool_exchanges[0].workspace_ops.is_empty());
+}
+
+#[tokio::test]
+async fn direct_runner_calls_get_isolated_workspace_overlays() {
+    let put_model = MockLlmClient::scripted(vec![
+        tool_call("first"),
+        final_reply(),
+        tool_call("second"),
+        final_reply(),
+    ]);
+    // The first trace writes scratch state. The second trace attempts to read
+    // it; that read must see a fresh overlay rather than the first trace's write.
+    let sim_model = MockLlmClient::scripted(vec![
+        workspace_call("write", json!({"path":"scratch", "content":"first trace"})),
+        simulator_reply(),
+        workspace_call("read", json!({"path":"scratch"})),
+        simulator_reply(),
+    ]);
+    let put = workspace_put();
+    let scenario = Scenario {
+        world: "The simulator may use its workspace as private scratch.".into(),
+        input_domain: Default::default(),
+        user_message: None,
+        simulator_notes: String::new(),
+    };
+    let runner = Runner::new(
+        Arc::new(put_model),
+        "put",
+        None,
+        Arc::new(sim_model),
+        "sim",
+        None,
+        Workspace::empty(),
+        RunnerOptions::default(),
+    );
+
+    let first = runner.run(&put, &scenario, &budget(), None).await.unwrap();
+    let second = runner.run(&put, &scenario, &budget(), None).await.unwrap();
+
+    assert_eq!(
+        first.turns[0].tool_exchanges[0].workspace_ops[0].tool,
+        "write"
+    );
+    let read = &second.turns[0].tool_exchanges[0].workspace_ops[0];
+    assert_eq!(read.tool, "read");
+    assert!(read.result.get("error").is_some());
+}
+
+fn workspace_put() -> PromptUnderTest {
+    PromptUnderTest {
+        id: "workspace".into(),
+        template: "Use the probe tool.".into(),
+        tools: vec![ToolSchema {
+            name: "probe".into(),
+            description: "Probe the simulated environment.".into(),
+            parameters: json!({"type":"object"}),
+            side_effect: SideEffect::Read,
+            example_responses: vec![],
+        }],
+        design_goals: String::new(),
+    }
+}
+
+fn tool_call(id: &str) -> ChatResponse {
+    ChatResponse {
+        content: None,
+        thinking: None,
+        tool_calls: vec![ToolCallRequest {
+            id: id.into(),
+            name: "probe".into(),
+            arguments: "{}".into(),
+        }],
+        usage: None,
+    }
+}
+
+fn final_reply() -> ChatResponse {
+    ChatResponse {
+        content: Some("done".into()),
+        thinking: None,
+        tool_calls: vec![],
+        usage: None,
+    }
+}
+
+fn workspace_call(name: &str, arguments: serde_json::Value) -> ChatResponse {
+    ChatResponse {
+        content: None,
+        thinking: None,
+        tool_calls: vec![ToolCallRequest {
+            id: format!("workspace-{name}"),
+            name: name.into(),
+            arguments: arguments.to_string(),
+        }],
+        usage: None,
+    }
+}
+
+fn simulator_reply() -> ChatResponse {
+    ChatResponse {
+        content: Some(r#"{"response":"ok"}"#.into()),
+        thinking: None,
+        tool_calls: vec![],
+        usage: None,
+    }
 }
 
 fn budget() -> Budget {

@@ -23,8 +23,8 @@ use serde_json::Value;
 /// (for example Bedrock Meta models). Model-specific keyword support is
 /// checked by the provider DURING execution, not prevalidated at POST.
 /// A 202 response therefore does not guarantee the level is supported:
-/// poll GET /api/investigations/{id} and inspect `result.result.failures`
-/// for provider rejections, alongside the traces. Other providers may
+/// poll the investigation and inspect its singular run failure for provider
+/// rejections, alongside the trace/progress evidence. Other providers may
 /// map effort differently; do not assume that a level is portable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]

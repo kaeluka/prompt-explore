@@ -36,12 +36,10 @@
     "sim_max_tokens": 8192,
     "lua_simulation": {}
   },
-  "scenarios": [
-    {
+  "scenario": {
       "world": "The complete inventory is: X1 has stock 2; X2 has stock 4; X3 has stock 6; X4 has stock 8; X5 has stock 10; X6 has stock 12; X7 has stock 14; X8 has stock 16; X9 has stock 18; X10 has stock 20; X11 has stock 22; X12 has stock 24; X13 has stock 26; X14 has stock 28; X15 has stock 30; X16 has stock 32; X17 has stock 34; X18 has stock 36; X19 has stock 38; X20 has stock 40. These are ALL items. lookup returns exactly {sku,stock} for an existing SKU. Names must match exactly, including case and digits: X01 does NOT exist and must return {\"error\":\"not found\"}, as must any other missing name. No mutations, time effects, additional records, or other facts exist. Never invent items.",
       "input_domain": {},
       "user_message": "Look up every SKU X1 through X20, and also X01, using a separate lookup call for each. You may request multiple calls together. Report all observed results in a compact table.",
       "simulator_notes": ""
-    }
-  ]
+  }
 }

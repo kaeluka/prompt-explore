@@ -69,121 +69,61 @@ pub enum LuaOutcome {
     Error,
 }
 
-/// Per-scenario phase: scenarios run concurrently, so one may still prepare
-/// its Lua module while another already executes PUT turns.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ScenarioPhase {
-    #[default]
-    ResolvingInputs,
-    PreparingTools,
-    PutLoop,
-}
-
-/// The LLM phase an investigation is currently in. Exposed so a reader can
-/// see what the job is doing while it runs — never just a bare "running".
-/// See the API description: every LLM phase is an observable status.
+/// The LLM phase of the single scenario currently being run. Exposed so a
+/// reader can see live work rather than a bare "running" status.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
-    /// Scenarios are running: the PUT tool loop is simulating each
-    /// scenario (one or more in flight — see `scenarios` for each one's
-    /// state). There is no separate judging phase — the harness runs
-    /// scenarios and surfaces traces; the caller reads them and judges.
+    /// The simulator is choosing concrete values from the input domain.
     #[default]
-    Scenarios,
+    ResolvingInputs,
+    /// The optional Lua simulator is preparing its program.
+    PreparingTools,
+    /// The prompt under test is executing its conversation/tool loop.
+    PutLoop,
 }
 
-/// Live progress of a run, exposed while it's in flight: one entry per
-/// scenario (positional — index = position in the submitted list), with
-/// its PUT model turns accumulated as they are simulated. The runner pushes;
-/// the server/UI poll and render.
+/// Live progress for one scenario. The runner updates this flat value as work
+/// proceeds; if the run fails, already resolved inputs, program revisions, and
+/// completed turns remain available as evidence.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunProgress {
-    /// Which LLM phase the investigation is currently in.
+    /// The current LLM phase for this scenario.
     pub phase: RunPhase,
-    pub scenarios: Vec<ScenarioProgress>,
-}
-
-/// One scenario's progress within a run. Positional: index in the parent
-/// `scenarios` vec = the scenario's position in the submitted list.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ScenarioProgress {
-    pub state: ScenarioState,
-    /// The scenario's current work, including optional Lua preparation.
-    #[serde(default)]
-    pub phase: ScenarioPhase,
+    /// Generated Lua program and revisions, when optional Lua simulation is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simulation_program: Option<SimulationProgram>,
-    /// PUT model turns simulated so far. Each turn is one model completion;
-    /// all tool calls requested by that completion are nested together in
-    /// `tool_exchanges` rather than flattened into misleading sequential turns.
+    /// Completed PUT model turns accumulated so far. If a sibling tool call
+    /// fails, the final turn may contain only that completion's successfully
+    /// rendered exchanges; no failed exchange is invented.
+    #[serde(default)]
     pub turns: Vec<TraceTurn>,
-    /// The opening user message (the protagonist's first turn). Lets a
-    /// chat view render the whole conversation.
+    /// The opening user message, for rendering the complete conversation live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_message: Option<String>,
-    /// The concrete `{{variable}}` values the simulator generated from
-    /// the scenario's `input_domain` and rendered the PUT template with.
-    /// Populated as soon as the scenario starts running (before step 1),
-    /// so it's visible live — the exact input this trace runs with.
+    /// Concrete template values selected from the input domain. Recorded before
+    /// the PUT loop so a later failure still exposes reproducible inputs.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub resolved_inputs: HashMap<String, Value>,
 }
 
-/// The state of one scenario within a run.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ScenarioState {
-    Running,
-    /// Completed: produced a full trace for the caller to judge.
-    Done,
-    /// Errored before producing a trace.
-    Failed {
-        stage: String,
-        error: String,
-    },
-}
-
 impl RunProgress {
-    /// Set the current LLM phase (called by the investigation at phase
-    /// transitions).
     pub fn set_phase(&mut self, phase: RunPhase) {
         self.phase = phase;
     }
 
-    /// Set a scenario's state by position.
-    pub fn set_state(&mut self, index: usize, state: ScenarioState) {
-        if let Some(s) = self.scenarios.get_mut(index) {
-            s.state = state;
-        }
+    pub fn set_program(&mut self, program: SimulationProgram) {
+        self.simulation_program = Some(program);
     }
 
-    pub fn set_scenario_phase(&mut self, index: usize, phase: ScenarioPhase) {
-        if let Some(s) = self.scenarios.get_mut(index) {
-            s.phase = phase;
-        }
+    /// Append one completed PUT model turn.
+    pub fn push_turn(&mut self, turn: TraceTurn) {
+        self.turns.push(turn);
     }
 
-    pub fn set_program(&mut self, index: usize, program: SimulationProgram) {
-        if let Some(s) = self.scenarios.get_mut(index) {
-            s.simulation_program = Some(program);
-        }
-    }
-
-    /// Append one completed PUT model turn to a scenario by position.
-    pub fn push_turn(&mut self, index: usize, turn: TraceTurn) {
-        if let Some(s) = self.scenarios.get_mut(index) {
-            s.turns.push(turn);
-        }
-    }
-
-    /// Record the resolved input values for a scenario (called by the
-    /// runner as soon as the simulator has generated them, before step 1).
-    pub fn set_resolved(&mut self, index: usize, resolved: HashMap<String, Value>) {
-        if let Some(s) = self.scenarios.get_mut(index) {
-            s.resolved_inputs = resolved;
-        }
+    /// Record concrete input values as soon as resolution completes.
+    pub fn set_resolved(&mut self, resolved: HashMap<String, Value>) {
+        self.resolved_inputs = resolved;
     }
 }
 

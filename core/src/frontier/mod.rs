@@ -345,7 +345,7 @@ pub struct InvestigationSnapshot {
     /// Model names (for error details: unpriced-model messages).
     pub put_model: Option<String>,
     pub sim_model: Option<String>,
-    /// Per-trace step counts (completed attempts only). A "step" is
+    /// Per-conversation step counts (one completed trace contributes one). A "step" is
     /// one tool call OR one final completion — the same unit the
     /// `max_steps_per_trace` budget counts.
     pub steps_per_trace: Vec<u64>,

@@ -117,7 +117,7 @@ pub struct SimOutcome {
 /// this trace's private workspace.
 pub struct SimSession {
     simulation_program: Option<SimulationProgram>,
-    progress: Option<(Arc<Mutex<RunProgress>>, usize)>,
+    progress: Option<Arc<Mutex<RunProgress>>>,
     client: Arc<dyn LlmClient>,
     model: String,
     thinking_level: Option<ThinkingLevel>,

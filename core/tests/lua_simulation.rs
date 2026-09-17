@@ -1,7 +1,7 @@
 //! Hybrid orchestration, with scripted LLMs: executable and rendered replies
 //! share one conversation, one workspace and one world-state trajectory.
 use prompt_explore::llm::{ChatResponse, Message, MockLlmClient, ToolCallRequest};
-use prompt_explore::model::simulation::{LuaOutcome, RunProgress, ScenarioPhase};
+use prompt_explore::model::simulation::{LuaOutcome, RunPhase, RunProgress};
 use prompt_explore::model::*;
 use prompt_explore::simulate::lua::{LuaOptions, PROGRAM_PATH};
 use prompt_explore::simulate::{Runner, RunnerOptions, SimulatorOptions, ToolSimulator, Workspace};
@@ -222,14 +222,7 @@ async fn atomic_batch_preserves_write_read_fallback_state_and_publishes_program(
     };
     let scenario = Scenario { world:"Stock initially zero; set changes it, get returns it, audit reports the actual actions.".into(),input_domain:Default::default(),user_message:Some("Set stock to 11, read, audit".into()),simulator_notes:String::new() };
     let progress = Arc::new(Mutex::new(RunProgress {
-        scenarios: vec![simulation::ScenarioProgress {
-            state: simulation::ScenarioState::Running,
-            phase: Default::default(),
-            simulation_program: None,
-            turns: vec![],
-            user_message: scenario.user_message.clone(),
-            resolved_inputs: Default::default(),
-        }],
+        user_message: scenario.user_message.clone(),
         ..Default::default()
     }));
     let runner = Runner::new(
@@ -253,7 +246,6 @@ async fn atomic_batch_preserves_write_read_fallback_state_and_publishes_program(
                 max_steps_per_trace: 2,
                 max_tokens: None,
             },
-            0,
             Some(progress.clone()),
         )
         .await
@@ -273,12 +265,9 @@ async fn atomic_batch_preserves_write_read_fallback_state_and_publishes_program(
         "only setup and audit use the LLM"
     );
     let snapshot = progress.lock().unwrap();
-    assert!(matches!(
-        snapshot.scenarios[0].phase,
-        ScenarioPhase::PutLoop
-    ));
+    assert!(matches!(snapshot.phase, RunPhase::PutLoop));
     assert_eq!(
-        snapshot.scenarios[0]
+        snapshot
             .simulation_program
             .as_ref()
             .unwrap()
@@ -316,17 +305,7 @@ async fn preparation_failure_keeps_program_and_resolved_inputs_visible_before_an
         user_message: None,
         simulator_notes: String::new(),
     };
-    let progress = Arc::new(Mutex::new(RunProgress {
-        scenarios: vec![simulation::ScenarioProgress {
-            state: simulation::ScenarioState::Running,
-            phase: Default::default(),
-            simulation_program: None,
-            turns: vec![],
-            user_message: None,
-            resolved_inputs: Default::default(),
-        }],
-        ..Default::default()
-    }));
+    let progress = Arc::new(Mutex::new(RunProgress::default()));
     let runner = Runner::new(
         put_client.clone(),
         "put",
@@ -349,25 +328,17 @@ async fn preparation_failure_keeps_program_and_resolved_inputs_visible_before_an
                     max_steps_per_trace: 4,
                     max_tokens: None
                 },
-                0,
                 Some(progress.clone())
             )
             .await
             .is_err()
     );
     let snapshot = progress.lock().unwrap();
-    assert!(matches!(
-        snapshot.scenarios[0].phase,
-        ScenarioPhase::PreparingTools
-    ));
-    assert_eq!(snapshot.scenarios[0].resolved_inputs["n"], 7);
-    assert!(snapshot.scenarios[0].turns.is_empty());
+    assert!(matches!(snapshot.phase, RunPhase::PreparingTools));
+    assert_eq!(snapshot.resolved_inputs["n"], 7);
+    assert!(snapshot.turns.is_empty());
     assert!(
-        snapshot.scenarios[0]
-            .simulation_program
-            .as_ref()
-            .unwrap()
-            .revisions[0]
+        snapshot.simulation_program.as_ref().unwrap().revisions[0]
             .source
             .contains("PleaseSimulateException")
     );

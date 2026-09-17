@@ -1,6 +1,6 @@
 # prompt-explore API
 
-Property-based testing for agent behavior. You AUTHOR scenarios (test cases: a world, an input domain, and a protagonist — see the Scenario schema) and submit them with a prompt under test (PUT) and an optional free-form `reason` justifying the run. Every scenario is run: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE for every scenario — the world, the input domain, the resolved inputs, and the full trace of model turns. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the set of traces, and the caller reads them and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED from the narrative. By default every response is rendered by the LLM. Experimental opt-in conversation_controls.lua_simulation={} lets that same simulator specialize optional Lua tool implementations before the PUT loop and during later fallbacks. This accelerates computations, NOT a cache or a semantic correctness guarantee. Unimplemented inputs delegate through PleaseSimulateException; runtime errors delegate with explicit error evidence and rolled-back Lua writes. The generated source and revision history are visible in simulation_program, beside resolved_inputs, on both progress.scenarios[] and result.attempts[]. Each exchange records lua_execution when tried. All computed/LLM responses enter the same simulator conversation. Each progress scenario reports its phase: resolving_inputs, preparing_tools, or put_loop (scenarios can be in different phases concurrently). Lua has only bounded workspace capabilities, no host IO, randomness, or clock. The caller judges code and traces against the narrative; example_responses remain realism hints, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.  THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the "simulation workspace" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. "use the write tool to record any generated source code"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: "these are ALL the files; anything else is not found"; partial: "these are SOME files; simulate the rest"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via                        PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);                        zip-slip entries are rejected.   AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.
+Property-based testing for agent behavior. You AUTHOR one scenario (a test case: a world, an input domain, and a protagonist — see the Scenario schema) and submit it with a prompt under test (PUT) and an optional free-form `reason` justifying the run. A job runs that one scenario: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the conversation trace, and the caller reads it and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.   DESIGN INTENT — why it works this way:  • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.  • Tool responses are SIMULATED from the narrative. By default every response is rendered by the LLM. Experimental opt-in conversation_controls.lua_simulation={} lets that same simulator specialize optional Lua tool implementations before the PUT loop and during later fallbacks. This accelerates computations, NOT a cache or a semantic correctness guarantee. Unimplemented inputs delegate through PleaseSimulateException; runtime errors delegate with explicit error evidence and rolled-back Lua writes. The generated source and revision history are visible in simulation_program, beside resolved_inputs, on both progress and result.trace. Each exchange records lua_execution when tried. All computed/LLM responses enter the same simulator conversation. Progress reports its phase: resolving_inputs, preparing_tools, or put_loop. Lua has only bounded workspace capabilities, no host IO, randomness, or clock. The caller judges code and traces against the narrative; example_responses remain realism hints, NOT pinned outputs.  • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.  • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.  THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the "simulation workspace" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. "use the write tool to record any generated source code"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: "these are ALL the files; anything else is not found"; partial: "these are SOME files; simulate the rest"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via                        PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);                        zip-slip entries are rejected.   AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.
 
 Version: `0.4.2` — generated from `openapi.json`; do not edit by hand (see `scripts/dump-openapi.sh`).
 
@@ -16,7 +16,7 @@ Serve the web UI.
 
 ### `POST /api/frontier`
 
-Compute a grouped Pareto frontier over ALL investigations currently held by this server. There is no investigation-selection list: `group_by` chooses the provenance/campaign attributes that define one candidate point (default: put model, thinking setting, and behavior-only prompt hash). Each point retains its member ids and explicit exclusions. Running/failed/ungraded members are successful evidence, not a 422: poll jobs, PATCH grades, then POST this same request again to update preliminary coordinates. An all-error run (`result.result.status=error`) or a no-op with zero completed traces is a failed exclusion even though the job worker is `done`. Partial runs with traces may contribute if all requested values exist; judging their adequacy belongs to the caller.
+Compute a grouped Pareto frontier over ALL investigations currently held by this server. There is no investigation-selection list: `group_by` chooses the provenance/campaign attributes that define one candidate point (default: put model, thinking setting, and behavior-only prompt hash). Each point retains its member ids and explicit exclusions. Running/failed/ungraded members are successful evidence, not a 422: poll jobs, PATCH grades, then POST this same request again to update preliminary coordinates. A failed run (`result.failure` is present and `result.trace` is null) is a failed exclusion; a done job contributes its single trace. Judging trace adequacy remains the caller's responsibility.
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -39,16 +39,21 @@ Body: [`GroupedFrontierRequest`](#groupedfrontierrequest)
 
 ### `GET /api/investigations`
 
-List all jobs (for the dashboard). Running jobs first, then by recency. Returns summaries only — poll a job's id for full progress.
+List all jobs (for the dashboard). Running jobs first, then by recency. Returns summaries only — poll a job's id for full progress. Optionally pass `attributes` as a URL-encoded JSON object of string key/value pairs; every pair must exactly match a stored attribute (AND semantics). Omit it to list all jobs. This filters only this listing, never POST /api/frontier.
+
+| Parameter | In | Type | Description |
+|---|---|---|---|
+| `attributes` | query | string | Optional URL-encoded JSON object of exact attribute string matches, e.g. `?attributes=%7B%22campaign%22%3A%22spring%22%7D`. Pairs are ANDed; omit to list all. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`; malformed JSON/shapes/keys return 400. This does NOT filter POST /api/frontier. |
 
 | Status | Response |
 |---|---|
-| `200` | All jobs: [`JobSummary`](#jobsummary)[] |
+| `200` | All matching job summaries: [`JobSummary`](#jobsummary)[] |
+| `400` | Malformed attributes query JSON, shape, or key |
 | `401` | Missing or invalid bearer token |
 
 ### `POST /api/investigations`
 
-Two request shapes are accepted: - `application/json` — the body is an `InvestigateRequest` (no workspace). - `multipart/form-data` — TWO parts: a `request` part whose body is the   `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body   is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never   written to disk) and seeds the SIMULATION WORKSPACE — an in-memory   filesystem the tool SIMULATOR consults with four tools (read, write,   list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and   decompress to ≤ 500 MB total (overridable via   PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the   request is rejected. Zip entries   that escape the workspace root (zip-slip) are rejected.  The workspace is the simulator's CAPABILITY, not a policy. The harness tells the simulator the workspace exists, how many files it contains, and that it is ephemeral (per-trace: every scenario run gets a fresh copy; the agent under test NEVER sees it — only tool responses). WHEN and WHETHER the simulator uses it — including tactics like persisting generated content — is the WORLD NARRATIVE's job: say in the scenario's `world` what the zip contains, where things live, and its completeness stance ("these are ALL the files; anything else is not found" vs "these are SOME files; simulate the rest"). The harness enforces none of that; the simulator's workspace operations appear in each trace tool exchange (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented.
+One investigation is one conversation: send `scenario`, not `scenarios`. For different worlds/workspaces or repeated samples, submit independent investigations and group them using attributes. Each repeated submission resolves inputs and simulates afresh; it does not isolate PUT variability with fixed inputs/tool responses. There is no sample-count field, batch endpoint, or reusable workspace handle. Every upload is independent.  Two request shapes are accepted: - `application/json` — the body is an `InvestigateRequest` (no workspace). - `multipart/form-data` — TWO parts: a `request` part whose body is the   `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body   is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never   written to disk) and seeds the SIMULATION WORKSPACE — an in-memory   filesystem the tool SIMULATOR consults with four tools (read, write,   list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and   decompress to ≤ 500 MB total (overridable via   PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the   request is rejected. Zip entries   that escape the workspace root (zip-slip) are rejected.  The workspace is the simulator's CAPABILITY, not a policy. The harness tells the simulator the workspace exists, how many files it contains, and that it is ephemeral (per-trace: every scenario run gets a fresh copy; the agent under test NEVER sees it — only tool responses). WHEN and WHETHER the simulator uses it — including tactics like persisting generated content — is the WORLD NARRATIVE's job: say in the scenario's `world` what the zip contains, where things live, and its completeness stance ("these are ALL the files; anything else is not found" vs "these are SOME files; simulate the rest"). The harness enforces none of that; the simulator's workspace operations appear in each trace tool exchange (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented.
 
 Body: [`InvestigateRequest`](#investigaterequest)
 
@@ -60,7 +65,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `put_model` | string? | no | Model for the prompt under test. Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`, `vertex::gemini-2.5-pro`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT runs in the same simulated environment. |
 | `put_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
-| `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
+| `scenario` | [`Scenario`](#scenario) | yes | The required test case to run: one world specification, input domain, and protagonist. A job represents exactly one scenario; `scenarios` is not a compatibility alias and is rejected as an unknown field. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Omit to use the server default independently of `put_model`; setting `put_model` never changes the simulator.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `put_model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
 
@@ -68,7 +73,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Status | Response |
 |---|---|
 | `202` | Investigation job created: [`JobCreated`](#jobcreated) |
-| `400` | Malformed request body, invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.result.failures. |
+| `400` | Malformed request body (including legacy `scenarios`), invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.failure. |
 | `401` | Missing or invalid bearer token |
 
 ### `DELETE /api/investigations/{id}`
@@ -88,7 +93,7 @@ Delete an investigation: remove the job — its traces, grades, attributes, and 
 
 ### `GET /api/investigations/{id}`
 
-Poll an investigation job. `progress` is always present (live model turns while running, frozen when done); `result` is present once done.
+Poll an investigation job. `progress` is always present (live model turns while running, frozen on completion); `result` is present once the job is `done` (trace) or `failed` (failure evidence).
 
 | Parameter | In | Type | Description |
 |---|---|---|---|
@@ -96,7 +101,7 @@ Poll an investigation job. `progress` is always present (live model turns while 
 
 | Status | Response |
 |---|---|
-| `200` | Job status + live progress (+ result when done): [`JobView`](#jobview) |
+| `200` | Job status + live progress (+ result when done or failed): [`JobView`](#jobview) |
 | `401` | Missing or invalid bearer token |
 | `404` | Unknown job id |
 
@@ -131,17 +136,6 @@ Body: [`InvestigationPatch`](#investigationpatch)
 | `401` | Missing or invalid bearer token |
 
 ## Schemas
-
-### `AttemptView`
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `final_world_state` | map&lt;string, any&gt; | yes | World state at the end of the trace (after all applied patches). |
-| `resolved_inputs` | map&lt;string, any&gt; | no | The concrete {{variable}} values the simulator generated from the scenario's input_domain and rendered the template with — the exact input that produced this trace, for reproduction. |
-| `scenario` | [`Scenario`](#scenario) | yes | The scenario this attempt ran, BY VALUE (no id) — the attempt is self-describing: here is the world, the input domain, the opening turn, and the trace they produced. |
-| `simulation_program` | [`SimulationProgram`](#simulationprogram)? | no |  |
-| `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
-| `turns` | [`TraceTurn`](#traceturn)[] | yes | Structured PUT model turns, rendered as whole turn objects by the UI. Tool calls requested by one completion are nested together. |
 
 ### `BetterDirection`
 
@@ -255,7 +249,7 @@ Request a frontier over means of complete investigations in each attribute group
 | `put` | [`PromptUnderTest`](#promptundertest) | yes |  |
 | `put_model` | string? | no | Model for the prompt under test. Omit to use the server default (`glm-5.2`). Provider is selected by namespace prefix, e.g. `zai_coding::glm-5.2`, `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`, `vertex::gemini-2.5-pro`; a bare name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`). See `GET /api/models` for available namespaced model strings.  This is the model you are TESTING: when experimenting to find which model works well for your prompt, this is the one you vary across runs. Keep `sim_model` fixed while you do (see below), so each candidate PUT runs in the same simulated environment. |
 | `put_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
-| `scenarios` | [`Scenario`](#scenario)[] | yes | The test cases to run. Required; ALL of them are run (an explicit list is a contract — the step/token budget applies per trace, not to the count). Scenarios are authored outside this API and are editable before running: reviewing them is the intended workflow. |
+| `scenario` | [`Scenario`](#scenario) | yes | The required test case to run: one world specification, input domain, and protagonist. A job represents exactly one scenario; `scenarios` is not a compatibility alias and is rejected as an unknown field. |
 | `sim_model` | string? | no | Model for the tool SIMULATOR only (the LLM that roleplays the environment). Omit to use the server default independently of `put_model`; setting `put_model` never changes the simulator.  The simulator is the test ENVIRONMENT, not the thing under test. Two consequences: 1. When tuning which model works well for your prompt, keep    `sim_model` STABLE across runs (vary `put_model`, not this). You    are comparing candidate PUTs; the environment must stay fixed    so differences in the traces come from the PUT, not from a    shifting simulation. 2. The simulator must be POWERFUL ENOUGH to render a believable    environment — a weak simulator produces inconsistent or    unbelievable tool responses, which corrupts every trace    regardless of how good the PUT is. There is a quality floor    below which results stop being meaningful, even if it's    cheaper. Pick a strong model here and leave it set. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
 
@@ -263,19 +257,18 @@ Request a frontier over means of complete investigations in each attribute group
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `attempts` | [`AttemptView`](#attemptview)[] | yes | Every completed run — the evidence. The caller reads these traces and judges; the harness produces no verdict. |
-| `result` | [`RunResult`](#runresult) | yes | Run-level outcome and scenario failures. In GET /api/investigations/{id}, the exact failure path is `result.result.failures`, NOT `result.failures`. Completed traces are the sibling `result.attempts` array. |
-| `scenarios_run` | integer | yes | How many of the input scenarios completed a trace. |
-| `usage` | [`UsageByRole`](#usagebyrole) | yes | Cumulative token usage and call counts across the whole run, split by model role: the prompt under test (`put`) and the tool simulator (`sim`). Read them separately — the sim is the test environment (often the bigger spender, since every tool response and input resolution goes through it), the PUT is the agent under test. |
+| `failure` | [`RunFailure`](#runfailure)? | yes |  |
+| `trace` | [`TraceView`](#traceview)? | yes |  |
+| `usage` | [`UsageByRole`](#usagebyrole) | yes | Cumulative token usage and call counts, split by the prompt under test (`put`) and the simulator (`sim`). Present even when `failure` is set. |
 
 ### `Investigation`
 
-An investigation: run the given scenarios against the PUT and surface the resulting traces. Nothing is judged in-harness — the caller reads the traces and judges.
+An investigation's controls: run one supplied scenario against the PUT and surface its resulting trace. Callers that want a corpus run invoke the singular operation once per scenario. Nothing is judged in-harness — the caller reads the trace and judges.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `budget` | [`Budget`](#budget) | yes |  |
-| `reason` | string? | no | Free-form justification for the run — WHY it exists and what a reader should know when comparing it with earlier runs: what it aims to accomplish, what changed compared to previous runs (a prompt edit, new scenarios, a different model), anything that frames how to read the traces. There is no strict standard — write whatever makes the run intelligible later.  Advisory only: surfaced with the result to guide reading the traces, NEVER used as an oracle. The harness runs scenarios and surfaces evidence; the caller is the judge. Optional — omit it when you just want to observe behavior with no particular framing.  e.g. "baseline before adding the explicit-confirmation rule" or "re-run after softening the refusal instruction; compare with v3". |
+| `reason` | string? | no | Free-form justification for the run — WHY it exists and what a reader should know when comparing it with earlier runs: what it aims to accomplish, what changed compared to previous runs (a prompt edit, new scenarios, a different model), anything that frames how to read the traces. There is no strict standard — write whatever makes the run intelligible later.  Advisory only: surfaced with the result to guide reading the traces, NEVER used as an oracle. The harness runs a scenario and surfaces evidence; the caller is the judge. Optional — omit it when you just want to observe behavior with no particular framing.  e.g. "baseline before adding the explicit-confirmation rule" or "re-run after softening the refusal instruction; compare with v3". |
 
 ### `InvestigationPatch`
 
@@ -310,7 +303,7 @@ Values: `running`, `done`, `failed`
 |---|---|---|---|
 | `attributes` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign attributes, sufficient for a list view to group/filter before fetching full job evidence. |
 | `id` | string | yes |  |
-| `scenarios` | integer | yes | How many scenarios this job is running. |
+| `phase` | [`RunPhase`](#runphase) | yes | Observable current LLM phase; never infer job work from bare `running`. |
 | `started_at` | integer | yes |  |
 | `status` | [`JobStatus`](#jobstatus) | yes |  |
 
@@ -320,17 +313,16 @@ Values: `running`, `done`, `failed`
 |---|---|---|---|
 | `attributes` | map&lt;string, string&gt; | yes | Immutable provenance plus caller-owned campaign attributes. `label` is the special editable display label; reserved provenance keys cannot change. |
 | `conversation_controls` | [`ResolvedConversationControls`](#resolvedconversationcontrols) | yes | Resolved controls for the PUT and simulator conversations. |
-| `error` | string? | no |  |
 | `grades` | map&lt;string, number&gt; | yes | Caller-graded axes on this investigation (PATCHed via PATCH /api/investigations/{id}). Free-form names, caller-chosen scales (0..1, 1..5, anything); the harness stores them and never interprets them. |
 | `id` | string | yes | The job's id (same value as the `{id}` path segment and the id in `JobSummary`). Echoed in the body so a consumer holding only this representation knows which job it is — without it, a dashboard that reconciles a list of views by key has nothing stable to key on and silently falls back to positional matching (which leaks per-item UI state such as an unfolded conversation to whatever job sorts into that slot next). |
-| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in (see RunPhase: scenarios). This is the observable status of the job's LLM work. Mirrors `progress.phase`. |
-| `progress` | [`RunProgress`](#runprogress) | yes | Live progress — per-scenario state + PUT model turns simulated so far. Populated while running; frozen (all scenarios done/failed) when the job finishes. Lets a dashboard show a tool-call log as it happens. |
+| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the scenario is currently in (see RunPhase). This is the observable status of the job's LLM work. Mirrors `progress.phase`. |
+| `progress` | [`RunProgress`](#runprogress) | yes | Live progress for this scenario, populated while running and frozen when the job finishes. Lets a dashboard show a tool-call log as it happens. |
 | `put` | [`PromptUnderTest`](#promptundertest) | yes | The prompt under test. |
 | `put_model` | string | yes | The resolved model name that ran the prompt under test (the `put_model` from the request, or the server default). Echoed RESOLVED so a reader knows exactly what produced the traces — including the default, which the request leaves implicit. |
 | `put_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
 | `reason` | string? | no | The run's free-form `reason` (advisory justification: what the run aims to accomplish, what changed vs. earlier runs, what a reader should know — no strict standard). Optional; surfaced to guide reading the traces. Nothing is judged against it. |
 | `result` | [`InvestigateResponse`](#investigateresponse)? | no |  |
-| `scenarios` | [`Scenario`](#scenario)[] | yes | The full input scenarios (narrative = ground truth, etc.). |
+| `scenario` | [`Scenario`](#scenario) | yes | The input scenario, by value: its narrative is the ground truth for interpreting the trace and progress. |
 | `sim_model` | string | yes | The resolved model name that ran the tool simulator (the `sim_model` from the request, or the server default), resolved independently of `put_model`. The simulator is the test ENVIRONMENT; a reader needs to see it to judge whether it was powerful enough to render the world believably. |
 | `sim_thinking_level` | [`ThinkingLevel`](#thinkinglevel)? | no |  |
 | `started_at` | integer | yes |  |
@@ -438,37 +430,32 @@ Actual controls after request and server defaults have been resolved.
 | `workspace_max_output_bytes` | integer | yes |  |
 | `workspace_max_read_lines` | integer | yes |  |
 
+### `RunFailure`
+
+A failure while running one scenario. `stage` identifies the runtime layer (`"runner"` for PUT execution, input resolution, or tool simulation) and `error` is its diagnostic text.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes |  |
+| `stage` | string | yes |  |
+
 ### `RunPhase`
 
-The LLM phase an investigation is currently in. Exposed so a reader can see what the job is doing while it runs — never just a bare "running". See the API description: every LLM phase is an observable status.
+The LLM phase of the single scenario currently being run. Exposed so a reader can see live work rather than a bare "running" status.
 
-Values: `scenarios`
+Values: `resolving_inputs`, `preparing_tools`, `put_loop`
 
 ### `RunProgress`
 
-Live progress of a run, exposed while it's in flight: one entry per scenario (positional — index = position in the submitted list), with its PUT model turns accumulated as they are simulated. The runner pushes; the server/UI poll and render.
+Live progress for one scenario. The runner updates this flat value as work proceeds; if the run fails, already resolved inputs, program revisions, and completed turns remain available as evidence.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `phase` | [`RunPhase`](#runphase) | yes | Which LLM phase the investigation is currently in. |
-| `scenarios` | [`ScenarioProgress`](#scenarioprogress)[] | yes |  |
-
-### `RunResult`
-
-The outcome of running a set of scenarios against a PUT. The harness's job ends here: every scenario that completed has a trace in `attempts`; every scenario that errored is in `failures`. There is no verdict — the caller reads the traces and judges.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `failures` | [`ScenarioFailure`](#scenariofailure)[] | no | Scenarios that errored instead of producing a trace (PUT execution, input resolution, or tool simulation). When non-empty, `attempts` may be shorter than `scenarios_tried`; when ALL scenarios failed, `status` is `error`. |
-| `final_state` | object? | no | The world state at the end: the last completed attempt's final state. Informational. |
-| `scenarios_tried` | integer | yes | Scenarios attempted (= completed, in the response's `attempts`, + failed, in `failures`). |
-| `status` | [`RunStatus`](#runstatus) | yes |  |
-
-### `RunStatus`
-
-Run-completion taxonomy. With the judge removed, "completion" is purely about whether scenarios produced traces — nothing is judged against the run's `reason`. The caller judges the traces.
-
-Values: `completed`, `partial`, `error`
+| `phase` | [`RunPhase`](#runphase) | yes | The current LLM phase for this scenario. |
+| `resolved_inputs` | map&lt;string, any&gt; | no | Concrete template values selected from the input domain. Recorded before the PUT loop so a later failure still exposes reproducible inputs. |
+| `simulation_program` | [`SimulationProgram`](#simulationprogram)? | no |  |
+| `turns` | [`TraceTurn`](#traceturn)[] | no | Completed PUT model turns accumulated so far. If a sibling tool call fails, the final turn may contain only that completion's successfully rendered exchanges; no failed exchange is invented. |
+| `user_message` | string? | no | The opening user message, for rendering the complete conversation live. |
 
 ### `Scenario`
 
@@ -480,59 +467,6 @@ A test case: a world specification, an input domain, and a protagonist. A pure V
 | `simulator_notes` | string | no | Persona/stance guidance for a simulated user, if the scenario involves one. Defaults empty. |
 | `user_message` | string? | no | The opening message from the user/protagonist. |
 | `world` | string | yes | The world specification — ground truth the simulator renders tool responses from and the caller checks claims against. A SPECIFICATION (prose), not instantiated data. See the API description's DESIGN INTENT. Cover inventory, facts (incl. negatives), completeness, and rendering rules.  If the tools expose a REAL system with authoritative documentation (an OpenAPI spec, a man page, a CLI's --help), EMBED that documentation in the world verbatim and pin the rendering rules to it: "the embedded spec is authoritative for every rendered response." Without it the simulator invents plausible-but-wrong behavior for the documented surface (wrong error codes, invented fields, impossible operations) — verified by A/B: simulated API calls invented 409 read-only errors and off-schema bodies until the real spec was embedded, after which responses matched the contract. The same applies to any authoritative doc: embed it, then pin rendering to it. |
-
-### `ScenarioFailure`
-
-A scenario that errored during a run.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `error` | string | yes | The error message. |
-| `scenario` | [`Scenario`](#scenario) | yes |  |
-| `stage` | string | yes | Where it failed: `"runner"` (PUT execution, input resolution, or tool simulation). |
-
-### `ScenarioPhase`
-
-Per-scenario phase: scenarios run concurrently, so one may still prepare its Lua module while another already executes PUT turns.
-
-Values: `resolving_inputs`, `preparing_tools`, `put_loop`
-
-### `ScenarioProgress`
-
-One scenario's progress within a run. Positional: index in the parent `scenarios` vec = the scenario's position in the submitted list.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `phase` | [`ScenarioPhase`](#scenariophase) | no | The scenario's current work, including optional Lua preparation. |
-| `resolved_inputs` | map&lt;string, any&gt; | no | The concrete `{{variable}}` values the simulator generated from the scenario's `input_domain` and rendered the PUT template with. Populated as soon as the scenario starts running (before step 1), so it's visible live — the exact input this trace runs with. |
-| `simulation_program` | [`SimulationProgram`](#simulationprogram)? | no |  |
-| `state` | [`ScenarioState`](#scenariostate) | yes |  |
-| `turns` | [`TraceTurn`](#traceturn)[] | yes | PUT model turns simulated so far. Each turn is one model completion; all tool calls requested by that completion are nested together in `tool_exchanges` rather than flattened into misleading sequential turns. |
-| `user_message` | string? | no | The opening user message (the protagonist's first turn). Lets a chat view render the whole conversation. |
-
-### `ScenarioState`
-
-The state of one scenario within a run.
-
-**Variant `running`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `kind` | `running` | yes |  |
-
-**Variant `done`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `kind` | `done` | yes |  |
-
-**Variant `failed`**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `error` | string | yes |  |
-| `kind` | `failed` | yes |  |
-| `stage` | string | yes |  |
 
 ### `SideEffect`
 
@@ -551,7 +485,7 @@ A generated executable simulation, not an oracle. The narrative remains ground t
 
 ### `ThinkingLevel`
 
-Provider-neutral thinking/reasoning level for one LLM role. The vocabulary is deliberately small and shared across providers: `none` explicitly requests NO reasoning, `minimal`…`max` scale effort up. Omitting the field entirely means "provider default" — which is different from `none`. Defaults vary by model and endpoint; omitting the field does not imply medium or no reasoning.  Bedrock OpenAI keywords are passed through literally, without downgrading unsupported levels. GPT-OSS uses flat `reasoning_effort` and supports low/medium/high; none/minimal/xhigh/max are rejected. GPT-5.6 Luna/Terra/Sol use nested `reasoning.effort` and support none/low/medium/high/xhigh/max. GPT-6 Astra uses the nested shape and supports low/medium/high/xhigh/max, but not none. All these Bedrock models reject minimal.  POST rejects models for which the adapter has no reasoning mapping (for example Bedrock Meta models). Model-specific keyword support is checked by the provider DURING execution, not prevalidated at POST. A 202 response therefore does not guarantee the level is supported: poll GET /api/investigations/{id} and inspect `result.result.failures` for provider rejections, alongside the traces. Other providers may map effort differently; do not assume that a level is portable.
+Provider-neutral thinking/reasoning level for one LLM role. The vocabulary is deliberately small and shared across providers: `none` explicitly requests NO reasoning, `minimal`…`max` scale effort up. Omitting the field entirely means "provider default" — which is different from `none`. Defaults vary by model and endpoint; omitting the field does not imply medium or no reasoning.  Bedrock OpenAI keywords are passed through literally, without downgrading unsupported levels. GPT-OSS uses flat `reasoning_effort` and supports low/medium/high; none/minimal/xhigh/max are rejected. GPT-5.6 Luna/Terra/Sol use nested `reasoning.effort` and support none/low/medium/high/xhigh/max. GPT-6 Astra uses the nested shape and supports low/medium/high/xhigh/max, but not none. All these Bedrock models reject minimal.  POST rejects models for which the adapter has no reasoning mapping (for example Bedrock Meta models). Model-specific keyword support is checked by the provider DURING execution, not prevalidated at POST. A 202 response therefore does not guarantee the level is supported: poll the investigation and inspect its singular run failure for provider rejections, alongside the trace/progress evidence. Other providers may map effort differently; do not assume that a level is portable.
 
 Values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`
 
@@ -594,6 +528,16 @@ One PUT model completion. Text, thinking, and every tool request emitted by that
 | `model_output` | string | yes | The model's text output for this completion, or empty when it emitted only tool calls. |
 | `thinking` | string? | no | The PUT model's visible reasoning ("thinking") for this completion, when the provider reports it. Transparency only — it is never fed back into the conversation. |
 | `tool_exchanges` | [`ToolExchange`](#toolexchange)[] | yes | All tool calls requested together by this single model completion, paired with their simulated responses. Exchanges retain provider order and are simulated in that order; they are one batch, not separate PUT turns. |
+
+### `TraceView`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `final_world_state` | map&lt;string, any&gt; | yes | World state at the end of the trace (after all applied patches). |
+| `resolved_inputs` | map&lt;string, any&gt; | no | The concrete {{variable}} values the simulator generated from the scenario's input_domain and rendered the template with — the exact input that produced this trace, for reproduction. |
+| `simulation_program` | [`SimulationProgram`](#simulationprogram)? | no |  |
+| `tool_calls` | integer | yes | Number of tool calls the simulated PUT made in this trace. |
+| `turns` | [`TraceTurn`](#traceturn)[] | yes | Structured PUT model turns, rendered as whole turn objects by the UI. Tool calls requested by one completion are nested together. |
 
 ### `UsageByRole`
 

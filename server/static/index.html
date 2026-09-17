@@ -162,6 +162,13 @@
     margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto;
   }
   .frontier-svg svg { display: block; }
+  /* Cross-linking is presentation only: group ids and arithmetic remain the
+     frontier API's. The DOM styles are applied after the server SVG arrives. */
+  .frontier-svg .frontier-group.pe-linked-active { opacity: 1 !important; }
+  .frontier-svg .frontier-group.pe-linked-muted { opacity: .18 !important; }
+  .job-group { scroll-margin-top: 1rem; }
+  .job-group.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .job-group > h2 { font-size: 0.86rem; margin: 1.25rem 0 0.35rem; color: var(--text-dim); }
   /* Long failure texts (e.g. full provider error bodies) are clipped to one
      line-length; the "…" / "⌃" marker toggles the rest. */
   .clip-toggle { color: var(--accent); cursor: pointer; user-select: none; font-weight: 700; padding: 0 0.1rem; }
@@ -216,8 +223,7 @@ const roleLine = (label, u, cls) => u ? html`<div class="meta usage-line"><span 
 const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
 const fmtAxisVal = v => v == null ? '—' : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : +v.toFixed(3);
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
-const phaseLabel = p => ({scenarios:'simulating scenarios'})[p] || p;
-const scenarioPhaseLabel = p => ({
+const phaseLabel = p => ({
   resolving_inputs: 'resolving input variables',
   preparing_tools: 'preparing tool simulation',
   put_loop: 'running PUT tool loop',
@@ -231,14 +237,6 @@ function ClipText({ text, limit = 150 }) {
   const s = text == null ? '' : String(text);
   if (s.length <= limit) return html`<span>${s}</span>`;
   return html`<span>${open ? s : s.slice(0, limit)}<span class="clip-toggle" onClick=${() => setOpen(!open)} title=${open ? 'collapse' : 'expand full error'}>${open ? ' ⌃' : '…'}</span></span>`;
-}
-
-function ScenBadge({ s }) {
-  const st = s.state || {}, kind = st.kind || 'running';
-  if (kind === 'running') return html`<span class="badge running"><span class="spinner"></span> running</span>`;
-  if (kind === 'done') return html`<span class="badge done">done</span>`;
-  if (kind === 'failed') return html`<span class="badge error">failed: ${st.stage}</span>`;
-  return null;
 }
 
 function Bubble({ side, role, body, tool, think }) {
@@ -420,29 +418,29 @@ function WsOps({ ops, label = 'simulator workspace', rolledBack = false }) {
   })}</div></details>`;
 }
 
-function ScenarioPanel({ prog, input, label }) {
-  const st = prog.state || {}, kind = st.kind || 'running';
-  return html`
-    <div class="scen">
-      <div class="scen-head">
-        <span class="scen-id">${label || 'scenario'}</span>
-        <${ScenBadge} s=${prog} />
-        ${kind === 'running' && prog.phase ? html`<span class="meta">${scenarioPhaseLabel(prog.phase)}</span>` : null}
-        <span class="meta">${(prog.turns||[]).length} PUT turn(s) · ${(prog.turns||[]).reduce((n,t)=>n+(t.tool_exchanges||[]).length,0)} tool call(s)</span>
-      </div>
-      ${kind === 'failed' ? html`<div class="note" style="margin:0.3rem 0"><${ClipText} text=${st.error} /></div>` : null}
-      ${input ? html`
-        <details>
-          <summary>scenario spec (world)</summary>
-          <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${input.world || '(no world)'}</div>
-          ${input.simulator_notes ? html`<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${input.simulator_notes}</div>` : null}
-          ${input.world_state && Object.keys(input.world_state).length ? html`<details><summary class="meta">world state</summary><pre class="step">${pretty(input.world_state)}</pre></details>` : null}
-        </details>` : null}
-      <details>
-        <summary>conversation</summary>
-        <${Chat} s=${prog} />
-      </details>
-    </div>`;
+// A job now investigates one authored scenario. Keep its narrative at the job
+// level and render either live progress or the terminal trace in this one
+// conversation, rather than fabricating attempt/scenario identities.
+function ConversationPanel({ scenario, progress, trace, failure }) {
+  const evidence = trace
+    ? { ...trace, user_message: scenario && scenario.user_message }
+    : { ...(progress || {}), user_message: (progress && progress.user_message) || (scenario && scenario.user_message) };
+  const turns = evidence.turns || [];
+  const toolCallCount = trace ? trace.tool_calls : turns.reduce((sum, turn) => sum + (turn.tool_exchanges || []).length, 0);
+  return html`<div class="scen" style="margin-top:0.55rem">
+    ${scenario ? html`<details>
+      <summary>scenario spec (world and input domain)</summary>
+      <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${scenario.world || '(no world)'}</div>
+      ${scenario.input_domain ? html`<details><summary class="meta">input domain</summary><pre class="step">${pretty(scenario.input_domain)}</pre></details>` : null}
+      ${scenario.simulator_notes ? html`<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${scenario.simulator_notes}</div>` : null}
+    </details>` : null}
+    ${failure ? html`<div class="note" style="margin:0.35rem 0"><b>${failure.stage}:</b> <${ClipText} text=${failure.error} /></div>` : null}
+    <details open>
+      <summary>conversation · ${turns.length} PUT turn(s) · ${toolCallCount} tool call(s)</summary>
+      <${Chat} s=${evidence} />
+    </details>
+    ${trace && trace.final_world_state != null ? html`<details><summary>final world state</summary><pre class="step">${pretty(trace.final_world_state)}</pre></details>` : null}
+  </div>`;
 }
 
 function PutPanel({ put }) {
@@ -470,14 +468,11 @@ function PutPanel({ put }) {
 
 function ResultLine({ j }) {
   const r = j.result; if (!r) return null;
-  const rr = r.result;
-  return html`
-    <div style="margin-top:0.5rem">
-      <span class="badge ${rr.status}">${rr.status}</span>
-      <span class="meta"> ${rr.scenarios_tried} scenario(s) · ${r.attempts.length} trace(s)${(rr.failures&&rr.failures.length)?' · '+rr.failures.length+' failed':''}</span>
-      ${r.usage ? html`<div style="margin-top:0.2rem">${roleLine('put', r.usage.put, 'put')}${roleLine('sim', r.usage.sim, 'sim')}</div>` : null}
-      ${rr.failures && rr.failures.length ? html`<details style="margin-top:0.3rem"><summary class="note">failures</summary><div>${rr.failures.map((f, i) => html`<div class="step" key=${i}><b>${(f.scenario&&f.scenario.user_message)||'(no user message)'}</b> (${f.stage}): <${ClipText} text=${f.error} /></div>`)}</div></details>` : null}
-    </div>`;
+  return html`<div style="margin-top:0.5rem">
+    <span class="badge ${r.failure ? 'failed' : 'completed'}">${r.failure ? 'failed' : r.trace ? 'trace captured' : 'finished'}</span>
+    <span class="meta"> ${r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
+    ${r.usage ? html`<div style="margin-top:0.2rem">${roleLine('put', r.usage.put, 'put')}${roleLine('sim', r.usage.sim, 'sim')}</div>` : null}
+  </div>`;
 }
 
 // ---------------------------------------------------------------------
@@ -496,17 +491,36 @@ const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null]
 const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash']);
 const jobAttributes = j => (j && j.attributes) || {};
 const displayName = j => jobAttributes(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
+// This key deliberately mirrors the frontier request: selected attribute values
+// in order, with absent values kept distinct as null. The server remains the
+// authority for group ids, labels, cohorts, arithmetic, and dominance.
+const attributeValue = (attributes, key) => Object.prototype.hasOwnProperty.call(attributes || {}, key) ? attributes[key] : null;
+const groupKeyFor = (groupBy, attributes) => JSON.stringify(groupBy.map(k => attributeValue(attributes, k)));
+const fallbackGroupLabel = (groupBy, attributes) => groupBy.length
+  ? groupBy.map(k => attributeValue(attributes, k) ?? 'null').join('/')
+  : 'all investigations';
 
 // Preserve local drafts through live polling; save only keys changed against
 // the editing baseline, retaining unrelated edits from concurrent callers.
-function useMetadataDraft(source) {
+// Cards are deliberately re-parented when the selected grouping changes.
+// Keep editor drafts outside that component lifetime, keyed by job + editor,
+// so an unsaved caller edit cannot disappear during a regroup or attribute
+// change. App removes this small cache when the job is deleted.
+function useMetadataDraft(source, jobUi, editor) {
   const asRows = map => Object.entries(map).map(([k, v]) => ({ k, v: String(v) }));
-  const [rows, updateRows] = useState(() => asRows(source));
-  const baseline = useRef(source);
-  const dirty = useRef(false);
-  const reset = map => { baseline.current = map; dirty.current = false; updateRows(asRows(map)); };
+  const saved = jobUi.drafts.get(editor);
+  const [rows, updateRows] = useState(() => saved ? saved.rows : asRows(source));
+  const rowsRef = useRef(saved ? saved.rows : asRows(source));
+  const baseline = useRef(saved ? saved.baseline : source);
+  const dirty = useRef(saved ? saved.dirty : false);
+  const persist = () => jobUi.drafts.set(editor, { rows: rowsRef.current, baseline: baseline.current, dirty: dirty.current });
+  const reset = map => {
+    baseline.current = map; dirty.current = false; rowsRef.current = asRows(map);
+    persist(); updateRows(rowsRef.current);
+  };
   useEffect(() => { if (!dirty.current) reset(source); }, [JSON.stringify(source)]);
-  const setRows = value => { dirty.current = true; updateRows(value); };
+  useEffect(() => () => persist(), []);
+  const setRows = value => { dirty.current = true; rowsRef.current = value; persist(); updateRows(value); };
   return { rows, setRows, baseline, reset };
 }
 function metadataPatch(baseline, desired) {
@@ -517,9 +531,12 @@ function metadataPatch(baseline, desired) {
 }
 
 // Editable caller grades, merged with the live server map.
-function GradesPanel({ j, token, onPatched }) {
-  const { rows, setRows, baseline, reset } = useMetadataDraft(j.grades || {});
-  const [nk, setNk] = useState(''); const [nv, setNv] = useState('');
+function GradesPanel({ j, token, onPatched, jobUi }) {
+  const { rows, setRows, baseline, reset } = useMetadataDraft(j.grades || {}, jobUi, 'grades');
+  const savedNew = jobUi.newFields.get('grades') || { k: '', v: '' };
+  const [nk, updateNk] = useState(savedNew.k); const [nv, updateNv] = useState(savedNew.v);
+  const setNk = value => { const old = jobUi.newFields.get('grades') || {}; jobUi.newFields.set('grades', { k: value, v: old.v || '' }); updateNk(value); };
+  const setNv = value => { const old = jobUi.newFields.get('grades') || {}; jobUi.newFields.set('grades', { k: old.k || '', v: value }); updateNv(value); };
   const [msg, setMsg] = useState(null);
   const set = (i, f) => setRows(rows.map((r, x) => x === i ? { ...r, ...f } : r));
   const save = async () => {
@@ -572,10 +589,13 @@ function GradesPanel({ j, token, onPatched }) {
 
 // Attributes describe a variant and are also the grouping dimensions for the live
 // frontier. System attributes are provenance emitted by the server, never editable.
-function AttributesPanel({ j, token, onPatched }) {
+function AttributesPanel({ j, token, onPatched, jobUi }) {
   const editable = map => Object.fromEntries(Object.entries(map).filter(([k]) => !SYSTEM_ATTRIBUTE_KEYS.has(k)));
-  const { rows, setRows, baseline, reset } = useMetadataDraft(editable(jobAttributes(j)));
-  const [nk, setNk] = useState(''); const [nv, setNv] = useState('');
+  const { rows, setRows, baseline, reset } = useMetadataDraft(editable(jobAttributes(j)), jobUi, 'attributes');
+  const savedNew = jobUi.newFields.get('attributes') || { k: '', v: '' };
+  const [nk, updateNk] = useState(savedNew.k); const [nv, updateNv] = useState(savedNew.v);
+  const setNk = value => { const old = jobUi.newFields.get('attributes') || {}; jobUi.newFields.set('attributes', { k: value, v: old.v || '' }); updateNk(value); };
+  const setNv = value => { const old = jobUi.newFields.get('attributes') || {}; jobUi.newFields.set('attributes', { k: old.k || '', v: value }); updateNv(value); };
   const [msg, setMsg] = useState(null);
   const set = (i, f) => setRows(rows.map((r, x) => x === i ? { ...r, ...f } : r));
   const save = async () => {
@@ -623,13 +643,13 @@ function AttributesPanel({ j, token, onPatched }) {
 // The frontier panel compares every job, grouped by attribute values; the server
 // owns cohort construction and dominance so no client-side candidate filter
 // can silently change the comparison.
-function FrontierPanel({ jobs, token }) {
+function FrontierPanel({ jobs, token, groupBy, setGroupBy, activeGroupId, onActiveGroup, onGroupActivate, onPlotChange }) {
   const allJobs = jobs || [];
-  const [groupBy, setGroupBy] = useState(['put_model', 'put_thinking', 'prompt_hash']);
   const [axes, setAxes] = useState(['put_output_tokens', '']); // '' = derive at render
   const [dirs, setDirs] = useState({});
   const [plot, setPlot] = useState(null);
   const [err, setErr] = useState(null);
+  const svgRef = useRef(null);
   // System provenance keys always exist on real jobs; include them even before
   // the first job arrives. Caller attributes appear as soon as any investigation
   // carries them. Grouping is deliberately selected, never free-typed.
@@ -654,8 +674,10 @@ function FrontierPanel({ jobs, token }) {
     if (!result) return null;
     return {
       usage: result.usage || null,
-      steps_per_trace: (result.attempts || []).map(a => (a.turns || [])
-        .reduce((steps, turn) => steps + Math.max((turn.tool_exchanges || []).length, 1), 0)),
+      // A single-conversation investigation has at most one terminal trace.
+      // Its steps are completion boundaries (one per turn) or tool calls.
+      steps_per_trace: result.trace ? [(result.trace.turns || [])
+        .reduce((steps, turn) => steps + Math.max((turn.tool_exchanges || []).length, 1), 0)] : [],
     };
   };
   const jobsKey = JSON.stringify(allJobs.map(j => [j.id, j.status, j.attributes, j.grades, measuredSummary(j)]));
@@ -695,6 +717,54 @@ function FrontierPanel({ jobs, token }) {
     })();
     return () => controller.abort();
   }, [jobsKey, groupKey, namesKey, dirsKey, token]);
+
+  // The generated SVG has stable data-group-id attributes on both marker and
+  // PCA-ordered legend entry. Delegate through the containing HTML element so
+  // replacing server-provided SVG markup never loses the cross-link handlers.
+  const svgGroup = target => target && target.closest && target.closest('[data-group-id]');
+  const svgId = event => { const group = svgGroup(event.target); return group && group.getAttribute('data-group-id'); };
+  const svgEnter = event => { const id = svgId(event); if (id) onActiveGroup(id); };
+  const svgLeave = event => {
+    const from = svgGroup(event.target), to = svgGroup(event.relatedTarget);
+    if (from && from !== to) onActiveGroup(null);
+  };
+  const svgActivate = event => {
+    const id = svgId(event);
+    if (id) { event.preventDefault(); onGroupActivate(id); }
+  };
+  const svgKeydown = event => {
+    if ((event.key === 'Enter' || event.key === ' ') && svgId(event)) svgActivate(event);
+  };
+  // A ref callback binds once to the stable HTML container. Unlike a handler
+  // on injected SVG nodes, these listeners survive replacement of its markup.
+  const bindSvg = host => {
+    svgRef.current = host;
+    if (!host || host.__peFrontierBindings) return;
+    host.__peFrontierBindings = true;
+    // Use the same mouse event family as card/table enter/leave handlers:
+    // pointerover fires before the previous element's mouseleave and would
+    // have its new highlight immediately cleared by that later event.
+    host.addEventListener('mouseover', svgEnter);
+    host.addEventListener('mouseout', svgLeave);
+    host.addEventListener('focusin', svgEnter);
+    host.addEventListener('focusout', svgLeave);
+    host.addEventListener('click', svgActivate);
+    host.addEventListener('keydown', svgKeydown);
+  };
+  useEffect(() => {
+    const host = svgRef.current;
+    if (!host) return;
+    host.querySelectorAll('[data-group-id]').forEach(el => {
+      const match = el.getAttribute('data-group-id') === activeGroupId;
+      el.classList.toggle('pe-linked-active', !!activeGroupId && match);
+      el.classList.toggle('pe-linked-muted', !!activeGroupId && !match);
+      // Inline opacity wins over the SVG's embedded hover styles, allowing a
+      // job card hover to link marker and legend together as well.
+      el.style.opacity = activeGroupId ? (match ? '1' : '.18') : '';
+    });
+  }, [plot && plot.svg, activeGroupId]);
+
+  useEffect(() => { onPlotChange(plot ? plot.points : []); }, [plot, onPlotChange]);
 
   const axisRow = i => {
     const name = names[i];
@@ -737,9 +807,17 @@ function FrontierPanel({ jobs, token }) {
     </div>
     <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'SVG shows two axes; the table and dominance calculation support any number.' : `${names.length} axes — N-dimensional dominance; SVG is available at exactly two axes.`}</div>
     ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
-    ${plot && plot.svg ? html`<div class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>` : null}
+    ${plot && plot.svg ? html`<div ref=${bindSvg} class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>` : null}
     ${plot ? html`<table class="ptable"><thead><tr><th>group</th>${names.map(n => html`<th key=${n} class="mono">${n}</th>`)}<th>rank</th><th>counts</th></tr></thead>
-      <tbody>${plot.points.map(p => { const c = counts(p); return html`<tr key=${p.id}>
+      <tbody>${plot.points.map(p => { const c = counts(p); return html`<tr key=${p.id}
+        onMouseEnter=${() => onActiveGroup(p.id)} onMouseLeave=${() => onActiveGroup(null)}
+        onFocusIn=${() => onActiveGroup(p.id)} onFocusOut=${e => { if (!e.currentTarget.contains(e.relatedTarget)) onActiveGroup(null); }}
+        onClick=${e => {
+          // Member links and disclosure controls have their own navigation/
+          // toggling behavior; only a click on table evidence selects a group.
+          if (e.target.closest('a,button,summary,details,input,select,textarea,label')) return;
+          onGroupActivate(p.id);
+        }}>
         <td class="group-label"><b class="mono" title=${`stable id: ${p.id}`}>${p.label}</b><div class="meta mono">${groupAttributeText(p)}</div></td>
         ${names.map(n => html`<td key=${n} class="mono">${p.values ? fmtAxisVal(p.values[n]) : 'pending — not plotted'}</td>`)}
         <td>${p.on_frontier === null ? html`<span class="pending">pending</span>` : p.on_frontier ? html`<span class="nd">frontier${p.preliminary ? ' · preliminary' : ''}</span>` : html`<span class="dom">dominated${p.preliminary ? ' · preliminary' : ''}</span>`}<div class="meta mono">${(p.dominated_by || []).join(', ') || '—'}</div></td>
@@ -753,52 +831,46 @@ function FrontierPanel({ jobs, token }) {
   </div>`;
 }
 
-// Completed attempts are the durable trace view. Synthesize the same shape
-// that Chat consumes rather than relying on frozen live progress, and carry
-// the program explicitly: it is evidence just like resolved inputs.
-function progressFromAttempt(attempt) {
-  return {
-    state: { kind: 'done' },
-    turns: attempt.turns || [],
-    user_message: attempt.scenario && attempt.scenario.user_message,
-    resolved_inputs: attempt.resolved_inputs || {},
-    simulation_program: attempt.simulation_program,
-  };
+function jobUiState(uiCache, id) {
+  let state = uiCache.current.get(id);
+  if (!state) {
+    state = { drafts: new Map(), newFields: new Map(), details: null };
+    uiCache.current.set(id, state);
+  }
+  return state;
 }
 
-function JobCard({ j, token, onDelete, onPatched, leaving }) {
+// Native <details> elements otherwise forget their open state when a keyed card
+// moves to another group parent. Record all nested disclosure states in the same
+// per-job cache as editor drafts and restore them on the new card instance.
+function usePreservedDetails(jobUi) {
+  const root = useRef(null);
+  useEffect(() => {
+    const host = root.current;
+    if (!host) return;
+    const disclosures = () => [...host.querySelectorAll('details')];
+    if (jobUi.details) disclosures().forEach((detail, index) => {
+      if (index < jobUi.details.length) detail.open = jobUi.details[index];
+    });
+    const save = () => { jobUi.details = disclosures().map(detail => detail.open); };
+    host.addEventListener('toggle', save, true);
+    return () => { save(); host.removeEventListener('toggle', save, true); };
+  }, []);
+  return root;
+}
+
+function JobCard({ j, token, onDelete, onPatched, leaving, uiCache }) {
+  const jobUi = jobUiState(uiCache, j.id);
+  const cardRef = usePreservedDetails(jobUi);
   const attributes = jobAttributes(j);
   const putModel = attributes.put_model || j.put_model;
   const simModel = attributes.sim_model || j.sim_model;
   const putThinking = attributes.put_thinking || j.put_thinking_level;
   const simThinking = attributes.sim_thinking || j.sim_thinking_level;
-  const liveProgs = (j.progress && j.progress.scenarios) || [];
-  const inputById = {}; (j.scenarios || []).forEach(s => { if (s.id != null) inputById[s.id] = s; });
-  // A completed result has attempts by value, not scenario ids. Keep failed
-  // live entries too: they have no AttemptView but can still contain setup
-  // evidence from a failed preparation phase.
-  const panels = j.status === 'done' && j.result
-    ? (j.result.attempts || []).map((attempt, index) => ({
-        key: `attempt-${index}`,
-        prog: progressFromAttempt(attempt),
-        input: attempt.scenario,
-        label: `scenario ${index + 1}`,
-      })).concat(liveProgs.map((prog, index) => ({ prog, index }))
-        .filter(({ prog }) => (prog.state || {}).kind === 'failed')
-        .map(({ prog, index }) => ({
-          key: `failed-${index}`,
-          prog,
-          input: inputById[prog.scenario_id] || (j.scenarios || [])[index],
-          label: `failed scenario ${index + 1}`,
-        })))
-    : liveProgs.map((prog, index) => ({
-        key: prog.scenario_id || `scenario-${index}`,
-        prog,
-        input: inputById[prog.scenario_id] || (j.scenarios || [])[index],
-        label: prog.scenario_id || `scenario ${index + 1}`,
-      }));
+  const trace = j.result && j.result.trace;
+  const failure = j.result && j.result.failure;
   return html`
-    <div id=${`job-${j.id}`} class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
+    <div ref=${cardRef} id=${`job-${j.id}`} class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
       <h2>
         <span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span>
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
@@ -816,13 +888,39 @@ function JobCard({ j, token, onDelete, onPatched, leaving }) {
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />
-      <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} />
-      <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} />
+      <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
+      <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
       <${ResultLine} j=${j} />
-      <div class="scens" style="margin-top:0.5rem">
-        ${panels.map(panel => html`<${ScenarioPanel} key=${panel.key} prog=${panel.prog} input=${panel.input} label=${panel.label} />`)}
-      </div>
+      <${ConversationPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} failure=${failure} />
     </div>`;
+}
+
+// The browser groups the cards using the exact attribute-vector request sent to
+// /api/frontier. It does no cohort filtering: every job remains visible, so a
+// pending or failed group is never hidden merely because it has no coordinate.
+function GroupedJobCards({ jobs, groupBy, points, activeGroupId, onActiveGroup, onGroupActivate, token, onDelete, onPatched, leaving, uiCache }) {
+  const pointByKey = new Map((points || []).map(p => [groupKeyFor(groupBy, p.attributes), p]));
+  const groups = new Map();
+  (jobs || []).forEach(j => {
+    const key = groupKeyFor(groupBy, jobAttributes(j));
+    if (!groups.has(key)) groups.set(key, { key, attributes: jobAttributes(j), jobs: [] });
+    groups.get(key).jobs.push(j);
+  });
+  return html`${[...groups.values()].map(g => {
+    const point = pointByKey.get(g.key);
+    const pointId = point && point.id;
+    const active = pointId && pointId === activeGroupId;
+    const enter = () => { if (pointId) onActiveGroup(pointId); };
+    const leave = () => { if (pointId) onActiveGroup(null); };
+    return html`<section key=${g.key} class=${`job-group${active ? ' active' : ''}`}
+      id=${pointId ? `frontier-group-${pointId}` : null} data-job-group-id=${pointId || null}
+      onMouseEnter=${enter} onMouseLeave=${leave}
+      onFocusIn=${enter} onFocusOut=${e => { if (!e.currentTarget.contains(e.relatedTarget)) leave(); }}>
+      <h2><span class="mono">${point ? point.label : fallbackGroupLabel(groupBy, g.attributes)}</span>
+        <span class="meta">· ${g.jobs.length} investigation${g.jobs.length === 1 ? '' : 's'}${point && point.values == null ? ' · pending' : ''}</span></h2>
+      ${g.jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${onDelete} onPatched=${onPatched} leaving=${leaving === j.id} uiCache=${uiCache} />`)}
+    </section>`;
+  })}`;
 }
 
 function App() {
@@ -833,10 +931,23 @@ function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authError, setAuthError] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
+  const [groupBy, setGroupByState] = useState(['put_model', 'put_thinking', 'prompt_hash']);
+  const [frontierPoints, setFrontierPoints] = useState([]);
+  const [activeGroupId, setActiveGroupId] = useState(null);
   const deletedIds = useRef(new Set());
+  // Ephemeral browser-only state for cards that are regrouped. It is neither
+  // server metadata nor a persistence layer; deleting a job drops it.
+  const jobUiCache = useRef(new Map());
   const revision = useRef(0);
   const deleteTimers = useRef(new Set());
   useEffect(() => () => { deleteTimers.current.forEach(clearTimeout); }, []);
+  useEffect(() => {
+    if (jobs === null) return;
+    const present = new Set(jobs.map(job => job.id));
+    for (const id of jobUiCache.current.keys()) {
+      if (!present.has(id)) jobUiCache.current.delete(id);
+    }
+  }, [jobs]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -937,6 +1048,21 @@ function App() {
     deleteTimers.current.add(timer);
   };
 
+  const setGroupBy = next => {
+    setGroupByState(next);
+    // Old ids describe a different attribute vector; never cross-highlight
+    // while the new frontier request is in flight.
+    setFrontierPoints([]); setActiveGroupId(null);
+  };
+  const activateGroup = id => {
+    setActiveGroupId(id);
+    requestAnimationFrame(() => {
+      const group = [...document.querySelectorAll('[data-job-group-id]')]
+        .find(el => el.getAttribute('data-job-group-id') === id);
+      if (group) group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
   const expandAll = () => {
     const all = [...document.querySelectorAll('#root details')];
     const anyClosed = all.some(d => !d.hasAttribute('open'));
@@ -965,12 +1091,17 @@ function App() {
         </div>
         ${authError ? html`<div class="note" style="margin-top:0.4rem">That token was rejected — check it and try again.</div>` : null}
       </div>` : null}
-    ${authRequired ? null : jobs === null ? null : html`<${FrontierPanel} jobs=${jobs} token=${token} />`}
+    ${authRequired ? null : jobs === null ? null : html`<${FrontierPanel}
+      jobs=${jobs} token=${token} groupBy=${groupBy} setGroupBy=${setGroupBy}
+      activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId}
+      onGroupActivate=${activateGroup} onPlotChange=${setFrontierPoints} />`}
     <div id="jobs">
       ${authRequired ? null
        : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${removeJob} onPatched=${applyPatch} leaving=${leaving === j.id} />`)}
+       : html`<${GroupedJobCards} jobs=${jobs} groupBy=${groupBy} points=${frontierPoints}
+          activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId} onGroupActivate=${activateGroup}
+          token=${token} onDelete=${removeJob} onPatched=${applyPatch} leaving=${leaving} uiCache=${jobUiCache} />`}
     </div>
     <footer class="meta" style="margin-top:2rem;text-align:center">
       API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>

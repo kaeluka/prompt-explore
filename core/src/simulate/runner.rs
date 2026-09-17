@@ -12,8 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolDef};
 use crate::model::simulation::{
-    LuaExecutionRecord, RunProgress, Scenario, ScenarioPhase, ToolCall, ToolExchange, Trace,
-    TraceTurn,
+    LuaExecutionRecord, RunPhase, RunProgress, Scenario, ToolCall, ToolExchange, Trace, TraceTurn,
 };
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
@@ -91,7 +90,6 @@ impl Runner {
         put: &PromptUnderTest,
         scenario: &Scenario,
         budget: &Budget,
-        index: usize,
         progress: Option<Arc<Mutex<RunProgress>>>,
     ) -> Result<Trace, RunnerError> {
         // Resolve the template's {{variables}} from the scenario's
@@ -101,17 +99,23 @@ impl Runner {
         // resolves the template's {{variables}} from input_domain — IN
         // this world-briefed conversation, so the picked values are
         // consistent with the world the tools will render against.
+        if let Some(p) = &progress {
+            if let Ok(mut g) = p.lock() {
+                g.set_phase(RunPhase::ResolvingInputs);
+                g.user_message = scenario.user_message.clone();
+            }
+        }
         let mut sim = self.simulator.session(&build_simulator_notes(scenario));
-        sim.set_progress(progress.clone(), index);
+        sim.set_progress(progress.clone());
         let resolved_inputs = sim
             .resolve(&put.template, &scenario.input_domain)
             .await
             .map_err(RunnerError::Simulator)?;
         // Surface the resolved bindings immediately (before step 1) so
-        // they're visible live and positionally aligned in progress.
+        // they're visible live, even if preparation or the PUT loop fails.
         if let Some(p) = &progress {
             if let Ok(mut g) = p.lock() {
-                g.set_resolved(index, resolved_inputs.clone());
+                g.set_resolved(resolved_inputs.clone());
             }
         }
         sim.prepare_program(&put.tools)
@@ -119,7 +123,7 @@ impl Runner {
             .map_err(RunnerError::Simulator)?;
         if let Some(p) = &progress {
             if let Ok(mut g) = p.lock() {
-                g.set_scenario_phase(index, ScenarioPhase::PutLoop);
+                g.set_phase(RunPhase::PutLoop);
             }
         }
         let mut messages = initial_messages(put, scenario, &resolved_inputs);
@@ -170,7 +174,7 @@ impl Runner {
                 });
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
-                        g.push_turn(index, turns.last().unwrap().clone());
+                        g.push_turn(turns.last().unwrap().clone());
                     }
                 }
                 break;
@@ -183,9 +187,36 @@ impl Runner {
             // without responses and produce a protocol-incoherent trace.
             let mut tool_exchanges = Vec::with_capacity(response.tool_calls.len());
             for tc in &response.tool_calls {
-                let (tool_response, state_after, workspace_ops, sim_thinking, lua_execution) = self
-                    .handle_tool_call(put, tc, &mut world_state, &mut messages, &mut sim)
-                    .await?;
+                let (tool_response, state_after, workspace_ops, sim_thinking, lua_execution) =
+                    match self
+                        .handle_tool_call(put, tc, &mut world_state, &mut messages, &mut sim)
+                        .await
+                    {
+                        Ok(exchange) => exchange,
+                        Err(error) => {
+                            // A sibling may have already completed (and, for a
+                            // write, patched state) before this call failed.
+                            // There is no terminal Trace on error, so retain
+                            // that real prefix as ONE partial completion in
+                            // live progress. Do not fabricate an exchange for
+                            // the failed sibling or split the model completion.
+                            if !tool_exchanges.is_empty() {
+                                if let Some(p) = &progress {
+                                    if let Ok(mut g) = p.lock() {
+                                        g.push_turn(TraceTurn {
+                                            model_output: response
+                                                .content
+                                                .clone()
+                                                .unwrap_or_default(),
+                                            thinking: response.thinking.clone(),
+                                            tool_exchanges,
+                                        });
+                                    }
+                                }
+                            }
+                            return Err(error);
+                        }
+                    };
 
                 tool_exchanges.push(ToolExchange {
                     call: ToolCall {
@@ -208,7 +239,7 @@ impl Runner {
             });
             if let Some(p) = &progress {
                 if let Ok(mut g) = p.lock() {
-                    g.push_turn(index, turns.last().unwrap().clone());
+                    g.push_turn(turns.last().unwrap().clone());
                 }
             }
         }

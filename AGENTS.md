@@ -5,8 +5,8 @@ Guidance for AI agents (and humans) working in this repository.
 ## What this is
 
 **prompt-explore** — property-based testing for agent behavior. A user
-supplies scenarios (author-supplied world narratives) and a prompt under
-test (PUT); the tool runs every scenario inside its simulated world and
+supplies one scenario (an author-supplied world narrative) and a prompt under
+test (PUT) per investigation; the tool runs one conversation in that world and
 returns the complete evidence — the world, the input domain, the resolved
 inputs, and the full trace of model turns. **The caller is the judge:** there
 is no in-harness verdict. The user may also state a free-form `reason`
@@ -64,11 +64,9 @@ narrative and trace — can catch it. The user is the loop; they see what
 happened, not what was supposed to happen.
 
 **Every LLM phase is an observable status.** An investigation's LLM work is
-the per-scenario PUT tool loop. `GET /api/investigations/{id}` must report
-which phase the job is in (and the UI must show it), never a bare
-"running". (With the judge removed, the only phase is `scenarios`; the
-contract is kept so a future phase — e.g. a caller-supplied judge — slots
-in without re-plumbing the status surface.)
+input resolution, optional tool preparation, and the PUT tool loop.
+`GET /api/investigations/{id}` must report `resolving_inputs`, `preparing_tools`,
+or `put_loop` (and the UI must show it), never a bare "running".
 
 **Environments are narratives, not data.** A scenario is a world
 *specification* — facts, completeness assertions, rendering instructions —
@@ -87,7 +85,7 @@ This is the property-based-testing move — describe the domain, sample it.
 
 **A scenario is a value, not a record.** It carries no identity (`id`):
 it is `(world, input_domain, user_message)` and the run output embeds the
-scenario *by value* per attempt, never by id or index. Correlation is
+scenario *by value* on the investigation, never by id or index. Correlation is
 content-equality.
 
 **The consumer owns simulation quality.** Whoever consumes an
@@ -105,7 +103,7 @@ operates under.
 
 **Scenarios are authored outside the harness.** There is deliberately no
 scenario-generation endpoint and no generation-on-submit: an optional
-`scenarios` field with an "absent means generate" default is *easy, not
+`scenario` field with an "absent means generate" default is *easy, not
 simple* — one endpoint, one contract. The operator's agent (e.g. Claude)
 writes scenarios; the harness evaluates them. When authoring a scenario,
 the world is the ground truth and must pin four things (all NL, all
@@ -139,7 +137,12 @@ All investigations in memory are candidates; there is no selection/filter list.
 `POST /api/frontier` groups by attribute names (default: `put_model`, `put_thinking`,
 `prompt_hash`) and averages requested axes over completed investigations with
 EVERY requested value. All coordinates use the same cohort, equally weighted
-per investigation. This change does not remove multi-scenario investigations.
+per investigation. Each investigation runs exactly one conversation: singular
+`scenario`, `result.trace` or `result.failure`, and flat `progress`. Repetition
+means separate investigations, not an embedded batch or `samples` control.
+Failed conversations retain partial progress evidence. Workspace reuse and a
+multi-submit convenience are deferred; do not reintroduce nested trace arrays.
+List attribute filters affect browsing only, never frontier candidacy.
 
 The API map is named `attributes` (not `tags`; do not add a compatibility alias).
 System attributes (resolved model/thinking settings, prompt/workspace hashes) are
@@ -175,8 +178,8 @@ Do not generalize this into automatic caching or a narrative-enforcement DSL.
 
 The source/revisions and setup work are trace artifacts, visible beside resolved
 inputs. Each Lua attempt names its revision and computed/fallback/error outcome.
-Each scenario reports input-resolution / tool-preparation / PUT-loop phase, since
-concurrent scenarios can be in different phases. Execution limits are explicit,
+Each investigation reports input-resolution / tool-preparation / PUT-loop phase;
+concurrent investigations can be in different phases. Execution limits are explicit,
 validated, hard-ceilinged controls; workspace results are byte-bounded before
 construction; the VM exposes only existing in-memory workspace operations.
 Randomness/time capabilities are deferred. The in-process sandbox has cooperative
