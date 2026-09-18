@@ -192,6 +192,16 @@ observation: nothing in the API distinguishes "provider call is wedged" from
 "thinking hard", and only the frozen `put_tokens_used` next to a growing
 `elapsed_ms` hints at it.
 
+That stalled job never recovered: `42bf7dd2` sat `running` for ~19 minutes with
+`steps_used: 0` and `put_tokens_used: 1004` frozen while `elapsed_ms` grew, and
+the server log showed a transport retry that never completed. It could not be
+deleted (409 by design — a running job's provider calls would keep spending),
+so the only way to clear it was to restart the server. Two gaps are worth a
+follow-up decision, both outside this change: individual provider attempts have
+no wall-clock deadline, so a hung request is bounded by neither the retry budget
+nor the step/token budget; and a caller has no way to abandon a job that will
+never progress.
+
 ## What this does and does not show
 
 - It does **not** validate generated Lua against a narrative, and adds no
