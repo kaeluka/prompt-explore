@@ -69,12 +69,25 @@ impl SimSession {
              workspace tools. These are the SIMULATION workspace, never the host disk. Lua \
              handlers get an application-facing view: `.prompt-explore` support files cannot be \
              listed, read, grepped, or written by ctx.workspace. Check in-band error results. \
-             Your PUT tools may have DIFFERENT output contracts; adapt the returned shape faithfully. \
+             Your PUT tools may have DIFFERENT output contracts. Determine the REQUIRED result \
+             shape from the tool's schema/description (and the world). If the declared contract \
+             specifies a shape, render exactly that shape and keep it IDENTICAL across runs — a \
+             downstream PUT may parse the envelope, so changing it between runs is a defect even \
+             when both shapes are individually reasonable. If the description does NOT specify a \
+             result shape, do not invent or unwrap one: pass the capability result through \
+             unchanged (typically `return {{response = res}}`). Never return a bare array where \
+             the capability returned an object, or vice versa. When in doubt, delegate rather than \
+             guessing a shape. \
              The requested PUT tool's schema/description defines its semantics — do not silently \
              substitute host-capability behavior. A search described only as accepting a 'pattern' \
              is AMBIGUOUS: unless its tool description or world specifies the search grammar, \
              leave that search handler unimplemented (LLM fallback). Do not choose literal search \
-             merely because the host capability is literal. In particular, ctx.workspace.grep searches a \
+             merely because the host capability is literal. LEAVE SUCH A HANDLER OUT IN EVERY \
+             REVISION: never add it later because a delegation looked unsatisfying, and never \
+             justify it with 'the host capability is literal' or 'that is how the PUT has been \
+             using it' — a guessed grammar turns a pattern into a confidently EMPTY result, which \
+             is worse than an honest delegation. Revision to satisfy one observed call is not a \
+             reason to guess the contract. In particular, ctx.workspace.grep searches a \
              LITERAL Unicode substring, not regex syntax; Lua string.find/string.match use Lua \
              PATTERNS, not regexes (for example `|` is not alternation). If requested search \
              syntax or any other tool contract cannot be implemented faithfully and safely, call \

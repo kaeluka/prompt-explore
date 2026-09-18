@@ -135,6 +135,12 @@ pub struct RunExecution {
     /// TraceTurn; inspect it without treating requested tools as executed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_cutoff_completion: Option<BudgetCutoffCompletion>,
+    /// The tool request whose simulated response could not be rendered, when a
+    /// run failed inside a tool batch. Its siblings appear normally in `turns`;
+    /// this request has no response and none is invented. Null for failures that
+    /// did not reach a tool call (resolution, preparation, PUT model call).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unrendered_call: Option<ToolCall>,
     #[serde(default)]
     pub timing: RunTiming,
 }

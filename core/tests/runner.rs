@@ -419,7 +419,24 @@ async fn failed_sibling_keeps_completed_exchanges_in_one_progress_turn() {
         .expect_err("the second simulator call fails");
 
     assert!(error.to_string().contains("mock script exhausted"));
+    // The failure text names the call with no response, and the request itself is
+    // retained structurally so a reader does not have to infer it from counters.
+    assert!(
+        error.to_string().contains("for tool 'cancel_order'"),
+        "failure names the unrendered tool: {error}"
+    );
+    assert!(
+        error.to_string().contains("B-5678"),
+        "failure context includes the arguments: {error}"
+    );
     let progress = progress.lock().unwrap();
+    let unrendered = progress
+        .execution
+        .unrendered_call
+        .as_ref()
+        .expect("the unrendered call is recorded");
+    assert_eq!(unrendered.name, "cancel_order");
+    assert_eq!(unrendered.args["order_id"], "B-5678");
     assert_eq!(
         progress.turns.len(),
         1,

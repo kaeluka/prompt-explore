@@ -29,8 +29,15 @@ pub const DEFAULT_PUT_MAX_TOKENS: u32 = 32 * 1024;
 pub enum RunnerError {
     #[error("PUT model call failed: {0}")]
     PutModel(#[source] LlmError),
-    #[error("simulator call failed: {0}")]
-    Simulator(#[source] LlmError),
+    /// `context` is empty for resolution/program-preparation failures and names
+    /// the failing tool request when a tool response could not be rendered, so
+    /// the failure text alone identifies which call has no response.
+    #[error("simulator call failed{context}: {source}")]
+    Simulator {
+        context: String,
+        #[source]
+        source: LlmError,
+    },
 }
 
 /// Controls for the PUT and simulator conversations. The defaults retain the
@@ -122,7 +129,10 @@ impl Runner {
             Ok(resolved) => resolved,
             Err(error) => {
                 finish_progress(&progress, RunStopReason::RuntimeFailure);
-                return Err(RunnerError::Simulator(error));
+                return Err(RunnerError::Simulator {
+                    context: String::new(),
+                    source: error,
+                });
             }
         };
         // Surface the resolved bindings immediately (before step 1) so
@@ -134,7 +144,10 @@ impl Runner {
         }
         if let Err(error) = sim.prepare_program(&put.tools).await {
             finish_progress(&progress, RunStopReason::RuntimeFailure);
-            return Err(RunnerError::Simulator(error));
+            return Err(RunnerError::Simulator {
+                context: String::new(),
+                source: error,
+            });
         }
         if let Some(p) = &progress {
             if let Ok(mut g) = p.lock() {
@@ -248,15 +261,30 @@ impl Runner {
                                 }
                             }
                             finish_progress(&progress, RunStopReason::RuntimeFailure);
-                            return Err(error);
+                            let call = ToolCall {
+                                name: tc.name.clone(),
+                                args: parsed_args(tc),
+                            };
+                            if let Some(p) = &progress {
+                                if let Ok(mut g) = p.lock() {
+                                    g.execution.unrendered_call = Some(call.clone());
+                                }
+                            }
+                            return Err(RunnerError::Simulator {
+                                context: format!(
+                                    " for tool '{}' (args {})",
+                                    call.name,
+                                    summarized_args(&call.args)
+                                ),
+                                source: error,
+                            });
                         }
                     };
 
                 tool_exchanges.push(ToolExchange {
                     call: ToolCall {
                         name: tc.name.clone(),
-                        args: serde_json::from_str(&tc.arguments)
-                            .unwrap_or(Value::String(tc.arguments.clone())),
+                        args: parsed_args(tc),
                     },
                     response: tool_response,
                     lua_execution,
@@ -316,7 +344,7 @@ impl Runner {
             Option<String>,
             Option<LuaExecutionRecord>,
         ),
-        RunnerError,
+        LlmError,
     > {
         let tool = put.tools.iter().find(|t| t.name == tc.name);
         let mut workspace_ops = Vec::new();
@@ -337,8 +365,7 @@ impl Runner {
                             },
                             world_state,
                         )
-                        .await
-                        .map_err(RunnerError::Simulator)?;
+                        .await?;
 
                     if let Some(patch) = sim_outcome.state_patch {
                         apply_patch(world_state, patch);
@@ -370,6 +397,26 @@ impl Runner {
             lua_execution,
         ))
     }
+}
+
+/// Parse a provider tool-call's raw arguments the same way for accepted and
+/// unrendered calls: valid JSON as-is, otherwise the raw string. Malformed
+/// arguments are the simulator's/validator's concern, never a panic.
+fn parsed_args(tc: &crate::llm::ToolCallRequest) -> Value {
+    serde_json::from_str(&tc.arguments).unwrap_or(Value::String(tc.arguments.clone()))
+}
+
+/// One-line, length-bounded argument summary for failure context. This is
+/// display text only; the full request stays in `execution.unrendered_call`.
+fn summarized_args(args: &Value) -> String {
+    const MAX: usize = 200;
+    let text = args.to_string().replace('\n', " ");
+    if text.chars().count() <= MAX {
+        return text;
+    }
+    let mut clipped: String = text.chars().take(MAX).collect();
+    clipped.push('…');
+    clipped
 }
 
 fn set_steps_used(progress: &Option<Arc<Mutex<RunProgress>>>, steps_used: u64) {

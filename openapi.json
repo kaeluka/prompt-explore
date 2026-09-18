@@ -1348,6 +1348,7 @@
       },
       "JobView": {
         "type": "object",
+        "description": "One investigation. Deterministic execution evidence lives at\n`progress.execution` while running, and at `result.trace.execution` once done\n(the two are equal when the run is terminal); there is deliberately no\ntop-level `execution` alias. Read `stop_reason` there, not `status`, to learn\nhow the run ended: `done` only means a trace was recorded. For a token-capped\nrun the crossing completion is at `progress.execution.budget_cutoff_completion`\n(fields `model_output`, `thinking`, `tool_calls` — not `content`), and for a\nfailure inside a tool batch `progress.execution.unrendered_call` names the\nrequest whose response does not exist. Prefer GET /api/investigations/{id}/evidence\nfor reading the conversation itself.",
         "required": [
           "id",
           "status",
@@ -1426,7 +1427,7 @@
           },
           "progress": {
             "$ref": "#/components/schemas/RunProgress",
-            "description": "Live progress for this scenario, populated while running and frozen\nwhen the job finishes. Lets a dashboard show a tool-call log as it\nhappens."
+            "description": "Live progress for this scenario, populated while running and frozen\nwhen the job finishes. Lets a dashboard show a tool-call log as it\nhappens. `progress.execution` is the deterministic run record (stop\nreason, counters, monotonic phase timings, and any unaccepted cutoff\ncompletion or unrendered tool call)."
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest",
@@ -1884,6 +1885,17 @@
           },
           "timing": {
             "$ref": "#/components/schemas/RunTiming"
+          },
+          "unrendered_call": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ToolCall",
+                "description": "The tool request whose simulated response could not be rendered, when a\nrun failed inside a tool batch. Its siblings appear normally in `turns`;\nthis request has no response and none is invented. Null for failures that\ndid not reach a tool call (resolution, preparation, PUT model call)."
+              }
+            ]
           }
         }
       },

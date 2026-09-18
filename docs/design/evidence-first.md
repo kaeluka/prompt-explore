@@ -33,6 +33,12 @@ Core `RunExecution` records:
   simulated responses are invented for those requests.
 - `timing`: monotonic `elapsed_ms`, `resolving_inputs_ms`, `preparing_tools_ms`,
   `put_loop_ms`. Live snapshots refresh the active phase; terminal values freeze.
+- `unrendered_call`: the tool request whose response could not be rendered when a
+  run dies inside a tool batch. Its siblings appear normally in `turns`; this
+  request has no response and none is invented, and the failure text names the
+  tool and its arguments. Null for failures that never reached a tool call.
+  Lua delegation makes this path more reachable, which is a reason to keep the
+  simulator model robust rather than to reintroduce silent fallbacks.
 
 The polling view retains `budget`, epoch-millisecond `started_at`/`finished_at`,
 and execution evidence in progress/trace. `done` means a trace was recorded,
@@ -77,7 +83,9 @@ System provenance adds `simulation_backend` (`llm`/`lua`), `step_budget`, and
 `token_budget` (decimal or `unlimited`). Group by the actual variables being
 compared. The existing default PUT-model/thinking/prompt grouping deliberately
 does not infer a backend experiment; without adding the backend key it merges
-backends. Missing keys still form explicit null groups.
+backends. This is a recorded design decision, not an oversight: the harness must
+not guess which axis a caller is varying. Missing keys still form explicit null
+groups.
 
 Lua sources can be viewed side by side across investigations. Fresh runs generate
 fresh programs: changing a budget and observing a different adapter is not
@@ -96,8 +104,12 @@ Host grep is literal substring search; Lua patterns are not regexes. Authoring
 instructions require adapting the caller's contract or delegating unsupported
 semantics, rather than returning false-empty results. An unspecified search
 'pattern' is ambiguous: leave that handler to the LLM rather than arbitrarily
-choosing the host's literal semantics. This remains a model instruction, not
-semantic enforcement. Legitimate in-band tool
+choosing the host's literal semantics. Result SHAPE gets the same treatment: a
+declared shape must be rendered exactly and identically across runs, and an
+unspecified shape must pass the capability result through unchanged rather than
+inventing or unwrapping an envelope — an unstable envelope breaks a downstream
+caller even when each individual shape is reasonable. This remains a model
+instruction, not semantic enforcement. Legitimate in-band tool
 errors remain data and do not automatically trigger fallback. There is no new
 cache, narrative DSL or semantic consistency checker.
 

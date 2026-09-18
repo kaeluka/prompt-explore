@@ -415,6 +415,16 @@ struct JobCreated {
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
+/// One investigation. Deterministic execution evidence lives at
+/// `progress.execution` while running, and at `result.trace.execution` once done
+/// (the two are equal when the run is terminal); there is deliberately no
+/// top-level `execution` alias. Read `stop_reason` there, not `status`, to learn
+/// how the run ended: `done` only means a trace was recorded. For a token-capped
+/// run the crossing completion is at `progress.execution.budget_cutoff_completion`
+/// (fields `model_output`, `thinking`, `tool_calls` — not `content`), and for a
+/// failure inside a tool batch `progress.execution.unrendered_call` names the
+/// request whose response does not exist. Prefer GET /api/investigations/{id}/evidence
+/// for reading the conversation itself.
 struct JobView {
     /// The job's id (same value as the `{id}` path segment and the id in
     /// `JobSummary`). Echoed in the body so a consumer holding only this
@@ -488,7 +498,9 @@ struct JobView {
     scenario: Scenario,
     /// Live progress for this scenario, populated while running and frozen
     /// when the job finishes. Lets a dashboard show a tool-call log as it
-    /// happens.
+    /// happens. `progress.execution` is the deterministic run record (stop
+    /// reason, counters, monotonic phase timings, and any unaccepted cutoff
+    /// completion or unrendered tool call).
     progress: RunProgress,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<InvestigateResponse>,
@@ -2503,6 +2515,11 @@ mod tests {
             let trace = result.trace.take().unwrap();
             let mut progress = job.progress.lock().unwrap();
             progress.turns = trace.turns;
+            progress.execution.unrendered_call =
+                Some(prompt_explore::model::simulation::ToolCall {
+                    name: "search_text".into(),
+                    args: serde_json::json!({"pattern": "a|b"}),
+                });
             progress.finish(prompt_explore::model::simulation::RunStopReason::RuntimeFailure);
             job.status = JobStatus::Failed;
             result.failure = Some(RunFailure {
@@ -2517,6 +2534,11 @@ mod tests {
             serde_json::json!({"error":"invalid path"})
         );
         assert_eq!(failed["failure"]["error"], "provider failure");
+        assert_eq!(
+            failed["execution"]["unrendered_call"],
+            serde_json::json!({"name":"search_text","args":{"pattern":"a|b"}}),
+            "the failing request is retained rather than only implied by counters"
+        );
         assert!(failed["final_world_state"].is_null());
         assert_eq!(
             get_json(&app, "/api/investigations/missing/evidence")

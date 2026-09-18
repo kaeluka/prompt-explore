@@ -441,6 +441,7 @@ function ExecutionSummary({ execution, budget }) {
     <span class="mono"> · steps ${execution.steps_used ?? '—'} / ${budget?.max_steps_per_trace ?? '—'} · PUT tokens ${execution.put_tokens_used ?? '—'} / ${budget && budget.max_tokens == null ? 'unlimited' : budget?.max_tokens ?? '—'}</span>
     <div class="meta">timing: elapsed ${ms(timing.elapsed_ms)} · inputs ${ms(timing.resolving_inputs_ms)} · tool preparation ${ms(timing.preparing_tools_ms)} · PUT loop ${ms(timing.put_loop_ms)}</div>
     ${execution.budget_cutoff_completion ? html`<details open><summary>completion received at token cutoff — not accepted; tools were NOT executed</summary><pre class="step">${pretty(execution.budget_cutoff_completion)}</pre></details>` : null}
+    ${execution.unrendered_call ? html`<details open><summary>tool request that could not be simulated — it has NO response; its siblings above are real</summary><pre class="step">${pretty(execution.unrendered_call)}</pre></details>` : null}
   </div>`;
 }
 

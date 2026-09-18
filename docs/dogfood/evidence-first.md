@@ -80,6 +80,118 @@ intermediate row is the useful negative result: fixing the workspace boundary
 alone left the false-empty search, which the strengthened authoring
 instruction then delegated instead of faking.
 
+## Independent validation round (`fixval`, 2026-09-18)
+
+An independent agent re-ran a pre-registered protocol against this branch
+(`/tmp/pe-fixval`, 16 jobs, $0.0329). It confirmed every named defect at the
+level the report asked for — root aliases, private-namespace isolation, explicit
+decline instead of false-empty search, genuine in-band errors still `computed`,
+all four stop reasons, frozen equal execution records, server-only timings, and a
+dashboard that leads with responses — and a held-out service (never seen by the
+original caller) was classified correctly by both backends.
+
+It also produced four findings that are addressed here, and one measurement.
+
+**G1 — result envelope was still unstable across Lua regenerations.** Four
+identical runs of one PUT/tool schema returned `list_files` as an object three
+times and as a bare `entries` array once; the fallback search reply varied the
+same way. Fix: the authoring instruction now requires an explicitly declared
+shape to be rendered exactly and identically across runs, and an unspecified
+shape to pass the capability result through unchanged rather than inventing or
+unwrapping an envelope; the LLM simulator's system prompt carries the same
+consistency rule. Matched re-check, four runs on the same requests:
+
+| set | `list_files` envelope | ambiguous alternation search |
+|---|---|---|
+| before (4 runs) | object 3×, bare array 1× | one run added a literal handler → confidently empty `computed` |
+| after (4 runs) | object 4× | explicit `fallback` 8/8 |
+
+The middle column is the residual that made this worth a second pass: in the
+first after-batch the model *revised* its program to add a literal search
+handler, reasoning that the host capability is literal — reintroducing the
+exact false-empty class the search instruction was written to prevent.
+
+**G2 — delegation feedback invited that revision.** The harness told the
+simulator that a declined Lua attempt "did not commit any workspace writes… you
+may use workspace tools to repair/specialize the program for later calls",
+which frames an intentional decline as a defect. The message now names the
+decline reason, states that declining is a normal outcome, and forbids adding or
+rewriting a handler for an underspecified tool; the authoring prompt says a
+deferred handler must stay deferred across every revision.
+
+**G2b — an unrenderable tool request had no name.** When a run dies inside a
+tool batch, `turns` keeps the successful siblings but nothing identified the
+request whose response does not exist. `execution.unrendered_call` now records
+it (name + arguments), the failure text includes the tool name and a bounded
+argument summary, and the dashboard/evidence show it.
+
+**G4/G7 — field discoverability.** `JobView` now documents that execution
+evidence lives at `progress.execution` (and `result.trace.execution` when done)
+with no top-level alias, and points at
+`progress.execution.budget_cutoff_completion` (`model_output`/`tool_calls`, not
+`content`) and `progress.execution.unrendered_call`.
+
+**G6 — default grouping deliberately keeps merging the backend.** Recorded as a
+design decision in `docs/design/evidence-first.md`: the harness must not infer
+which axis a caller is varying, so `simulation_backend` is selectable provenance
+rather than a changed default.
+
+**G3 — Lua setup is a large fixed cost.** The new phase timing shows
+`preparing_tools_ms` of 24–54 s per run, often comparable to the whole PUT loop;
+the validator's honest Lua pair measured ~24% total cost reduction at n=2, not
+the baseline's claimed 89–90% simulator saving. No claim of a latency win is
+made here.
+
+**G1b — a DECLARED result shape was ignored (found by the uncoached caller, then
+fixed).** The first G1 wording only said that an unspecified shape must be
+passed through unchanged. An independent fresh caller that declared an explicit
+`read` contract (`{path,total_lines,truncated,lines:[{n,text}]}`) in both the
+description and `example_responses` received the harness workspace object
+(`{content,start_line,end_line,...}`) verbatim instead, and had to count lines
+by hand — a fidelity defect that also produced its prompt's citation slips. The
+instruction now states that the declared shape WINS over what a lookup returns:
+reshape to match it exactly, and forward the capability result unchanged only
+when nothing is declared. Matched re-check on that caller's own request bodies
+(same PUT prompts, tools, worlds, budgets; cheap simulator):
+
+| set | `read` response | nested `lines[*]` |
+|---|---|---|
+| before (caller's runs, previous build) | `{content,start_line,end_line,path,total_lines}` | n/a (raw text) |
+| after (3 completed runs, 19 exchanges) | `{lines,path,total_lines,truncated}` | `{n,text}` |
+
+`list_dir.entries[*]` came back as the declared `{name,size,type}` (not the
+workspace's `{name,kind}`) and `grep.matches[*]` as `{path,line,text}`, so
+nested shapes are honored too. Residual: `list_dir` sometimes carried an extra
+`truncated:false` the declaration did not mention — a harmless superset, but not
+perfectly stable, and the reason this remains an instruction rather than a
+guarantee. Classification was unaffected: the vulnerable service was flagged
+and the safe one cleared in every completed run.
+
+**Arm A — an uncoached fresh caller on the fixed build.** A separate agent, given
+only "which of these two prompts should I ship, with evidence", working in a new
+directory with no reminders about grading, evidence reading or handoff:
+
+- read `/evidence` and the **actual** responses, and re-checked its cited line
+  numbers against the simulator's returned bytes;
+- **caught the simulator's contract deviation unprompted** (the G1b finding
+  above) and told its principal to fix the tool schema before the next campaign;
+- chose a decision axis from the measurements (steps used against the budget,
+  cost per verdict, citation accuracy) and recommended the cheaper prompt,
+  noting the more thorough one was one file away from `step_budget`;
+- **PATCHed numeric grades and a populated `assessment` with an explicit rubric
+  and turn-level evidence references, with no prompting to do so** — the D9
+  workflow defect that the original trial needed an explicit "put it in the
+  product" request to work around.
+
+Two process notes for honesty: the caller's own probe jobs were lost when this
+operator restarted the server mid-flight (a mistake on the operator side, not a
+product defect — it recovered from locally saved evidence and re-ran what it
+could), and one of our verification jobs stalled in `put_loop` with zero turns
+for 15+ minutes while its provider call hung. That stall is reported as an
+observation: nothing in the API distinguishes "provider call is wedged" from
+"thinking hard", and only the frozen `put_tokens_used` next to a growing
+`elapsed_ms` hints at it.
+
 ## What this does and does not show
 
 - It does **not** validate generated Lua against a narrative, and adds no
@@ -97,7 +209,8 @@ instruction then delegated instead of faking.
 ## Verification
 
 - `cargo test --locked`: 133 core unit + integration groups, 31 server tests,
-  all passing.
+  all passing, including the new `unrendered_call` retention in the runner and
+  the evidence endpoint.
 - `PLAYWRIGHT_MODULE=... node scripts/test-evidence-ui.cjs`: URL/share state,
   card-only filters, draft survival, assessment replace/clear, capped-run
   wording, `executed, fidelity unverified`, authenticated evidence download,

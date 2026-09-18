@@ -262,11 +262,22 @@ impl SimSession {
             let mut request: Value = serde_json::from_str(&user).expect("generated JSON");
             if let Some(record) = &lua_execution {
                 request["lua_attempt"] = serde_json::to_value(record).expect("JSON Lua record");
-                request["lua_instructions"] = json!(
-                    "The Lua attempt did not commit any workspace writes or world-state patch. \
-                     Render this response now from the world and established conversation. \
-                     You may use workspace tools to repair/specialize the program for later calls."
-                );
+                request["lua_instructions"] = json!(format!(
+                    "A Lua handler DECLINED this call{}, so no workspace write or world-state \
+                     patch was committed. Declining is a normal, successful outcome — not a bug and \
+                     not a failure to fix. Render this response now from the world and established \
+                     conversation. Do NOT add or rewrite a handler for a tool whose declared input \
+                     grammar or result shape is underspecified: a deferred handler must stay \
+                     deferred across every later revision, and installing one later is a regression, \
+                     because a handler that guesses the contract returns confidently WRONG, empty or \
+                     differently-shaped results. Only specialize handlers whose behavior the tool \
+                     description and world fully determine, and then only to serve later calls.",
+                    lua_execution
+                        .as_ref()
+                        .and_then(|record| record.detail.as_deref())
+                        .map(|detail| format!(" ({detail})"))
+                        .unwrap_or_default()
+                ));
             }
             let request_content = if lua_execution.is_some() {
                 request.to_string()
@@ -531,7 +542,18 @@ fn build_system_prompt(notes: &str, workspace_files: usize) -> String {
          Your earlier replies in this conversation are the established record of the \
          environment: every response MUST be consistent with them (same files, same \
          contents, same facts — what has been read stays read; the input values you \
-         picked stay picked). The WORLD SPECIFICATION below is ground truth: render \
+         picked stay picked). This includes the RESPONSE ENVELOPE. The tool's declared \
+         description and `example_responses`, together with the world, DEFINE its return \
+         shape, and that declaration WINS over what a workspace lookup happens to return: \
+         if a declared shape or example exists, reshape your answer to match it exactly — \
+         same keys, same nesting, no extra or missing fields — even when the value you looked \
+         up came back in a different form. Forwarding the workspace result object unchanged \
+         when the tool declares a DIFFERENT shape is a defect, not faithfulness. Only when \
+         the declared contract specifies no shape at all may you pass the workspace result \
+         through unchanged, and then you must keep that shape identical for every call of \
+         that tool (never a bare array in one call and an object in the next) — a downstream \
+         agent may parse the envelope, so a shape that varies between calls or runs breaks it \
+         even when each individual shape looks reasonable. The WORLD SPECIFICATION below is ground truth: render \
          responses and choose input values consistent with it, refuse queries for \
          things it says do not exist or that its inventory does not cover, and never \
          introduce facts that contradict it. Filler for unspecified content must \
