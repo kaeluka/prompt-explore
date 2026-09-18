@@ -45,12 +45,15 @@ impl SimSession {
         self.messages.push(Message::System { content: format!(
             "EXPERIMENTAL LUA TOOL SIMULATION. The optional program at {PROGRAM_PATH} \
              implements PUT tools, not your workspace tools. It is initially a valid \
-             fallback-only module (or caller-supplied source). You may specialize it \
-             during preparation or later fallback responses using the workspace write tool. \
-             The narrative remains ground truth; code is a simulation artifact, not an oracle. \
-             You do NOT need to materialize the entire world. Implement only behavior worth \
-             computing, and delegate anything else. All computed and LLM responses remain \
-             in this conversation, tagged with their backend.\n\n\
+             fallback-only module. You may specialize it during preparation or later fallback \
+             responses using the workspace write tool. The `.prompt-explore` namespace is \
+             private harness support, not application inventory: access {PROGRAM_PATH} only to \
+             author the program, never render it as a world file. The narrative remains ground \
+             truth; code is a simulation artifact, not an oracle. A computed outcome means only \
+             that this code executed, NOT that it faithfully implements the requested tool. You \
+             do NOT need to materialize the entire world. Implement only behavior worth computing, \
+             and delegate anything else. All computed and LLM responses remain in this conversation, \
+             tagged with their backend.\n\n\
              LUA CONTRACT (Lua 5.4): the file returns a table mapping exact PUT tool names \
              to function(args, ctx). A function returns {{response=<any JSON-compatible value>, \
              state_patch=<object, write tools only>}}. Use ctx.world_state for current state \
@@ -62,11 +65,24 @@ impl SimSession {
              never disguised as tool results. All workspace mutations are staged and discarded \
              on delegation, errors or limits; only a valid computed result commits them.\n\n\
              CAPABILITIES: ctx.workspace.read(args), write(args), list_dir(args), grep(args) \
-             take exactly the same argument objects and return the same result objects as \
-             your workspace tools. These are the SIMULATION workspace, never the host disk. \
-             Check in-band error results. Your PUT tools may have DIFFERENT output contracts; \
-             adapt the returned shape faithfully. Use json.null for JSON null, json.array({{}}) \
-             for an empty JSON array; ordinary {{}} is an object. Source is UTF-8 text only. \
+             take exactly the same argument objects and return the same result objects as your \
+             workspace tools. These are the SIMULATION workspace, never the host disk. Lua \
+             handlers get an application-facing view: `.prompt-explore` support files cannot be \
+             listed, read, grepped, or written by ctx.workspace. Check in-band error results. \
+             Your PUT tools may have DIFFERENT output contracts; adapt the returned shape faithfully. \
+             The requested PUT tool's schema/description defines its semantics — do not silently \
+             substitute host-capability behavior. A search described only as accepting a 'pattern' \
+             is AMBIGUOUS: unless its tool description or world specifies the search grammar, \
+             leave that search handler unimplemented (LLM fallback). Do not choose literal search \
+             merely because the host capability is literal. In particular, ctx.workspace.grep searches a \
+             LITERAL Unicode substring, not regex syntax; Lua string.find/string.match use Lua \
+             PATTERNS, not regexes (for example `|` is not alternation). If requested search \
+             syntax or any other tool contract cannot be implemented faithfully and safely, call \
+             PleaseSimulateException(\"unsupported tool semantics\") rather than silently doing a \
+             literal or Lua-pattern search. Conversely, preserve legitimate requested in-band tool \
+             errors as response data; do not delegate merely because the correct response is an \
+             error. Use json.null for JSON null, json.array({{}}) for an empty JSON array; ordinary \
+             {{}} is an object. Source is UTF-8 text only. \
              No io, os, require/package, debug, load/dofile, pcall/xpcall/coroutines, \
              string.dump, random functions or time access. Safe basic/string/table/math \
              operations are available. Limits per invocation: {options:?}.\n\n\

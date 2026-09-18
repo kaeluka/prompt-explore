@@ -441,6 +441,7 @@ mod tests {
                 put_model: None,
                 sim_model: None,
                 steps_per_trace: vec![1],
+                timing: None,
             },
             attributes: BTreeMap::new(),
         }

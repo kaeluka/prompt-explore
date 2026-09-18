@@ -680,7 +680,7 @@ fn workspace_capability(
                     let remaining_host_bytes = conversion_options
                         .max_host_bytes
                         .saturating_sub(state.bytes + arg_bytes);
-                    let result = state.workspace.exec_bounded(
+                    let result = state.workspace.exec_application_bounded(
                         &name,
                         &args,
                         conversion_options
@@ -1496,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_limits_and_existing_workspace_tools_work() {
+    fn capability_limits_and_application_workspace_tools_work() {
         let t = tool("x", SideEffect::Read);
         let mut workspace = Workspace::empty();
         workspace.exec(
@@ -1530,6 +1530,46 @@ mod tests {
             ),
             LuaExecution::Failed { .. }
         ));
+    }
+
+    #[test]
+    fn application_capability_hides_private_program_artifacts() {
+        let t = tool("x", SideEffect::Read);
+        let mut workspace = Workspace::empty();
+        workspace.exec(
+            "write",
+            &serde_json::json!({"path":"public.txt","content":"public needle"}),
+        );
+        workspace.exec(
+            "write",
+            &serde_json::json!({"path":PROGRAM_PATH,"content":"private needle"}),
+        );
+        let source = "return {x=function(a,c) local root=c.workspace.list_dir({path='.'}); local r=c.workspace.read({path='.prompt-explore/tools.lua'}); local g=c.workspace.grep({pattern='private needle'}); local scoped=c.workspace.grep({pattern='needle',path='.prompt-explore'}); local w=c.workspace.write({path='.prompt-explore/blocked.lua',content='no'}); return {response={root=root,read=r,grep=g,scoped=scoped,write=w}} end}";
+        let (response, _, _, operations) = computed(execute(
+            source,
+            &t,
+            &call(Value::Null),
+            &Map::new(),
+            &workspace,
+            &LuaOptions::default(),
+        ));
+        assert_eq!(
+            response["root"]["entries"],
+            serde_json::json!([{"name":"public.txt","kind":"file"}])
+        );
+        for key in ["read", "scoped", "write"] {
+            assert_eq!(
+                response[key]["error"],
+                "private harness path is not available to application handlers"
+            );
+        }
+        assert!(response["grep"]["matches"].as_array().unwrap().is_empty());
+        assert_eq!(operations.len(), 5);
+        assert!(
+            workspace
+                .file_bytes(".prompt-explore/blocked.lua")
+                .is_none()
+        );
     }
 
     #[test]

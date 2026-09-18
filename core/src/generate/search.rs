@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::llm::LlmClient;
 use crate::model::input::{Investigation, PromptUnderTest};
 use crate::model::output::RunFailure;
-use crate::model::simulation::{RunPhase, RunProgress, Scenario, Trace};
+use crate::model::simulation::{RunProgress, RunStopReason, Scenario, Trace};
 use crate::simulate::{Runner, RunnerOptions, Workspace};
 
 /// One LLM client + model name, reused across runner roles.
@@ -56,16 +56,13 @@ impl Investigator {
         scenario: &Scenario,
         progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
     ) -> InvestigateOutcome {
-        if let Some(progress) = &progress {
-            if let Ok(mut current) = progress.lock() {
-                *current = RunProgress {
-                    phase: RunPhase::ResolvingInputs,
-                    simulation_program: None,
-                    turns: Vec::new(),
-                    user_message: scenario.user_message.clone(),
-                    resolved_inputs: Default::default(),
-                };
-            }
+        // Keep progress even for standalone callers: the runner returns its
+        // execution evidence in the successful Trace, while this handle lets
+        // failure and panic paths retain the same evidence until finalization.
+        let progress =
+            progress.unwrap_or_else(|| Arc::new(std::sync::Mutex::new(RunProgress::default())));
+        if let Ok(mut current) = progress.lock() {
+            current.initialize(scenario.user_message.clone());
         }
 
         // Keep this one conversation in its own task so a panic in a client or
@@ -79,6 +76,7 @@ impl Investigator {
         let put = put.clone();
         let task_scenario = scenario.clone();
         let budget = investigation.budget.clone();
+        let task_progress = progress.clone();
         let task = tokio::spawn(async move {
             let runner = Runner::new(
                 put_role.client,
@@ -90,7 +88,9 @@ impl Investigator {
                 workspace_seed,
                 runner_options,
             );
-            runner.run(&put, &task_scenario, &budget, progress).await
+            runner
+                .run(&put, &task_scenario, &budget, Some(task_progress))
+                .await
         });
 
         match task.await {
@@ -99,22 +99,34 @@ impl Investigator {
                 trace: Some(trace),
                 failure: None,
             },
-            Ok(Err(error)) => InvestigateOutcome {
-                scenario: scenario.clone(),
-                trace: None,
-                failure: Some(RunFailure {
-                    stage: "runner".into(),
-                    error: error.to_string(),
-                }),
-            },
-            Err(join_error) => InvestigateOutcome {
-                scenario: scenario.clone(),
-                trace: None,
-                failure: Some(RunFailure {
-                    stage: "runner".into(),
-                    error: format!("task panicked: {join_error}"),
-                }),
-            },
+            Ok(Err(error)) => {
+                finish_failure(&progress);
+                InvestigateOutcome {
+                    scenario: scenario.clone(),
+                    trace: None,
+                    failure: Some(RunFailure {
+                        stage: "runner".into(),
+                        error: error.to_string(),
+                    }),
+                }
+            }
+            Err(join_error) => {
+                finish_failure(&progress);
+                InvestigateOutcome {
+                    scenario: scenario.clone(),
+                    trace: None,
+                    failure: Some(RunFailure {
+                        stage: "runner".into(),
+                        error: format!("task panicked: {join_error}"),
+                    }),
+                }
+            }
         }
+    }
+}
+
+fn finish_failure(progress: &Arc<std::sync::Mutex<RunProgress>>) {
+    if let Ok(mut progress) = progress.lock() {
+        progress.finish(RunStopReason::RuntimeFailure);
     }
 }

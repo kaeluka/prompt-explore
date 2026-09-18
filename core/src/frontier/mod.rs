@@ -41,12 +41,17 @@ pub const RESERVED_AXES: &[(&str, BetterDirection)] = &[
     ("steps_per_trace_min", BetterDirection::Lower),
     ("steps_per_trace_max", BetterDirection::Lower),
     ("steps_per_trace_stdev", BetterDirection::Lower),
+    ("elapsed_ms", BetterDirection::Lower),
+    ("resolving_inputs_ms", BetterDirection::Lower),
+    ("preparing_tools_ms", BetterDirection::Lower),
+    ("put_loop_ms", BetterDirection::Lower),
 ];
 
 /// A compact rendering of the reserved vocabulary for error details
 /// (typo detection: callers can scan it for the name they meant).
 pub const RESERVED_AXES_COMPACT: &str = "put_/sim_input_tokens, put_/sim_output_tokens, \
-     put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_{avg,min,max,stdev}";
+     put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_{avg,min,max,stdev}, \
+     elapsed_ms, resolving_inputs_ms, preparing_tools_ms, put_loop_ms";
 
 /// Solarized categorical hues for preference-neutral differences. Their
 /// matched perceptual lightness keeps one prompt variant from looking more
@@ -248,7 +253,10 @@ pub struct FrontierAxis {
     /// `sim_cache_read_tokens` (higher — cached input is cheaper);
     /// `put_cost_usd` and `sim_cost_usd` (lower); and
     /// `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`,
-    /// `steps_per_trace_stdev` (lower). The `put_/sim_` notation is only
+    /// `steps_per_trace_stdev` (lower). Monotonic durations `elapsed_ms`,
+    /// `resolving_inputs_ms`, `preparing_tools_ms`, `put_loop_ms` are also lower.
+    /// Compare latency only across adequate comparable traces, not faster failures.
+    /// The `put_/sim_` notation is only
     /// prose shorthand, NEVER a valid axis name. Requesting a reserved axis
     /// with a contradicting `better` is rejected.
     pub name: String,
@@ -349,6 +357,9 @@ pub struct InvestigationSnapshot {
     /// one tool call OR one final completion — the same unit the
     /// `max_steps_per_trace` budget counts.
     pub steps_per_trace: Vec<u64>,
+    /// Frozen monotonic execution timings. None when not available, never a
+    /// guessed duration from client polls or file modification times.
+    pub timing: Option<crate::model::simulation::RunTiming>,
 }
 
 fn steps_stats(steps: &[u64]) -> Option<(f64, f64, f64, f64)> {
@@ -376,6 +387,23 @@ fn steps_stats(steps: &[u64]) -> Option<(f64, f64, f64, f64)> {
 /// value for this axis on this investigation" (the caller gets an
 /// `axis_absent` problem explaining why).
 fn resolve_reserved(snapshot: &InvestigationSnapshot, axis: &str) -> Option<f64> {
+    match axis {
+        "elapsed_ms" => return snapshot.timing.as_ref().map(|t| t.elapsed_ms as f64),
+        "resolving_inputs_ms" => {
+            return snapshot
+                .timing
+                .as_ref()
+                .map(|t| t.resolving_inputs_ms as f64);
+        }
+        "preparing_tools_ms" => {
+            return snapshot
+                .timing
+                .as_ref()
+                .map(|t| t.preparing_tools_ms as f64);
+        }
+        "put_loop_ms" => return snapshot.timing.as_ref().map(|t| t.put_loop_ms as f64),
+        _ => {}
+    }
     let usage = snapshot.usage?;
     match axis {
         "put_input_tokens" => Some(usage.put.input_tokens as f64),

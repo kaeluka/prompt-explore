@@ -164,6 +164,24 @@ is the observed dominated-region boundary (turn at the current point, never
 interpolate) and always has a light, non-interactive fill. The caller owns
 comparability and grading; the harness does only grouping and arithmetic.
 
+## Evidence-first workflow
+
+Prefer `GET /api/investigations/{id}/evidence` when reading/grading: it contains
+one full conversation, actual tool responses and provenance, without duplicated
+terminal progress. `workspace_ops` is supporting provenance; Lua `computed` means
+executed, not faithful. Do not infer fidelity from either or from a plausible final
+answer. Caller-owned `assessment` records summary/rubric/evidence references beside
+numeric grades; PATCH replaces/clears it atomically with the maps. No harness judge.
+
+`done` means trace recorded, not final answer. Preserve original budgets, explicit
+`execution.stop_reason`, counters, and monotonic elapsed/phase timing. Failed and
+capped evidence remains first-class. The dashboard's filters affect cards only;
+share URLs encode grouping/axes/filter state, never tokens or server-side selection.
+System `simulation_backend`, `step_budget`, `token_budget` attributes help explicit
+comparisons; defaults do not infer an experiment's intended cohort. Catalog
+availability does not verify generation or balance; no hidden charged readiness probe.
+See `docs/design/evidence-first.md`.
+
 ## Experimental Lua simulation
 
 `conversation_controls.lua_simulation` deliberately explores an **optional
@@ -177,6 +195,12 @@ conversation. Runtime errors are distinct evidence, not simulated tool errors:
 staged workspace writes are rolled back before LLM fallback. No code is an
 oracle: the caller judges the generated source and traces against the narrative.
 Do not generalize this into automatic caching or a narrative-enforcement DSL.
+
+The `.prompt-explore` namespace is reserved private authoring support, rejected
+in uploads and inaccessible through application Lua workspace capabilities. Native
+simulator tools may access it to author programs. Root directory aliases `.` and
+empty path are equivalent; host grep is literal, not regex or Lua-pattern matching.
+Unsupported requested semantics should delegate, not silently return empty results.
 
 The source/revisions and setup work are trace artifacts, visible beside resolved
 inputs. Each Lua attempt names its revision and computed/fallback/error outcome.

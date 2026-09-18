@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::llm::ThinkingLevel;
-use crate::model::input::PromptUnderTest;
+use crate::model::input::{Budget, PromptUnderTest};
 use crate::simulate::Workspace;
 
 /// Attributes the harness derives from an investigation and therefore callers must
@@ -21,6 +21,9 @@ pub const IMMUTABLE_ATTRIBUTE_NAMES: &[&str] = &[
     "sim_thinking",
     "prompt_hash",
     "workspace_hash",
+    "simulation_backend",
+    "step_budget",
+    "token_budget",
 ];
 
 pub fn valid_attribute_name(name: &str) -> bool {
@@ -115,6 +118,28 @@ pub fn system_attributes(
     attributes.insert("sim_thinking".into(), thinking_attribute(sim_thinking));
     attributes.insert("prompt_hash".into(), prompt_hash(put));
     attributes.insert("workspace_hash".into(), workspace_hash.into());
+    attributes
+}
+
+/// Add execution controls useful for explicit, comparable backend/budget groups.
+/// These are provenance, not instructions to infer an experimental cohort.
+pub fn with_execution_attributes(
+    mut attributes: BTreeMap<String, String>,
+    lua_enabled: bool,
+    budget: &Budget,
+) -> BTreeMap<String, String> {
+    attributes.insert(
+        "simulation_backend".into(),
+        if lua_enabled { "lua" } else { "llm" }.into(),
+    );
+    attributes.insert("step_budget".into(), budget.max_steps_per_trace.to_string());
+    attributes.insert(
+        "token_budget".into(),
+        budget
+            .max_tokens
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unlimited".into()),
+    );
     attributes
 }
 

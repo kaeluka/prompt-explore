@@ -12,7 +12,8 @@ use serde_json::{Map, Value};
 
 use crate::llm::{ChatRequest, LlmClient, LlmError, Message, ThinkingLevel, ToolDef};
 use crate::model::simulation::{
-    LuaExecutionRecord, RunPhase, RunProgress, Scenario, ToolCall, ToolExchange, Trace, TraceTurn,
+    LuaExecutionRecord, RunPhase, RunProgress, RunStopReason, Scenario, ToolCall, ToolExchange,
+    Trace, TraceTurn,
 };
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
@@ -92,6 +93,16 @@ impl Runner {
         budget: &Budget,
         progress: Option<Arc<Mutex<RunProgress>>>,
     ) -> Result<Trace, RunnerError> {
+        // Always retain progress internally. This makes direct Runner callers
+        // produce the same execution evidence as investigator-driven jobs.
+        let progress =
+            Some(progress.unwrap_or_else(|| Arc::new(Mutex::new(RunProgress::default()))));
+        if let Some(p) = &progress {
+            if let Ok(mut g) = p.lock() {
+                g.ensure_initialized(scenario.user_message.clone());
+            }
+        }
+
         // Resolve the template's {{variables}} from the scenario's
         // input_domain — finding concrete inputs is the simulator's
         // job. Empty map when the template has no placeholders.
@@ -107,10 +118,13 @@ impl Runner {
         }
         let mut sim = self.simulator.session(&build_simulator_notes(scenario));
         sim.set_progress(progress.clone());
-        let resolved_inputs = sim
-            .resolve(&put.template, &scenario.input_domain)
-            .await
-            .map_err(RunnerError::Simulator)?;
+        let resolved_inputs = match sim.resolve(&put.template, &scenario.input_domain).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                finish_progress(&progress, RunStopReason::RuntimeFailure);
+                return Err(RunnerError::Simulator(error));
+            }
+        };
         // Surface the resolved bindings immediately (before step 1) so
         // they're visible live, even if preparation or the PUT loop fails.
         if let Some(p) = &progress {
@@ -118,9 +132,10 @@ impl Runner {
                 g.set_resolved(resolved_inputs.clone());
             }
         }
-        sim.prepare_program(&put.tools)
-            .await
-            .map_err(RunnerError::Simulator)?;
+        if let Err(error) = sim.prepare_program(&put.tools).await {
+            finish_progress(&progress, RunStopReason::RuntimeFailure);
+            return Err(RunnerError::Simulator(error));
+        }
         if let Some(p) = &progress {
             if let Ok(mut g) = p.lock() {
                 g.set_phase(RunPhase::PutLoop);
@@ -133,15 +148,14 @@ impl Runner {
         // during the trace.
         let mut world_state: Map<String, Value> = Map::new();
         let mut turns = Vec::new();
-        let mut steps_used = 0usize;
+        let mut steps_used = 0u64;
         let mut tokens_used: u64 = 0;
-
-        loop {
-            if steps_used >= budget.max_steps_per_trace as usize {
-                break;
+        let stop_reason = loop {
+            if steps_used >= budget.max_steps_per_trace as u64 {
+                break RunStopReason::StepBudget;
             }
 
-            let response = self
+            let response = match self
                 .put_client
                 .complete(ChatRequest {
                     model: self.put_model.clone(),
@@ -152,12 +166,29 @@ impl Runner {
                     thinking_level: self.put_thinking_level,
                 })
                 .await
-                .map_err(RunnerError::PutModel)?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    finish_progress(&progress, RunStopReason::RuntimeFailure);
+                    return Err(RunnerError::PutModel(error));
+                }
+            };
 
             if let Some(u) = response.usage {
                 tokens_used += u.input_tokens + u.output_tokens;
+                set_tokens_used(&progress, tokens_used);
                 if budget.max_tokens.is_some_and(|max| tokens_used > max) {
-                    break;
+                    if let Some(p) = &progress {
+                        if let Ok(mut current) = p.lock() {
+                            current.execution.budget_cutoff_completion =
+                                Some(crate::model::simulation::BudgetCutoffCompletion {
+                                    model_output: response.content.clone(),
+                                    thinking: response.thinking.clone(),
+                                    tool_calls: response.tool_calls.clone(),
+                                });
+                        }
+                    }
+                    break RunStopReason::TokenBudget;
                 }
             }
 
@@ -172,12 +203,14 @@ impl Runner {
                     thinking: response.thinking.clone(),
                     tool_exchanges: Vec::new(),
                 });
+                steps_used += 1;
+                set_steps_used(&progress, steps_used);
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
                         g.push_turn(turns.last().unwrap().clone());
                     }
                 }
-                break;
+                break RunStopReason::FinalCompletion;
             }
 
             // Tool calls emitted by one completion are one atomic batch. Keep
@@ -214,6 +247,7 @@ impl Runner {
                                     }
                                 }
                             }
+                            finish_progress(&progress, RunStopReason::RuntimeFailure);
                             return Err(error);
                         }
                     };
@@ -230,8 +264,14 @@ impl Runner {
                     world_state_after: state_after,
                     workspace_ops,
                 });
+                // Count each successfully completed sibling immediately. The
+                // trace remains one atomic batch, but a later sibling failure
+                // must not erase evidence of work already performed.
+                steps_used += 1;
+                set_steps_used(&progress, steps_used);
             }
-            steps_used += tool_exchanges.len();
+            // The accepted sibling batch remains one trace turn even when it
+            // crossed the cap; the cap is checked before the next completion.
             turns.push(TraceTurn {
                 model_output: response.content.clone().unwrap_or_default(),
                 thinking: response.thinking.clone(),
@@ -242,9 +282,15 @@ impl Runner {
                     g.push_turn(turns.last().unwrap().clone());
                 }
             }
-        }
+        };
 
+        finish_progress(&progress, stop_reason);
+        let execution = progress
+            .as_ref()
+            .and_then(|p| p.lock().ok().map(|g| g.snapshot().execution))
+            .unwrap_or_default();
         Ok(Trace {
+            execution,
             simulation_program: sim.simulation_program().cloned(),
             turns,
             final_world_state: world_state.into_iter().collect(),
@@ -323,6 +369,30 @@ impl Runner {
             sim_thinking,
             lua_execution,
         ))
+    }
+}
+
+fn set_steps_used(progress: &Option<Arc<Mutex<RunProgress>>>, steps_used: u64) {
+    if let Some(progress) = progress {
+        if let Ok(mut progress) = progress.lock() {
+            progress.set_steps_used(steps_used);
+        }
+    }
+}
+
+fn set_tokens_used(progress: &Option<Arc<Mutex<RunProgress>>>, tokens_used: u64) {
+    if let Some(progress) = progress {
+        if let Ok(mut progress) = progress.lock() {
+            progress.set_put_tokens_used(tokens_used);
+        }
+    }
+}
+
+fn finish_progress(progress: &Option<Arc<Mutex<RunProgress>>>, stop_reason: RunStopReason) {
+    if let Some(progress) = progress {
+        if let Ok(mut progress) = progress.lock() {
+            progress.finish(stop_reason);
+        }
     }
 }
 

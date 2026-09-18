@@ -48,6 +48,14 @@ pub struct PromptUnderTest {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolSchema {
     pub name: String,
+    /// The PUT's actual tool contract, also used by the simulator. Describe
+    /// argument semantics AND returned shape: for repository tools, define root
+    /// aliases, literal vs regex search (and grammar), line numbering, errors,
+    /// truncation and which files belong to the inventory. A vague 'pattern'
+    /// lets LLM and Lua implementations disagree silently. Example: 'path . or
+    /// empty means root; search is literal case-sensitive substring; return
+    /// {matches:[{path,line,text}],truncated}; no match is an empty array'.
+    /// These are caller-supplied semantics, not a built-in harness tool surface.
     pub description: String,
     /// JSON Schema for the tool's parameters.
     pub parameters: Value,
@@ -101,8 +109,12 @@ pub struct Budget {
     /// completion that requests several tool calls counts as several
     /// steps but is an atomic batch: every sibling call is simulated, so
     /// one accepted batch may cross this cap. No later PUT turn then runs.
-    /// The main cost dial for tool-loop PUTs.
+    /// The main cost dial for tool-loop PUTs. Reserve room for the final
+    /// completion. A trace recorded at the cap can lack a final answer; inspect
+    /// execution.stop_reason and counters rather than equating done with success.
     pub max_steps_per_trace: u32,
-    /// Optional per-trace token cap (input+output, summed across turns).
+    /// Optional PUT input+output token cap, summed across completions (repeated
+    /// conversation history is counted on every completion). Simulator tokens
+    /// are not part of this cap. See execution.put_tokens_used and stop_reason.
     pub max_tokens: Option<u64>,
 }

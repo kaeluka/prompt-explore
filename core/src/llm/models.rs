@@ -48,11 +48,12 @@ pub struct ModelEntry {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderModels {
-    /// The provider is usable. `models` is the live catalog when the
-    /// provider exposes one; it may be EMPTY when the catalog listing
-    /// failed but the provider itself works (see `note`) — the model
-    /// list is advisory, not a gate: any `<namespace>::<model-id>` the
-    /// API accepts can be used in a request even if absent here.
+    /// Catalog/configuration discovery succeeded or can be attempted. This does
+    /// NOT verify generation, model access or credit balance. A listed model can
+    /// still fail its first completion (including 429 insufficient balance).
+    /// `models` may be empty after a listing failure (see note); the catalog is
+    /// advisory, not a gate. Run one small investigation with both chosen roles
+    /// before fanout; this endpoint never makes hidden charged generation probes.
     Available {
         models: Vec<ModelEntry>,
         /// Why the catalog may be empty or partial — e.g. a listing
@@ -64,9 +65,8 @@ pub enum ProviderModels {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
-    /// The provider could not be used at all — e.g. no API key in the
-    /// environment, credentials that don't resolve, network error,
-    /// region-gated.
+    /// Discovery failed, for example absent credentials, network or region errors.
+    /// This is a listing diagnostic, not a generation-readiness test.
     Error { error: String },
 }
 
@@ -380,7 +380,7 @@ pub(crate) fn vertex_listing_result(listing: Result<Vec<ModelEntry>, String>) ->
         Err(list_err) => ProviderModels::Available {
             models: Vec::new(),
             note: Some(format!(
-                "catalog listing unavailable ({list_err}) — generation still works: \n\
+                "catalog listing unavailable ({list_err}) — generation may still work: \n\
                  pass any `vertex::<model-id>` (e.g. vertex::gemini-2.5-pro) in the \n\
                  request's `put_model` or `sim_model` field; the list above is advisory, not a gate"
             )),
@@ -888,7 +888,7 @@ mod tests {
                 // The operator-facing fix (the permission) and the
                 // caller-facing fact (any id passes through) both present.
                 assert!(note.contains("403"));
-                assert!(note.contains("generation still works"));
+                assert!(note.contains("generation may still work"));
                 assert!(note.contains("vertex::<model-id>"));
             }
             other => panic!("expected Available, got {other:?}"),

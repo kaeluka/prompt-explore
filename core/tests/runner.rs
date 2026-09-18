@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use prompt_explore::llm::{ChatResponse, MockLlmClient, ToolCallRequest};
+use prompt_explore::llm::{ChatResponse, MockLlmClient, ToolCallRequest, Usage};
 use prompt_explore::model::*;
 use prompt_explore::simulate::{Runner, RunnerOptions, Workspace};
 
@@ -104,6 +104,143 @@ async fn tool_call_loop_runs_and_mutates_state() {
     );
 
     assert!(trace.turns[1].tool_exchanges.is_empty());
+    assert_eq!(
+        trace.execution.stop_reason,
+        Some(RunStopReason::FinalCompletion)
+    );
+    assert_eq!(trace.execution.steps_used, 2);
+}
+
+#[tokio::test]
+async fn empty_text_is_a_final_completion_not_a_cap() {
+    let put = PromptUnderTest {
+        tools: vec![],
+        ..support_put()
+    };
+    let runner = Runner::new(
+        Arc::new(MockLlmClient::scripted(vec![ChatResponse {
+            content: None,
+            thinking: None,
+            tool_calls: vec![],
+            usage: None,
+        }])),
+        "put-model",
+        None,
+        Arc::new(MockLlmClient::scripted(vec![])),
+        "sim-model",
+        None,
+        Workspace::empty(),
+        RunnerOptions::default(),
+    );
+
+    let trace = runner
+        .run(&put, &scenario(), &budget(), None)
+        .await
+        .unwrap();
+    assert_eq!(trace.turns.len(), 1);
+    assert_eq!(trace.turns[0].model_output, "");
+    assert_eq!(
+        trace.execution.stop_reason,
+        Some(RunStopReason::FinalCompletion)
+    );
+    assert_eq!(trace.execution.steps_used, 1);
+}
+
+#[tokio::test]
+async fn zero_step_budget_stops_without_calling_the_put() {
+    let put_model = Arc::new(MockLlmClient::scripted(vec![]));
+    let runner = Runner::new(
+        put_model.clone(),
+        "put-model",
+        None,
+        Arc::new(MockLlmClient::scripted(vec![])),
+        "sim-model",
+        None,
+        Workspace::empty(),
+        RunnerOptions::default(),
+    );
+    let trace = runner
+        .run(
+            &PromptUnderTest {
+                tools: vec![],
+                ..support_put()
+            },
+            &scenario(),
+            &Budget {
+                max_steps_per_trace: 0,
+                max_tokens: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(trace.turns.is_empty());
+    assert_eq!(trace.execution.stop_reason, Some(RunStopReason::StepBudget));
+    assert_eq!(trace.execution.steps_used, 0);
+    assert!(put_model.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn token_cutoff_preserves_unaccepted_completion_without_simulating_tools() {
+    let put = PromptUnderTest {
+        tools: vec![],
+        ..support_put()
+    };
+    let runner = Runner::new(
+        Arc::new(MockLlmClient::scripted(vec![ChatResponse {
+            content: Some("I would execute this next".into()),
+            thinking: Some("visible reasoning".into()),
+            tool_calls: vec![ToolCallRequest {
+                id: "not-run".into(),
+                name: "probe".into(),
+                arguments: "{malformed".into(),
+            }],
+            usage: Some(Usage {
+                input_tokens: 3,
+                cache_read_tokens: 0,
+                output_tokens: 2,
+            }),
+        }])),
+        "put-model",
+        None,
+        Arc::new(MockLlmClient::scripted(vec![])),
+        "sim-model",
+        None,
+        Workspace::empty(),
+        RunnerOptions::default(),
+    );
+    let trace = runner
+        .run(
+            &put,
+            &scenario(),
+            &Budget {
+                max_steps_per_trace: 1,
+                max_tokens: Some(4),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        trace.turns.is_empty(),
+        "cutoff precedes accepting a conversation turn"
+    );
+    let cutoff = trace.execution.budget_cutoff_completion.as_ref().unwrap();
+    assert_eq!(
+        cutoff.model_output.as_deref(),
+        Some("I would execute this next")
+    );
+    assert_eq!(cutoff.thinking.as_deref(), Some("visible reasoning"));
+    assert_eq!(cutoff.tool_calls[0].id, "not-run");
+    assert_eq!(cutoff.tool_calls[0].arguments, "{malformed");
+    assert_eq!(
+        trace.execution.stop_reason,
+        Some(RunStopReason::TokenBudget)
+    );
+    assert_eq!(trace.execution.put_tokens_used, 5);
+    assert_eq!(trace.execution.steps_used, 0);
 }
 
 #[tokio::test]
@@ -307,6 +444,12 @@ async fn failed_sibling_keeps_completed_exchanges_in_one_progress_turn() {
         "cancelled"
     );
     assert_eq!(exchange.workspace_ops[0].tool, "write");
+    assert_eq!(
+        progress.execution.stop_reason,
+        Some(RunStopReason::RuntimeFailure),
+        "runner finalizes direct failures too"
+    );
+    assert_eq!(progress.execution.steps_used, 1);
 }
 
 #[tokio::test]
@@ -372,6 +515,8 @@ async fn multi_tool_completion_is_one_atomic_turn() {
         "I will check both requests together."
     );
     assert_eq!(trace.step_count(), 2, "the whole batch may cross the cap");
+    assert_eq!(trace.execution.steps_used, 2);
+    assert_eq!(trace.execution.stop_reason, Some(RunStopReason::StepBudget));
     assert_eq!(trace.tool_call_count(), 2);
     assert_eq!(put_model.requests.lock().unwrap().len(), 1);
 

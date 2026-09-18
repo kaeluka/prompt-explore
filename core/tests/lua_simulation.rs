@@ -221,10 +221,9 @@ async fn atomic_batch_preserves_write_read_fallback_state_and_publishes_program(
         design_goals: String::new(),
     };
     let scenario = Scenario { world:"Stock initially zero; set changes it, get returns it, audit reports the actual actions.".into(),input_domain:Default::default(),user_message:Some("Set stock to 11, read, audit".into()),simulator_notes:String::new() };
-    let progress = Arc::new(Mutex::new(RunProgress {
-        user_message: scenario.user_message.clone(),
-        ..Default::default()
-    }));
+    let mut initial_progress = RunProgress::default();
+    initial_progress.user_message = scenario.user_message.clone();
+    let progress = Arc::new(Mutex::new(initial_progress));
     let runner = Runner::new(
         put_client.clone(),
         "put",

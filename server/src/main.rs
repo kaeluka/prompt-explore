@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use uuid::Uuid;
 
+use prompt_explore::assessment::Assessment;
 use prompt_explore::frontier::attributes::{
     self, system_attributes, validate_attribute_patch, validate_post_attributes,
 };
@@ -39,10 +40,10 @@ use prompt_explore::llm::{
     ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTracker, catalog_pricing_map,
     cost_usd, list_all_map,
 };
-use prompt_explore::model::input::{Investigation, PromptUnderTest};
+use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunFailure;
 use prompt_explore::model::simulation::{
-    RunPhase, RunProgress, Scenario, SimulationProgram, TraceTurn,
+    RunExecution, RunPhase, RunProgress, Scenario, SimulationProgram, TraceTurn,
 };
 use prompt_explore::simulate::lua::LuaOptions;
 use prompt_explore::simulate::{
@@ -53,6 +54,8 @@ use serde_json::Value;
 use subtle::ConstantTimeEq;
 use utoipa::Modify;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
+mod evidence;
 
 const MODEL: &str = "glm-5.2";
 /// Preserve the investigation route's previous JSON-body allowance while also
@@ -104,8 +107,11 @@ struct Job {
     result: Option<InvestigateResponse>,
     /// Live progress: populated as PUT model turns are simulated.
     progress: Arc<std::sync::Mutex<RunProgress>>,
-    /// Wall-clock start, epoch millis.
+    /// Wall-clock start and execution completion, epoch millis.
     started_at: u64,
+    finished_at: Option<u64>,
+    budget: Budget,
+    assessment: Option<Assessment>,
     /// The run's free-form `reason` (advisory justification: what the
     /// run aims to accomplish, what changed vs. earlier runs, what a
     /// reader should know — no strict standard). Shown so a reader can
@@ -178,7 +184,9 @@ struct InvestigateRequest {
     /// This is the model you are TESTING: when experimenting to find
     /// which model works well for your prompt, this is the one you vary
     /// across runs. Keep `sim_model` fixed while you do (see below), so
-    /// each candidate PUT runs in the same simulated environment.
+    /// candidates share simulator configuration, not fixed responses. Each run
+    /// resolves inputs and renders tools afresh; inspect differences before
+    /// attributing an outcome solely to the prompt/model.
     #[serde(default)]
     put_model: Option<String>,
     /// Model for the tool SIMULATOR only (the LLM that roleplays the
@@ -189,9 +197,9 @@ struct InvestigateRequest {
     /// Two consequences:
     /// 1. When tuning which model works well for your prompt, keep
     ///    `sim_model` STABLE across runs (vary `put_model`, not this). You
-    ///    are comparing candidate PUTs; the environment must stay fixed
-    ///    so differences in the traces come from the PUT, not from a
-    ///    shifting simulation.
+    ///    are comparing candidate PUTs. Stable settings reduce confounding, but
+    ///    every run still simulates afresh and may generate different Lua code.
+    ///    Inspect actual responses/revisions before attributing differences to PUT.
     /// 2. The simulator must be POWERFUL ENOUGH to render a believable
     ///    environment — a weak simulator produces inconsistent or
     ///    unbelievable tool responses, which corrupts every trace
@@ -214,11 +222,10 @@ struct InvestigateRequest {
     put_thinking_level: Option<ThinkingLevel>,
     /// Thinking/reasoning level for the tool SIMULATOR only. Same
     /// vocabulary as `put_thinking_level`; omit for the provider
-    /// default. The simulator only renders tool responses, so full
-    /// reasoning there is spend without measurement value — `low` or
-    /// `none` cuts per-run cost directly (keep `sim_model` strong; a
-    /// cheap level on a strong model usually degrades less than a
-    /// weak model does). Falls back INDEPENDENTLY of
+    /// default. Lower effort can reduce simulation cost, but can also degrade
+    /// rendering or generated Lua semantics. Compare actual responses/source
+    /// before claiming a quality-preserving speedup; low/none is not guaranteed
+    /// sufficient even on a strong model. Falls back INDEPENDENTLY of
     /// `put_thinking_level`: omitting this while setting the PUT's
     /// level leaves the simulator at its default, NOT at the PUT's
     /// level.
@@ -243,7 +250,10 @@ struct InvestigateRequest {
     /// `provider_default`; `prompt_hash` is SHA-256 of canonical PUT
     /// template/tools/design_goals (not cosmetic PUT id); and
     /// `workspace_hash` is SHA-256 of sorted uploaded workspace path/content
-    /// pairs (including the stable empty-workspace hash).
+    /// pairs (including the stable empty-workspace hash). `simulation_backend`
+    /// is `llm` or `lua`; `step_budget` and `token_budget` are decimal limits
+    /// (unbounded token budget is `unlimited`). All are immutable provenance;
+    /// group by them explicitly when comparing execution configurations.
     #[serde(default)]
     attributes: BTreeMap<String, String>,
 }
@@ -374,6 +384,9 @@ struct InvestigateResponse {
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct TraceView {
+    /// Deterministic termination, consumed budget and monotonic execution timing.
+    /// A recorded trace need not contain a final PUT completion.
+    execution: RunExecution,
     /// Structured PUT model turns, rendered as whole turn objects by the UI.
     /// Tool calls requested by one completion are nested together.
     turns: Vec<TraceTurn>,
@@ -417,6 +430,15 @@ struct JobView {
     /// Mirrors `progress.phase`.
     phase: prompt_explore::model::simulation::RunPhase,
     started_at: u64,
+    /// Execution completion epoch milliseconds, null while running. Core monotonic
+    /// phase timings are in progress.execution; polling/file mtimes are not durations.
+    #[schema(required = true)]
+    finished_at: Option<u64>,
+    /// Original per-conversation budget, retained even for failed/capped runs.
+    budget: Budget,
+    /// Caller-owned rationale, rubric and evidence references; never a harness verdict.
+    #[schema(required = true)]
+    assessment: Option<Assessment>,
     /// The run's free-form `reason` (advisory justification: what the
     /// run aims to accomplish, what changed vs. earlier runs, what a
     /// reader should know — no strict standard). Optional; surfaced to
@@ -475,6 +497,11 @@ struct JobView {
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct JobSummary {
     id: String,
+    /// Null while running; epoch milliseconds when execution finished.
+    #[schema(required = true)]
+    finished_at: Option<u64>,
+    /// Live/frozen deterministic execution counters and timing, not a quality grade.
+    execution: RunExecution,
     status: JobStatus,
     /// Observable current LLM phase; never infer job work from bare `running`.
     phase: RunPhase,
@@ -484,8 +511,9 @@ struct JobSummary {
     attributes: BTreeMap<String, String>,
 }
 
-/// PATCH can update either independently optional map, but validates BOTH
-/// before modifying the job so a mixed grades/attributes update is atomic.
+/// PATCH updates independently optional grades, attributes and assessment.
+/// Every supplied value validates before anything is applied (atomic update).
+/// Maps merge; assessment replaces as a whole, null clears, absent leaves unchanged.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct InvestigationPatch {
@@ -498,12 +526,26 @@ struct InvestigationPatch {
     /// explicitly selected in `group_by`. System provenance keys are read-only.
     #[serde(default)]
     attributes: Option<BTreeMap<String, Option<String>>>,
+    /// Caller-owned explanation and rubric with references to existing evidence.
+    /// Omit to keep unchanged, object replaces entirely, JSON null clears.
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    assessment: Option<Option<Assessment>>,
+}
+
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct InvestigationPatchView {
     grades: BTreeMap<String, f64>,
     attributes: BTreeMap<String, String>,
+    #[schema(required = true)]
+    assessment: Option<Assessment>,
 }
 
 #[derive(utoipa::OpenApi)]
@@ -524,7 +566,56 @@ struct InvestigationPatchView {
                        reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; \
                        the deliverable is the conversation trace, and the caller reads it and \
                        decides what (if anything) to fix. The API is job-based: POST returns \
-                       a job id immediately; poll GET /api/investigations/{id} for the result.
+                       a job id immediately; poll GET /api/investigations/{id} for status, then read \
+                       GET /api/investigations/{id}/evidence for the complete nonduplicated conversation.
+
+ \
+                       WORKED OPTIMIZATION LOOP (the caller does every judgment):
+ \
+                       1. GET /api/models lists catalogs, NOT generation readiness or credit balance. \
+                       Before a large fanout, run one small investigation with both chosen roles. \
+                       A quota/balance failure needs provider/operator action, not a prompt edit. \
+                       Keep the simulator configuration stable when comparing PUT prompts/models, \
+                       but expect each run to simulate afresh; identical settings do NOT pin responses.
+ \
+                       2. POST one scenario per investigation; record campaign/variant attributes. \
+                       For code tools, specify root paths, literal versus regex search, and response \
+                       shape in their descriptions/world. Do not assume host workspace grep implements \
+                       the same semantics as your invented tool. Include difficult negative controls.
+ \
+                       3. Poll, then GET /api/investigations/{id}/evidence. Read execution.stop_reason, \
+                       budget and timing first: done means a trace was recorded, not necessarily a final \
+                       answer. Read turns in order, including EVERY tool_exchanges[].call AND response. \
+                       The response is the PUT observation; workspace_ops is only supporting provenance. \
+                       lua_execution=computed means code executed, NOT that the response is faithful. \
+                       A final correct answer can hide invalid root listings, false-empty searches or \
+                       invented files. Inspect generated revisions too; rerunning regenerates code. \
+                       Do not grade fidelity from outcome counts or final answers alone. Preserve \
+                       simulation limitations in your assessment; withhold unsupported grades.
+ \
+                       4. Record the judgment in the product, not only local prose: PATCH the id with \
+                       grades and assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better; one inspected case, not a precision estimate\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. \
+                       Adapt the score and references to what actually happened; the example is NOT \
+                       a grading algorithm. Use assessment alone when no numeric grade is justified. \
+                       Grades are caller-owned; the harness validates only shape and reference bounds. \
+                       When a new assessment invalidates earlier scores, clear those stale grades in \
+                       the SAME PATCH (for example grades:{grounded:null,quality:null}) or replace them \
+                       with justified values. An assessment warning alone does not remove old scores \
+                       from the frontier; never plot a discredited grade as if it were current evidence.
+ \
+                       5. POST /api/frontier with explicit grouping for the variables you compare. \
+                       Backend example: {\"group_by\":[\"campaign\",\"variant\",\"simulation_backend\",\"step_budget\",\"token_budget\"],\"axes\":[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]}. \
+                       All stored jobs remain candidates. A listing/card filter never limits frontier \
+                       candidacy; unrelated/null groups and excluded members remain explicit. Defaults \
+                       group by PUT settings/prompt, so they MERGE different simulator backends unless \
+                       you add the backend key. The caller owns corpus comparability and grade scales.
+ \
+                       6. Hand off a shareable dashboard URL using URL-encoded JSON query values \
+                       group_by (array of attribute names), axes (array of name/better objects), and \
+                       attributes (exact string matches for CARDS ONLY). Example before URL encoding: \
+                       /?group_by=[\"campaign\",\"variant\",\"simulation_backend\"]&axes=[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]&attributes={\"campaign\":\"trial\"}. \
+                       Never put bearer tokens in the URL. Archive evidence/requests for durability: \
+                       jobs and caller annotations are in memory and lost on restart.
 
  \
                        DESIGN INTENT — why it works this way:
@@ -578,8 +669,9 @@ struct InvestigationPatchView {
                        consults. Narratives remain the only mechanism that generalizes (open \
                        worlds can't be materialized), but a zip IS a closed world — so when \
                        you have one (a repo slice, a corpus of articles, a mailbox export) you \
-                       can hand it over and the simulator answers reads/greps/listings \
-                       truthfully instead of inventing them. The simulator accesses the \
+                       can hand it over so the simulator can consult authoritative bytes. \
+                       This does NOT guarantee its returned reads/greps/listings are faithful; \
+                       inspect the actual responses even when workspace operations succeeded. The simulator accesses the \
                        workspace with four tools — read, write, list_dir, grep — and it is \
                        named the \"simulation workspace\" in its own prompt, so your scenario \
                        `world` can address it by that name and instruct it (e.g. \"use the \
@@ -595,7 +687,9 @@ struct InvestigationPatchView {
                        the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB \
                        decompressed (overridable via
                        PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);
-                       zip-slip entries are rejected.
+                       zip-slip entries and files in the reserved .prompt-explore namespace \
+                       are rejected. That namespace holds private program-authoring artifacts; \
+                       Lua application workspace capabilities cannot list/read/grep/write it.
 
  \
                        AUTHENTICATION. The server is open by default. When \
@@ -605,7 +699,7 @@ struct InvestigationPatchView {
                        web UI prompts for the token and stores it in localStorage."
     ),
     modifiers(&SecurityAddon),
-    paths(index, list_investigations, create_investigation, get_investigation, patch_investigation, delete_investigation, frontier, list_models)
+    paths(index, list_investigations, create_investigation, get_investigation, evidence::get_evidence, patch_investigation, delete_investigation, frontier, list_models)
 )]
 struct ApiDoc;
 
@@ -728,6 +822,10 @@ fn build_app(state: Arc<AppState>) -> Router {
                 .patch(patch_investigation)
                 .delete(delete_investigation),
         )
+        .route(
+            "/api/investigations/{id}/evidence",
+            get(evidence::get_evidence),
+        )
         .route("/api/frontier", post(frontier))
         .route("/api/models", get(list_models))
         .route("/api/openapi.json", get(openapi_json))
@@ -760,6 +858,11 @@ fn fabricate_done_job(
         simulator_notes: String::new(),
     };
     let trace = TraceView {
+        execution: RunExecution {
+            stop_reason: Some(prompt_explore::model::simulation::RunStopReason::FinalCompletion),
+            steps_used: steps as u64,
+            ..Default::default()
+        },
         turns: vec![
             TraceTurn {
                 model_output: "Order O-1 is confirmed cancelled.".into(),
@@ -796,6 +899,12 @@ fn fabricate_done_job(
             }),
             progress: Arc::new(Mutex::new(RunProgress::default())),
             started_at: 0,
+            finished_at: Some(0),
+            budget: Budget {
+                max_steps_per_trace: steps as u32,
+                max_tokens: None,
+            },
+            assessment: None,
             reason: Some(
                 "Tone-instruction sweep: comparing politeness vs. cost on the same scenarios."
                     .into(),
@@ -945,6 +1054,11 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 /// environment, no AWS credentials, region-gated, …). Listing is
 /// best-effort and per-provider: one provider failing never breaks the
 /// others. Cached for a short time so repeated listing is cheap.
+/// This does NOT call generation endpoints or check credit balance: available
+/// means catalog/configuration discovery, not usable inference. Smoke-test one
+/// small investigation with both chosen roles before a corpus fanout. A 429 can
+/// mean exhausted balance rather than transient rate limiting; inspect the error,
+/// fix provider funding/permissions, and do not silently switch the simulator.
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct ModelsResponse {
     /// Model used when a request omits `put_model` (a bare name; the server
@@ -956,6 +1070,11 @@ struct ModelsResponse {
     /// `openrouter` -> `open_router::`, `bedrock` -> `bedrock_sigv4::`,
     /// `gemini` -> `vertex::`.
     server_default_provider: String,
+    /// Always false: this endpoint lists catalogs/configuration, never makes a
+    /// charged generation call or checks credit balance. `available` is NOT a
+    /// readiness guarantee. Run one small investigation with both chosen roles
+    /// before fanout; quota/balance failures need provider/operator action.
+    generation_checked: bool,
     providers: BTreeMap<String, ProviderModels>,
 }
 
@@ -987,6 +1106,7 @@ async fn models_cached(state: &AppState) -> ModelsResponse {
     let resp = ModelsResponse {
         server_default_model: MODEL.into(),
         server_default_provider: state.default_provider.clone(),
+        generation_checked: false,
         providers,
     };
     *state.models_cache.lock().unwrap() = Some((Instant::now(), resp.clone()));
@@ -1081,7 +1201,11 @@ async fn security_headers(req: Request, next: Next) -> Response {
     res
 }
 
-/// Serve the web UI.
+/// Serve the web UI. Share a view using URL-encoded JSON query parameters:
+/// `group_by` is an array of attribute names, `axes` an array of {name,better},
+/// and `attributes` an object of exact string matches for cards ONLY. Filtering
+/// cards never changes the all-jobs frontier. The UI copies/restores these view
+/// settings without storing a server-side selection. Never put tokens in URLs.
 #[utoipa::path(
     get,
     path = "/",
@@ -1129,7 +1253,8 @@ async fn index() -> impl axum::response::IntoResponse {
 ///   decompress to ≤ 500 MB total (overridable via
 ///   PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the
 ///   request is rejected. Zip entries
-///   that escape the workspace root (zip-slip) are rejected.
+///   that escape the workspace root (zip-slip), or use the reserved private
+///   `.prompt-explore` namespace, are rejected.
 ///
 /// The workspace is the simulator's CAPABILITY, not a policy. The harness
 /// tells the simulator the workspace exists, how many files it contains,
@@ -1457,6 +1582,13 @@ fn resolved_conversation_controls(
     (runner, workspace, resolved)
 }
 
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn spawn_investigation(
     state: Arc<AppState>,
     req: InvestigateRequest,
@@ -1464,10 +1596,7 @@ fn spawn_investigation(
 ) -> String {
     let id = Uuid::new_v4().to_string();
     let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
-    let started_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let started_at = epoch_millis();
     // Resolve the model names now (defaults applied) so they can be
     // surfaced on the job immediately — visible while the run is still
     // in flight, not only after it finishes.
@@ -1489,14 +1618,18 @@ fn spawn_investigation(
     // The core workspace canonicalizes sorted seed paths and bytes. Empty
     // (including no upload) has a stable digest rather than a missing attribute.
     let workspace_hash = attributes::workspace_hash(&workspace_seed);
-    let attributes = system_attributes(
-        &put_model,
-        &sim_model,
-        put_thinking_level,
-        sim_thinking_level,
-        &req.put,
-        &workspace_hash,
-        req.attributes.clone(),
+    let attributes = attributes::with_execution_attributes(
+        system_attributes(
+            &put_model,
+            &sim_model,
+            put_thinking_level,
+            sim_thinking_level,
+            &req.put,
+            &workspace_hash,
+            req.attributes.clone(),
+        ),
+        conversation_controls.lua_simulation.is_some(),
+        &req.investigation.budget,
     );
     state.jobs.lock().unwrap().insert(
         id.clone(),
@@ -1505,6 +1638,9 @@ fn spawn_investigation(
             result: None,
             progress: progress.clone(),
             started_at,
+            finished_at: None,
+            budget: req.investigation.budget.clone(),
+            assessment: None,
             reason: req.investigation.reason.clone(),
             put: req.put.clone(),
             scenario: req.scenario.clone(),
@@ -1555,7 +1691,9 @@ fn spawn_investigation(
             )
             .await;
 
+        let finished_at = epoch_millis();
         let trace = outcome.trace.as_ref().map(|trace| TraceView {
+            execution: trace.execution.clone(),
             turns: trace.turns.clone(),
             final_world_state: trace.final_world_state.clone(),
             tool_calls: trace.tool_call_count(),
@@ -1593,6 +1731,7 @@ fn spawn_investigation(
 
         let mut jobs = state2.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id2) {
+            job.finished_at = Some(finished_at);
             job.status = if trace.is_some() {
                 JobStatus::Done
             } else {
@@ -1677,12 +1816,17 @@ async fn list_investigations(
                 .iter()
                 .all(|(key, value)| job.attributes.get(key) == Some(value))
         })
-        .map(|(id, j)| JobSummary {
-            id: id.clone(),
-            status: j.status,
-            phase: j.progress.lock().unwrap().phase,
-            started_at: j.started_at,
-            attributes: j.attributes.clone(),
+        .map(|(id, j)| {
+            let progress = j.progress.lock().unwrap().snapshot();
+            JobSummary {
+                id: id.clone(),
+                status: j.status,
+                phase: progress.phase,
+                execution: progress.execution,
+                finished_at: j.finished_at,
+                started_at: j.started_at,
+                attributes: j.attributes.clone(),
+            }
         })
         .collect();
     // Running first, then newest-started first.
@@ -1696,7 +1840,10 @@ async fn list_investigations(
 
 /// Poll an investigation job. `progress` is always present (live model turns
 /// while running, frozen on completion); `result` is present once the job is
-/// `done` (trace) or `failed` (failure evidence).
+/// `done` (trace, possibly budget-capped) or `failed` (failure evidence).
+/// Prefer GET /api/investigations/{id}/evidence for reading/judging: it retains
+/// actual tool responses and provenance without duplicating terminal progress.
+/// Check execution.stop_reason, not status or nonempty text, for how the run stopped.
 #[utoipa::path(
     get,
     path = "/api/investigations/{id}",
@@ -1718,13 +1865,16 @@ async fn get_investigation(
     // `progress.lock()` calls in the same expression-building block
     // (phase, then clone) can deadlock the whole runtime if the first
     // temporary guard outlives the second lock(). Snapshot once.
-    let progress_snapshot = job.progress.lock().unwrap().clone();
+    let progress_snapshot = job.progress.lock().unwrap().snapshot();
     let phase = progress_snapshot.phase;
     Ok(Json(JobView {
         id: id.clone(),
         status: job.status,
         phase,
         started_at: job.started_at,
+        finished_at: job.finished_at,
+        budget: job.budget.clone(),
+        assessment: job.assessment.clone(),
         reason: job.reason.clone(),
         put_model: job.put_model.clone(),
         sim_model: job.sim_model.clone(),
@@ -1748,14 +1898,20 @@ async fn get_investigation(
 /// grading: the caller, not a mechanical extractor, owns that semantic work.
 ///
 /// Both maps have merge semantics: a number/string sets or overwrites and
-/// JSON `null` deletes that key. Both supplied maps validate before EITHER is
-/// applied, and the response echoes the FULL updated grades AND attributes maps.
+/// JSON `null` deletes that key. `assessment` is caller-owned summary, rubric and
+/// zero-based evidence references: object replaces the whole assessment, null
+/// clears it, absent leaves it unchanged. All fields validate before ANY apply.
+/// The response echoes FULL updated grades, attributes and assessment.
+/// A numeric fidelity grade needs review of ACTUAL tool responses, not merely
+/// workspace_ops or computed counts. If simulation is inadequate, record that in
+/// assessment and withhold unjustified grades; this is not a harness verdict.
 /// Grade names and attribute names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot
 /// be measured axes. The literal measured names are `put_input_tokens`,
 /// `put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,
 /// `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,
 /// `sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,
-/// `steps_per_trace_max`, and `steps_per_trace_stdev`.
+/// `steps_per_trace_max`, `steps_per_trace_stdev`, `elapsed_ms`,
+/// `resolving_inputs_ms`, `preparing_tools_ms`, and `put_loop_ms`.
 ///
 /// PATCH is allowed while a job runs. POST /api/frontier always considers ALL
 /// current jobs: running, failed, ungraded, or unavailable members appear as
@@ -1766,11 +1922,11 @@ async fn get_investigation(
     patch,
     path = "/api/investigations/{id}",
     params(("id" = String, Path, description = "Job id returned by POST /api/investigations")),
-    request_body(content = InvestigationPatch, description = "Optional `grades` and/or `attributes` maps (`tags` is not an alias). A grade number sets a grade; an attribute string sets an attribute; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps."),
+    request_body(content = InvestigationPatch, description = "Optional grades/attributes maps and/or assessment (tags is not an alias). Maps merge; null deletes a map key. Assessment object replaces, null clears, absent preserves. All validate atomically, including existing turn/exchange references and a 65536-byte total assessment text cap. Response echoes all three. Read /evidence before judging and save your rubric/limitations, not only a number."),
     security(("api_token" = [])),
     responses(
-        (status = 200, description = "Updated grades and attributes (both full maps echoed)", body = InvestigationPatchView),
-        (status = 400, description = "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."),
+        (status = 200, description = "Updated full grades, attributes and assessment", body = InvestigationPatchView),
+        (status = 400, description = "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`, `step_budget`, `token_budget`) cannot change."),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "Unknown job id")
     )
@@ -1792,10 +1948,10 @@ async fn patch_investigation(
                 .into_response();
         }
     };
-    if patch.grades.is_none() && patch.attributes.is_none() {
+    if patch.grades.is_none() && patch.attributes.is_none() && patch.assessment.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "patch must contain grades and/or attributes"})),
+            Json(serde_json::json!({"error": "patch must contain grades, attributes and/or assessment"})),
         )
             .into_response();
     }
@@ -1827,6 +1983,25 @@ async fn patch_investigation(
         )
             .into_response();
     };
+    if let Some(Some(assessment)) = &patch.assessment {
+        let snapshot = job.progress.lock().unwrap().snapshot();
+        let turns = job
+            .result
+            .as_ref()
+            .and_then(|r| r.trace.as_ref())
+            .map(|t| t.turns.as_slice())
+            .unwrap_or(&snapshot.turns);
+        if let Err(error) = assessment.validate(turns) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    }
+    if let Some(assessment) = patch.assessment {
+        job.assessment = assessment;
+    }
     if let Some(grades) = patch.grades {
         for (axis, value) in grades {
             match value {
@@ -1856,6 +2031,7 @@ async fn patch_investigation(
         Json(InvestigationPatchView {
             grades: job.grades.clone(),
             attributes: job.attributes.clone(),
+            assessment: job.assessment.clone(),
         }),
     )
         .into_response()
@@ -1934,6 +2110,9 @@ fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
         put_id: Some(job.put.id.clone()).filter(|p| !p.is_empty()),
         grades: job.grades.clone(),
         usage: result.map(|r| r.usage),
+        timing: result
+            .and_then(|r| r.trace.as_ref())
+            .map(|t| t.execution.timing.clone()),
         put_model: Some(job.put_model.clone()),
         sim_model: Some(job.sim_model.clone()),
         // One job has one trace, so its snapshot contributes one step count.
@@ -2227,6 +2406,191 @@ mod tests {
         )
         .unwrap();
         (code, ct, body)
+    }
+
+    async fn get_json(app: &Router, path: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::get(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn assessment_replace_clear_and_atomic_validation() {
+        let state = test_state();
+        seed_done_job(&state, "assess", "reviewer", 10, 1);
+        let app = build_app(state);
+        let (status, first) = patch_job(&app, "assess", r#"{"grades":{"quality":0.5},"assessment":{"summary":"Uncertain","rubric":"0..1","evidence":[{"turn":0,"note":"Final completion"}]}}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["assessment"]["summary"], "Uncertain");
+        let (status, _) = patch_job(&app, "assess", r#"{"grades":{"quality":1},"attributes":{"label":"not applied"},"assessment":{"summary":"invalid index","evidence":[{"turn":0,"exchange":0,"note":"missing"}]}}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, saved) = get_json(&app, "/api/investigations/assess").await;
+        assert_eq!(saved["grades"]["quality"], 0.5);
+        assert_ne!(saved["attributes"]["label"], "not applied");
+        assert_eq!(saved["assessment"]["summary"], "Uncertain");
+        let (_, echoed) = patch_job(&app, "assess", r#"{"attributes":{"label":"safe"}}"#).await;
+        assert_eq!(echoed["assessment"], first["assessment"]);
+        let (status, replaced) = patch_job(
+            &app,
+            "assess",
+            r#"{"assessment":{"summary":"Revised interpretation"}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replaced["assessment"]["evidence"], serde_json::json!([]));
+        let (status, cleared) = patch_job(&app, "assess", r#"{"assessment":null}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(cleared["assessment"].is_null());
+        assert_eq!(cleared["grades"]["quality"], 0.5);
+    }
+
+    #[tokio::test]
+    async fn evidence_preserves_actual_responses_without_duplicate_progress() {
+        let state = test_state();
+        seed_done_job(&state, "ev", "reviewer", 20, 1);
+        let exchange = prompt_explore::model::simulation::ToolExchange {
+            call: prompt_explore::model::simulation::ToolCall {
+                name: "list_files".into(),
+                args: serde_json::json!({"path":"."}),
+            },
+            response: serde_json::json!({"error":"invalid path"}),
+            lua_execution: Some(prompt_explore::model::simulation::LuaExecutionRecord {
+                program_revision: 1,
+                outcome: prompt_explore::model::simulation::LuaOutcome::Computed,
+                detail: None,
+                discarded_workspace_ops: vec![],
+            }),
+            sim_thinking: Some("supporting reasoning".into()),
+            world_state_after: None,
+            workspace_ops: vec![],
+        };
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            let job = jobs.get_mut("ev").unwrap();
+            let trace = job.result.as_mut().unwrap().trace.as_mut().unwrap();
+            trace.turns[0].tool_exchanges.push(exchange.clone());
+            trace.execution.stop_reason =
+                Some(prompt_explore::model::simulation::RunStopReason::StepBudget);
+        }
+        let app = build_app(state.clone());
+        let (status, ev) = get_json(&app, "/api/investigations/ev/evidence").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ev.get("progress").is_none() && ev.get("result").is_none());
+        assert_eq!(
+            ev["turns"][0]["tool_exchanges"][0]["response"]["error"],
+            "invalid path"
+        );
+        assert_eq!(ev["execution"]["stop_reason"], "step_budget");
+        assert_eq!(ev["budget"]["max_steps_per_trace"], 1);
+        assert_eq!(ev["finished_at"], 0);
+        assert!(ev["scenario"]["world"].is_string());
+        // Failure path uses partial progress, never inventing a completed trace.
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            let job = jobs.get_mut("ev").unwrap();
+            let result = job.result.as_mut().unwrap();
+            let trace = result.trace.take().unwrap();
+            let mut progress = job.progress.lock().unwrap();
+            progress.turns = trace.turns;
+            progress.finish(prompt_explore::model::simulation::RunStopReason::RuntimeFailure);
+            job.status = JobStatus::Failed;
+            result.failure = Some(RunFailure {
+                stage: "runner".into(),
+                error: "provider failure".into(),
+            });
+        }
+        let (_, failed) = get_json(&app, "/api/investigations/ev/evidence").await;
+        assert_eq!(failed["execution"]["stop_reason"], "runtime_failure");
+        assert_eq!(
+            failed["turns"][0]["tool_exchanges"][0]["response"],
+            serde_json::json!({"error":"invalid path"})
+        );
+        assert_eq!(failed["failure"]["error"], "provider failure");
+        assert!(failed["final_world_state"].is_null());
+        assert_eq!(
+            get_json(&app, "/api/investigations/missing/evidence")
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_retains_charged_but_unaccepted_token_cutoff_completion() {
+        let state = test_state();
+        seed_done_job(&state, "cap", "reviewer", 20, 0);
+        {
+            let mut jobs = state.jobs.lock().unwrap();
+            let execution = &mut jobs
+                .get_mut("cap")
+                .unwrap()
+                .result
+                .as_mut()
+                .unwrap()
+                .trace
+                .as_mut()
+                .unwrap()
+                .execution;
+            execution.stop_reason =
+                Some(prompt_explore::model::simulation::RunStopReason::TokenBudget);
+            execution.budget_cutoff_completion =
+                Some(prompt_explore::model::simulation::BudgetCutoffCompletion {
+                    model_output: Some("received but not accepted".into()),
+                    thinking: None,
+                    tool_calls: vec![prompt_explore::llm::ToolCallRequest {
+                        id: "raw-id".into(),
+                        name: "write".into(),
+                        arguments: "malformed raw arguments".into(),
+                    }],
+                });
+        }
+        let app = build_app(state);
+        let (_, evidence) = get_json(&app, "/api/investigations/cap/evidence").await;
+        assert_eq!(evidence["turns"], serde_json::json!([]));
+        assert_eq!(evidence["execution"]["stop_reason"], "token_budget");
+        assert_eq!(
+            evidence["execution"]["budget_cutoff_completion"]["model_output"],
+            "received but not accepted"
+        );
+        assert_eq!(
+            evidence["execution"]["budget_cutoff_completion"]["tool_calls"][0]["arguments"],
+            "malformed raw arguments"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_requires_auth_like_other_api_routes() {
+        let mut state = test_state();
+        Arc::get_mut(&mut state).unwrap().api_token = Some(sha256(b"test-secret"));
+        seed_done_job(&state, "secure", "reviewer", 20, 1);
+        let app = build_app(state);
+        assert_eq!(
+            get_json(&app, "/api/investigations/secure/evidence")
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::get("/api/investigations/secure/evidence")
+                    .header("authorization", "Bearer test-secret")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -3141,6 +3505,12 @@ mod tests {
                 result: None,
                 progress: Arc::new(Mutex::new(RunProgress::default())),
                 started_at: 0,
+                finished_at: None,
+                budget: Budget {
+                    max_steps_per_trace: 6,
+                    max_tokens: None,
+                },
+                assessment: None,
                 reason: None,
                 put: put("cancel-bot"),
                 grades: BTreeMap::new(),

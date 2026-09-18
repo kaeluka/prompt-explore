@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR one scenario (a test case: a world, an input domain, and a protagonist — see the Scenario schema) and submit it with a prompt under test (PUT) and an optional free-form `reason` justifying the run. A job runs that one scenario: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the conversation trace, and the caller reads it and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for the result.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED from the narrative. By default every response is rendered by the LLM. Experimental opt-in conversation_controls.lua_simulation={} lets that same simulator specialize optional Lua tool implementations before the PUT loop and during later fallbacks. This accelerates computations, NOT a cache or a semantic correctness guarantee. Unimplemented inputs delegate through PleaseSimulateException; runtime errors delegate with explicit error evidence and rolled-back Lua writes. The generated source and revision history are visible in simulation_program, beside resolved_inputs, on both progress and result.trace. Each exchange records lua_execution when tried. All computed/LLM responses enter the same simulator conversation. Progress reports its phase: resolving_inputs, preparing_tools, or put_loop. Lua has only bounded workspace capabilities, no host IO, randomness, or clock. The caller judges code and traces against the narrative; example_responses remain realism hints, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over and the simulator answers reads/greps/listings truthfully instead of inventing them. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries are rejected.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
+    "description": "Property-based testing for agent behavior. You AUTHOR one scenario (a test case: a world, an input domain, and a protagonist — see the Scenario schema) and submit it with a prompt under test (PUT) and an optional free-form `reason` justifying the run. A job runs that one scenario: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the conversation trace, and the caller reads it and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for status, then read GET /api/investigations/{id}/evidence for the complete nonduplicated conversation.\n\n WORKED OPTIMIZATION LOOP (the caller does every judgment):\n 1. GET /api/models lists catalogs, NOT generation readiness or credit balance. Before a large fanout, run one small investigation with both chosen roles. A quota/balance failure needs provider/operator action, not a prompt edit. Keep the simulator configuration stable when comparing PUT prompts/models, but expect each run to simulate afresh; identical settings do NOT pin responses.\n 2. POST one scenario per investigation; record campaign/variant attributes. For code tools, specify root paths, literal versus regex search, and response shape in their descriptions/world. Do not assume host workspace grep implements the same semantics as your invented tool. Include difficult negative controls.\n 3. Poll, then GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget and timing first: done means a trace was recorded, not necessarily a final answer. Read turns in order, including EVERY tool_exchanges[].call AND response. The response is the PUT observation; workspace_ops is only supporting provenance. lua_execution=computed means code executed, NOT that the response is faithful. A final correct answer can hide invalid root listings, false-empty searches or invented files. Inspect generated revisions too; rerunning regenerates code. Do not grade fidelity from outcome counts or final answers alone. Preserve simulation limitations in your assessment; withhold unsupported grades.\n 4. Record the judgment in the product, not only local prose: PATCH the id with grades and assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better; one inspected case, not a precision estimate\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. Adapt the score and references to what actually happened; the example is NOT a grading algorithm. Use assessment alone when no numeric grade is justified. Grades are caller-owned; the harness validates only shape and reference bounds. When a new assessment invalidates earlier scores, clear those stale grades in the SAME PATCH (for example grades:{grounded:null,quality:null}) or replace them with justified values. An assessment warning alone does not remove old scores from the frontier; never plot a discredited grade as if it were current evidence.\n 5. POST /api/frontier with explicit grouping for the variables you compare. Backend example: {\"group_by\":[\"campaign\",\"variant\",\"simulation_backend\",\"step_budget\",\"token_budget\"],\"axes\":[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]}. All stored jobs remain candidates. A listing/card filter never limits frontier candidacy; unrelated/null groups and excluded members remain explicit. Defaults group by PUT settings/prompt, so they MERGE different simulator backends unless you add the backend key. The caller owns corpus comparability and grade scales.\n 6. Hand off a shareable dashboard URL using URL-encoded JSON query values group_by (array of attribute names), axes (array of name/better objects), and attributes (exact string matches for CARDS ONLY). Example before URL encoding: /?group_by=[\"campaign\",\"variant\",\"simulation_backend\"]&axes=[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]&attributes={\"campaign\":\"trial\"}. Never put bearer tokens in the URL. Archive evidence/requests for durability: jobs and caller annotations are in memory and lost on restart.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED from the narrative. By default every response is rendered by the LLM. Experimental opt-in conversation_controls.lua_simulation={} lets that same simulator specialize optional Lua tool implementations before the PUT loop and during later fallbacks. This accelerates computations, NOT a cache or a semantic correctness guarantee. Unimplemented inputs delegate through PleaseSimulateException; runtime errors delegate with explicit error evidence and rolled-back Lua writes. The generated source and revision history are visible in simulation_program, beside resolved_inputs, on both progress and result.trace. Each exchange records lua_execution when tried. All computed/LLM responses enter the same simulator conversation. Progress reports its phase: resolving_inputs, preparing_tools, or put_loop. Lua has only bounded workspace capabilities, no host IO, randomness, or clock. The caller judges code and traces against the narrative; example_responses remain realism hints, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over so the simulator can consult authoritative bytes. This does NOT guarantee its returned reads/greps/listings are faithful; inspect the actual responses even when workspace operations succeeded. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries and files in the reserved .prompt-explore namespace are rejected. That namespace holds private program-authoring artifacts; Lua application workspace capabilities cannot list/read/grep/write it.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -13,7 +13,7 @@
     "/": {
       "get": {
         "tags": [],
-        "summary": "Serve the web UI.",
+        "summary": "Serve the web UI. Share a view using URL-encoded JSON query parameters:\n`group_by` is an array of attribute names, `axes` an array of {name,better},\nand `attributes` an object of exact string matches for cards ONLY. Filtering\ncards never changes the all-jobs frontier. The UI copies/restores these view\nsettings without storing a server-side selection. Never put tokens in URLs.",
         "operationId": "index",
         "responses": {
           "200": {
@@ -133,7 +133,7 @@
       "post": {
         "tags": [],
         "summary": "Start an investigation: run its required scenario against the PUT and\nsurface the resulting trace or failure evidence. There is no judge — the\ncaller reads the trace and judges. Runs in the background; poll the returned\nid. The result includes token usage even on failure.",
-        "description": "One investigation is one conversation: send `scenario`, not `scenarios`.\nFor different worlds/workspaces or repeated samples, submit independent\ninvestigations and group them using attributes. Each repeated submission\nresolves inputs and simulates afresh; it does not isolate PUT variability\nwith fixed inputs/tool responses. There is no sample-count field, batch\nendpoint, or reusable workspace handle. Every upload is independent.\n\nTwo request shapes are accepted:\n- `application/json` — the body is an `InvestigateRequest` (no workspace).\n- `multipart/form-data` — TWO parts: a `request` part whose body is the\n  `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body\n  is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never\n  written to disk) and seeds the SIMULATION WORKSPACE — an in-memory\n  filesystem the tool SIMULATOR consults with four tools (read, write,\n  list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and\n  decompress to ≤ 500 MB total (overridable via\n  PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the\n  request is rejected. Zip entries\n  that escape the workspace root (zip-slip) are rejected.\n\nThe workspace is the simulator's CAPABILITY, not a policy. The harness\ntells the simulator the workspace exists, how many files it contains,\nand that it is ephemeral (per-trace: every scenario run gets a fresh\ncopy; the agent under test NEVER sees it — only tool responses). WHEN\nand WHETHER the simulator uses it — including tactics like persisting\ngenerated content — is the WORLD NARRATIVE's job: say in the scenario's\n`world` what the zip contains, where things live, and its completeness\nstance (\"these are ALL the files; anything else is not found\" vs \"these\nare SOME files; simulate the rest\"). The harness enforces none of that;\nthe simulator's workspace operations appear in each trace tool exchange\n(`workspace_ops`) so you can judge whether an answer was grounded in the\nuploaded files or invented.",
+        "description": "One investigation is one conversation: send `scenario`, not `scenarios`.\nFor different worlds/workspaces or repeated samples, submit independent\ninvestigations and group them using attributes. Each repeated submission\nresolves inputs and simulates afresh; it does not isolate PUT variability\nwith fixed inputs/tool responses. There is no sample-count field, batch\nendpoint, or reusable workspace handle. Every upload is independent.\n\nTwo request shapes are accepted:\n- `application/json` — the body is an `InvestigateRequest` (no workspace).\n- `multipart/form-data` — TWO parts: a `request` part whose body is the\n  `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body\n  is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never\n  written to disk) and seeds the SIMULATION WORKSPACE — an in-memory\n  filesystem the tool SIMULATOR consults with four tools (read, write,\n  list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and\n  decompress to ≤ 500 MB total (overridable via\n  PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the\n  request is rejected. Zip entries\n  that escape the workspace root (zip-slip), or use the reserved private\n  `.prompt-explore` namespace, are rejected.\n\nThe workspace is the simulator's CAPABILITY, not a policy. The harness\ntells the simulator the workspace exists, how many files it contains,\nand that it is ephemeral (per-trace: every scenario run gets a fresh\ncopy; the agent under test NEVER sees it — only tool responses). WHEN\nand WHETHER the simulator uses it — including tactics like persisting\ngenerated content — is the WORLD NARRATIVE's job: say in the scenario's\n`world` what the zip contains, where things live, and its completeness\nstance (\"these are ALL the files; anything else is not found\" vs \"these\nare SOME files; simulate the rest\"). The harness enforces none of that;\nthe simulator's workspace operations appear in each trace tool exchange\n(`workspace_ops`) so you can judge whether an answer was grounded in the\nuploaded files or invented.",
         "operationId": "create_investigation",
         "requestBody": {
           "description": "Send as `application/json` (no workspace), OR as `multipart/form-data` with a `request` part (this JSON) and an optional `workspace` part (a .zip that seeds the simulator's in-memory filesystem). See the endpoint description.",
@@ -215,7 +215,7 @@
     "/api/investigations/{id}": {
       "get": {
         "tags": [],
-        "summary": "Poll an investigation job. `progress` is always present (live model turns\nwhile running, frozen on completion); `result` is present once the job is\n`done` (trace) or `failed` (failure evidence).",
+        "summary": "Poll an investigation job. `progress` is always present (live model turns\nwhile running, frozen on completion); `result` is present once the job is\n`done` (trace, possibly budget-capped) or `failed` (failure evidence).\nPrefer GET /api/investigations/{id}/evidence for reading/judging: it retains\nactual tool responses and provenance without duplicating terminal progress.\nCheck execution.stop_reason, not status or nonempty text, for how the run stopped.",
         "operationId": "get_investigation",
         "parameters": [
           {
@@ -290,7 +290,7 @@
       "patch": {
         "tags": [],
         "summary": "Record caller judgment and campaign metadata on an investigation. `grades`\nis caller-owned numeric judgment (for example `tone_of_voice: 0.8`);\n`attributes` is caller-owned string metadata (for example `label: \"baseline\"`).\nThe harness records both and never interprets a grade. Read traces before\ngrading: the caller, not a mechanical extractor, owns that semantic work.",
-        "description": "Both maps have merge semantics: a number/string sets or overwrites and\nJSON `null` deletes that key. Both supplied maps validate before EITHER is\napplied, and the response echoes the FULL updated grades AND attributes maps.\nGrade names and attribute names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot\nbe measured axes. The literal measured names are `put_input_tokens`,\n`put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,\n`sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,\n`sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,\n`steps_per_trace_max`, and `steps_per_trace_stdev`.\n\nPATCH is allowed while a job runs. POST /api/frontier always considers ALL\ncurrent jobs: running, failed, ungraded, or unavailable members appear as\nexplicit exclusions/backlog in a successful grouped response. A group has\nnull coordinates until it has at least one common complete cohort; poll\nand PATCH missing grades, then submit the same frontier request again.",
+        "description": "Both maps have merge semantics: a number/string sets or overwrites and\nJSON `null` deletes that key. `assessment` is caller-owned summary, rubric and\nzero-based evidence references: object replaces the whole assessment, null\nclears it, absent leaves it unchanged. All fields validate before ANY apply.\nThe response echoes FULL updated grades, attributes and assessment.\nA numeric fidelity grade needs review of ACTUAL tool responses, not merely\nworkspace_ops or computed counts. If simulation is inadequate, record that in\nassessment and withhold unjustified grades; this is not a harness verdict.\nGrade names and attribute names use `^[a-z][a-z0-9_]{0,63}$`; grade names cannot\nbe measured axes. The literal measured names are `put_input_tokens`,\n`put_output_tokens`, `put_cache_read_tokens`, `put_cost_usd`,\n`sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,\n`sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,\n`steps_per_trace_max`, `steps_per_trace_stdev`, `elapsed_ms`,\n`resolving_inputs_ms`, `preparing_tools_ms`, and `put_loop_ms`.\n\nPATCH is allowed while a job runs. POST /api/frontier always considers ALL\ncurrent jobs: running, failed, ungraded, or unavailable members appear as\nexplicit exclusions/backlog in a successful grouped response. A group has\nnull coordinates until it has at least one common complete cohort; poll\nand PATCH missing grades, then submit the same frontier request again.",
         "operationId": "patch_investigation",
         "parameters": [
           {
@@ -304,7 +304,7 @@
           }
         ],
         "requestBody": {
-          "description": "Optional `grades` and/or `attributes` maps (`tags` is not an alias). A grade number sets a grade; an attribute string sets an attribute; null deletes that key. Both maps validate before either is applied. The response echoes both complete maps.",
+          "description": "Optional grades/attributes maps and/or assessment (tags is not an alias). Maps merge; null deletes a map key. Assessment object replaces, null clears, absent preserves. All validate atomically, including existing turn/exchange references and a 65536-byte total assessment text cap. Response echoes all three. Read /evidence before judging and save your rubric/limitations, not only a number.",
           "content": {
             "application/json": {
               "schema": {
@@ -316,7 +316,7 @@
         },
         "responses": {
           "200": {
-            "description": "Updated grades and attributes (both full maps echoed)",
+            "description": "Updated full grades, attributes and assessment",
             "content": {
               "application/json": {
                 "schema": {
@@ -326,13 +326,56 @@
             }
           },
           "400": {
-            "description": "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`) cannot change."
+            "description": "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`, `step_budget`, `token_budget`) cannot change."
           },
           "401": {
             "description": "Missing or invalid bearer token"
           },
           "404": {
             "description": "Unknown job id"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
+    "/api/investigations/{id}/evidence": {
+      "get": {
+        "tags": [
+          "evidence"
+        ],
+        "summary": "Read one complete conversation, not a final-answer/usage-only projection.\nPrefer this endpoint for judging and archiving: it removes duplicated terminal\nprogress without dropping any tool responses or provenance. Inspect execution\nand every call/response before grading. A plausible final answer can conceal a\nfaulty simulator. If evidence is inadequate, record that limitation in an\nassessment rather than inventing a fidelity score; sharpen the world/tool\ncontract or change simulator settings and submit a separate investigation.\nThen PATCH your own grades and assessment, and explicitly group the variables\nbeing compared at POST /api/frontier. The harness never performs this judgment.",
+        "operationId": "get_evidence",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Investigation id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonduplicated complete evidence, live or terminal, including partial failure evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationEvidence"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown investigation"
           }
         },
         "security": [
@@ -373,6 +416,31 @@
   },
   "components": {
     "schemas": {
+      "Assessment": {
+        "type": "object",
+        "description": "A caller's explanation of its judgment, not a harness verdict. Store this with\ngrades so another reader knows the scale, limitations and actual evidence.\nPATCH replaces the whole assessment; null clears it. It is optional: a trace\ncan be useful without being graded. All annotations are lost on server restart.",
+        "required": [
+          "summary"
+        ],
+        "properties": {
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceReference"
+            },
+            "description": "References to existing conversation evidence. Indices are zero-based in\nGET /api/investigations/{id}/evidence `turns`. Maximum 256 references."
+          },
+          "rubric": {
+            "type": "string",
+            "description": "Caller-defined grading scale/method, including the meaning of each axis.\nEmpty when no grades are supplied or no rubric is applicable."
+          },
+          "summary": {
+            "type": "string",
+            "description": "What the caller observed and concluded, including simulation limitations.\nTotal text across this assessment is limited to 65536 UTF-8 bytes."
+          }
+        },
+        "additionalProperties": false
+      },
       "BetterDirection": {
         "type": "string",
         "description": "Whether lower or higher values are better on an axis. Supplied by\nthe caller per request for graded axes; baked in for reserved ones.\nDominance normalizes internally (negating lower-is-better values),\nso \"higher score = better\" uniformly.",
@@ -390,7 +458,7 @@
           "max_steps_per_trace": {
             "type": "integer",
             "format": "int32",
-            "description": "Max steps per trace. A STEP is one tool call OR one final\ncompletion (the turn with no tool call that ends the trace). A\ncompletion that requests several tool calls counts as several\nsteps but is an atomic batch: every sibling call is simulated, so\none accepted batch may cross this cap. No later PUT turn then runs.\nThe main cost dial for tool-loop PUTs.",
+            "description": "Max steps per trace. A STEP is one tool call OR one final\ncompletion (the turn with no tool call that ends the trace). A\ncompletion that requests several tool calls counts as several\nsteps but is an atomic batch: every sibling call is simulated, so\none accepted batch may cross this cap. No later PUT turn then runs.\nThe main cost dial for tool-loop PUTs. Reserve room for the final\ncompletion. A trace recorded at the cap can lack a final answer; inspect\nexecution.stop_reason and counters rather than equating done with success.",
             "minimum": 0
           },
           "max_tokens": {
@@ -399,8 +467,35 @@
               "null"
             ],
             "format": "int64",
-            "description": "Optional per-trace token cap (input+output, summed across turns).",
+            "description": "Optional PUT input+output token cap, summed across completions (repeated\nconversation history is counted on every completion). Simulator tokens\nare not part of this cap. See execution.put_tokens_used and stop_reason.",
             "minimum": 0
+          }
+        }
+      },
+      "BudgetCutoffCompletion": {
+        "type": "object",
+        "description": "A provider completion received after cumulative PUT tokens exceeded the cap.\nIt was charged and is preserved verbatim as evidence, but NOT accepted into\nthe conversation. No tool requests here were executed or given fake responses.\nRaw argument strings may be malformed; they were not parsed by the runner.",
+        "required": [
+          "tool_calls"
+        ],
+        "properties": {
+          "model_output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thinking": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolCallRequest"
+            }
           }
         }
       },
@@ -506,6 +601,32 @@
           }
         }
       },
+      "EvidenceReference": {
+        "type": "object",
+        "description": "A location the caller used to reach its conclusion. Point to an exchange to\ndiscuss a simulated response, or to a whole turn for a model answer. The note\nexpresses the caller's interpretation; a valid index does not validate it.",
+        "required": [
+          "turn",
+          "note"
+        ],
+        "properties": {
+          "exchange": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Zero-based index within that turn's tool_exchanges; omit/null for the turn.",
+            "minimum": 0
+          },
+          "note": {
+            "type": "string"
+          },
+          "turn": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "FrontierAxis": {
         "type": "object",
         "description": "One axis of the frontier plot, with the caller's direction.",
@@ -520,7 +641,7 @@
           },
           "name": {
             "type": "string",
-            "description": "A graded axis name (you PATCHed it) or a reserved measured axis\n(harness-computed). Exact reserved names and baked-in directions:\n`put_input_tokens`, `put_output_tokens`, `sim_input_tokens`, and\n`sim_output_tokens` (lower); `put_cache_read_tokens` and\n`sim_cache_read_tokens` (higher — cached input is cheaper);\n`put_cost_usd` and `sim_cost_usd` (lower); and\n`steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`,\n`steps_per_trace_stdev` (lower). The `put_/sim_` notation is only\nprose shorthand, NEVER a valid axis name. Requesting a reserved axis\nwith a contradicting `better` is rejected."
+            "description": "A graded axis name (you PATCHed it) or a reserved measured axis\n(harness-computed). Exact reserved names and baked-in directions:\n`put_input_tokens`, `put_output_tokens`, `sim_input_tokens`, and\n`sim_output_tokens` (lower); `put_cache_read_tokens` and\n`sim_cache_read_tokens` (higher — cached input is cheaper);\n`put_cost_usd` and `sim_cost_usd` (lower); and\n`steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`,\n`steps_per_trace_stdev` (lower). Monotonic durations `elapsed_ms`,\n`resolving_inputs_ms`, `preparing_tools_ms`, `put_loop_ms` are also lower.\nCompare latency only across adequate comparable traces, not faster failures.\nThe `put_/sim_` notation is only\nprose shorthand, NEVER a valid axis name. Requesting a reserved axis\nwith a contradicting `better` is rejected."
           }
         }
       },
@@ -747,7 +868,7 @@
         "properties": {
           "attributes": {
             "type": "object",
-            "description": "Caller-owned campaign attributes. This field is literally `attributes`;\nthere is no `tags` alias and unknown fields are rejected. Keys use\n`^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.\n`label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash).",
+            "description": "Caller-owned campaign attributes. This field is literally `attributes`;\nthere is no `tags` alias and unknown fields are rejected. Keys use\n`^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.\n`label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash). `simulation_backend`\nis `llm` or `lua`; `step_budget` and `token_budget` are decimal limits\n(unbounded token budget is `unlimited`). All are immutable provenance;\ngroup by them explicitly when comparing execution configurations.",
             "additionalProperties": {
               "type": "string"
             },
@@ -770,7 +891,7 @@
               "string",
               "null"
             ],
-            "description": "Model for the prompt under test. Omit to use the server default\n(`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,\n`vertex::gemini-2.5-pro`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\neach candidate PUT runs in the same simulated environment."
+            "description": "Model for the prompt under test. Omit to use the server default\n(`glm-5.2`). Provider\nis selected by namespace prefix, e.g. `zai_coding::glm-5.2`,\n`open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,\n`vertex::gemini-2.5-pro`; a bare\nname uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).\nSee `GET /api/models` for available namespaced model strings.\n\nThis is the model you are TESTING: when experimenting to find\nwhich model works well for your prompt, this is the one you vary\nacross runs. Keep `sim_model` fixed while you do (see below), so\ncandidates share simulator configuration, not fixed responses. Each run\nresolves inputs and renders tools afresh; inspect differences before\nattributing an outcome solely to the prompt/model."
           },
           "put_thinking_level": {
             "oneOf": [
@@ -792,7 +913,7 @@
               "string",
               "null"
             ],
-            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Omit to use the server default independently of\n`put_model`; setting `put_model` never changes the simulator.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `put_model`, not this). You\n   are comparing candidate PUTs; the environment must stay fixed\n   so differences in the traces come from the PUT, not from a\n   shifting simulation.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
+            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Omit to use the server default independently of\n`put_model`; setting `put_model` never changes the simulator.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `put_model`, not this). You\n   are comparing candidate PUTs. Stable settings reduce confounding, but\n   every run still simulates afresh and may generate different Lua code.\n   Inspect actual responses/revisions before attributing differences to PUT.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
           },
           "sim_thinking_level": {
             "oneOf": [
@@ -801,7 +922,7 @@
               },
               {
                 "$ref": "#/components/schemas/ThinkingLevel",
-                "description": "Thinking/reasoning level for the tool SIMULATOR only. Same\nvocabulary as `put_thinking_level`; omit for the provider\ndefault. The simulator only renders tool responses, so full\nreasoning there is spend without measurement value — `low` or\n`none` cuts per-run cost directly (keep `sim_model` strong; a\ncheap level on a strong model usually degrades less than a\nweak model does). Falls back INDEPENDENTLY of\n`put_thinking_level`: omitting this while setting the PUT's\nlevel leaves the simulator at its default, NOT at the PUT's\nlevel."
+                "description": "Thinking/reasoning level for the tool SIMULATOR only. Same\nvocabulary as `put_thinking_level`; omit for the provider\ndefault. Lower effort can reduce simulation cost, but can also degrade\nrendering or generated Lua semantics. Compare actual responses/source\nbefore claiming a quality-preserving speedup; low/none is not guaranteed\nsufficient even on a strong model. Falls back INDEPENDENTLY of\n`put_thinking_level`: omitting this while setting the PUT's\nlevel leaves the simulator at its default, NOT at the PUT's\nlevel."
               }
             ]
           }
@@ -863,10 +984,211 @@
           }
         }
       },
+      "InvestigationEvidence": {
+        "type": "object",
+        "description": "Preferred agent reading surface. One complete conversation without duplicated\nterminal progress. Read every `turns[].tool_exchanges[].response`: this is what\nthe PUT actually observed. `workspace_ops` only shows what the simulator\nconsulted; `lua_execution.outcome=computed` only says code ran, not that the\nreply was faithful. Compare replies with `scenario.world` AND `put.tools`.\nAn invalid root listing or false-empty search can invalidate a comparison even\nwhen the final answer looks right. Source revisions may differ across reruns.\n\nAvailable while running and after failure: successful exchanges and setup\nartifacts are retained. `execution.stop_reason` distinguishes a final completion\nfrom a budget cutoff or runtime failure; `status=done` alone does not. Full\nresponses, model/simulator reasoning, workspace operations and Lua source are\nall preserved here. No semantic compression or inferred correctness flags.",
+        "required": [
+          "id",
+          "status",
+          "phase",
+          "started_at",
+          "finished_at",
+          "budget",
+          "execution",
+          "put",
+          "scenario",
+          "put_model",
+          "sim_model",
+          "conversation_controls",
+          "workspace_files",
+          "attributes",
+          "grades",
+          "assessment",
+          "resolved_inputs",
+          "turns"
+        ],
+        "properties": {
+          "assessment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Assessment"
+              }
+            ]
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "budget": {
+            "$ref": "#/components/schemas/Budget"
+          },
+          "conversation_controls": {
+            "$ref": "#/components/schemas/ResolvedConversationControls"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/RunExecution"
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunFailure"
+              }
+            ]
+          },
+          "final_world_state": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null until a trace completes, including budget-capped completion.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "grades": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/RunPhase"
+          },
+          "put": {
+            "$ref": "#/components/schemas/PromptUnderTest"
+          },
+          "put_model": {
+            "type": "string"
+          },
+          "put_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel"
+              }
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_inputs": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "scenario": {
+            "$ref": "#/components/schemas/Scenario"
+          },
+          "sim_model": {
+            "type": "string"
+          },
+          "sim_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel"
+              }
+            ]
+          },
+          "simulation_program": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SimulationProgram"
+              }
+            ]
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceTurn"
+            },
+            "description": "Complete PUT model turns, each with tool arguments AND actual responses.\nEvidenceReference indices refer directly to this array and its exchanges."
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageByRole",
+                "description": "Present on terminal jobs, including failures. Live usage is not estimated."
+              }
+            ]
+          },
+          "user_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_files": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "InvestigationPatch": {
         "type": "object",
-        "description": "PATCH can update either independently optional map, but validates BOTH\nbefore modifying the job so a mixed grades/attributes update is atomic.",
+        "description": "PATCH updates independently optional grades, attributes and assessment.\nEvery supplied value validates before anything is applied (atomic update).\nMaps merge; assessment replaces as a whole, null clears, absent leaves unchanged.",
         "properties": {
+          "assessment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Assessment",
+                "description": "Caller-owned explanation and rubric with references to existing evidence.\nOmit to keep unchanged, object replaces entirely, JSON null clears."
+              }
+            ]
+          },
           "attributes": {
             "type": [
               "object",
@@ -907,9 +1229,20 @@
         "type": "object",
         "required": [
           "grades",
-          "attributes"
+          "attributes",
+          "assessment"
         ],
         "properties": {
+          "assessment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Assessment"
+              }
+            ]
+          },
           "attributes": {
             "type": "object",
             "additionalProperties": {
@@ -965,6 +1298,8 @@
         "type": "object",
         "required": [
           "id",
+          "finished_at",
+          "execution",
           "status",
           "phase",
           "started_at",
@@ -980,6 +1315,19 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "execution": {
+            "$ref": "#/components/schemas/RunExecution",
+            "description": "Live/frozen deterministic execution counters and timing, not a quality grade."
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Null while running; epoch milliseconds when execution finished.",
+            "minimum": 0
           },
           "id": {
             "type": "string"
@@ -1005,6 +1353,9 @@
           "status",
           "phase",
           "started_at",
+          "finished_at",
+          "budget",
+          "assessment",
           "put_model",
           "sim_model",
           "conversation_controls",
@@ -1016,6 +1367,17 @@
           "progress"
         ],
         "properties": {
+          "assessment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Assessment",
+                "description": "Caller-owned rationale, rubric and evidence references; never a harness verdict."
+              }
+            ]
+          },
           "attributes": {
             "type": "object",
             "description": "Immutable provenance plus caller-owned campaign attributes. `label` is the\nspecial editable display label; reserved provenance keys cannot change.",
@@ -1026,9 +1388,22 @@
               "type": "string"
             }
           },
+          "budget": {
+            "$ref": "#/components/schemas/Budget",
+            "description": "Original per-conversation budget, retained even for failed/capped runs."
+          },
           "conversation_controls": {
             "$ref": "#/components/schemas/ResolvedConversationControls",
             "description": "Resolved controls for the PUT and simulator conversations."
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Execution completion epoch milliseconds, null while running. Core monotonic\nphase timings are in progress.execution; polling/file mtimes are not durations.",
+            "minimum": 0
           },
           "grades": {
             "type": "object",
@@ -1125,7 +1500,7 @@
       },
       "LuaExecutionRecord": {
         "type": "object",
-        "description": "Evidence of a Lua attempt before a tool response. A fallback or error is\nNOT the tool's return value: all staged mutations were discarded and the\nLLM rendered the actual response. Successful Lua operations appear in the\nexchange's ordinary workspace_ops instead.",
+        "description": "Evidence of a Lua attempt before a tool response. Computed means executed,\nNOT faithful or correct: code can return an invalid-path error or false-empty\nsearch successfully. Inspect ToolExchange.response against the tool contract.\nA fallback or error is NOT the tool's return value: all staged mutations were\ndiscarded and the LLM rendered the actual response. Successful Lua operations appear in the\nexchange's ordinary workspace_ops instead.",
         "required": [
           "program_revision",
           "outcome"
@@ -1252,13 +1627,18 @@
       },
       "ModelsResponse": {
         "type": "object",
-        "description": "Models available to put in a request's `put_model` or `sim_model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each\nprovider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.",
+        "description": "Models available to put in a request's `put_model` or `sim_model` field, by provider.\n\nReturns the server defaults plus a map keyed by provider namespace\n(`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each\nprovider value is\neither `{available: {models: [{name, pricing?}]}}` — where `name` is the\nfull pastable, namespaced string (e.g.\n`open_router::deepseek/deepseek-v4-flash-0731`) — or `{error: \"…\"}`\nexplaining why that provider couldn't be listed (no API key in the\nenvironment, no AWS credentials, region-gated, …). Listing is\nbest-effort and per-provider: one provider failing never breaks the\nothers. Cached for a short time so repeated listing is cheap.\nThis does NOT call generation endpoints or check credit balance: available\nmeans catalog/configuration discovery, not usable inference. Smoke-test one\nsmall investigation with both chosen roles before a corpus fanout. A 429 can\nmean exhausted balance rather than transient rate limiting; inspect the error,\nfix provider funding/permissions, and do not silently switch the simulator.",
         "required": [
           "server_default_model",
           "server_default_provider",
+          "generation_checked",
           "providers"
         ],
         "properties": {
+          "generation_checked": {
+            "type": "boolean",
+            "description": "Always false: this endpoint lists catalogs/configuration, never makes a\ncharged generation call or checks credit balance. `available` is NOT a\nreadiness guarantee. Run one small investigation with both chosen roles\nbefore fanout; quota/balance failures need provider/operator action."
+          },
           "providers": {
             "type": "object",
             "additionalProperties": {
@@ -1330,14 +1710,14 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "The provider is usable. `models` is the live catalog when the\nprovider exposes one; it may be EMPTY when the catalog listing\nfailed but the provider itself works (see `note`) — the model\nlist is advisory, not a gate: any `<namespace>::<model-id>` the\nAPI accepts can be used in a request even if absent here.",
+            "description": "Catalog/configuration discovery succeeded or can be attempted. This does\nNOT verify generation, model access or credit balance. A listed model can\nstill fail its first completion (including 429 insufficient balance).\n`models` may be empty after a listing failure (see note); the catalog is\nadvisory, not a gate. Run one small investigation with both chosen roles\nbefore fanout; this endpoint never makes hidden charged generation probes.",
             "required": [
               "available"
             ],
             "properties": {
               "available": {
                 "type": "object",
-                "description": "The provider is usable. `models` is the live catalog when the\nprovider exposes one; it may be EMPTY when the catalog listing\nfailed but the provider itself works (see `note`) — the model\nlist is advisory, not a gate: any `<namespace>::<model-id>` the\nAPI accepts can be used in a request even if absent here.",
+                "description": "Catalog/configuration discovery succeeded or can be attempted. This does\nNOT verify generation, model access or credit balance. A listed model can\nstill fail its first completion (including 429 insufficient balance).\n`models` may be empty after a listing failure (see note); the catalog is\nadvisory, not a gate. Run one small investigation with both chosen roles\nbefore fanout; this endpoint never makes hidden charged generation probes.",
                 "required": [
                   "models"
                 ],
@@ -1361,14 +1741,14 @@
           },
           {
             "type": "object",
-            "description": "The provider could not be used at all — e.g. no API key in the\nenvironment, credentials that don't resolve, network error,\nregion-gated.",
+            "description": "Discovery failed, for example absent credentials, network or region errors.\nThis is a listing diagnostic, not a generation-readiness test.",
             "required": [
               "error"
             ],
             "properties": {
               "error": {
                 "type": "object",
-                "description": "The provider could not be used at all — e.g. no API key in the\nenvironment, credentials that don't resolve, network error,\nregion-gated.",
+                "description": "Discovery failed, for example absent credentials, network or region errors.\nThis is a listing diagnostic, not a generation-readiness test.",
                 "required": [
                   "error"
                 ],
@@ -1462,6 +1842,51 @@
           }
         }
       },
+      "RunExecution": {
+        "type": "object",
+        "description": "Deterministic execution evidence for one run. Token use is PUT input plus\noutput tokens reported by the provider; steps use the investigation budget's\ntool-call/final-completion units.",
+        "required": [
+          "stop_reason",
+          "steps_used",
+          "put_tokens_used"
+        ],
+        "properties": {
+          "budget_cutoff_completion": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BudgetCutoffCompletion",
+                "description": "The completion that crossed the token cap, if any. It is not an accepted\nTraceTurn; inspect it without treating requested tools as executed."
+              }
+            ]
+          },
+          "put_tokens_used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "steps_used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stop_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStopReason"
+              }
+            ]
+          },
+          "timing": {
+            "$ref": "#/components/schemas/RunTiming"
+          }
+        }
+      },
       "RunFailure": {
         "type": "object",
         "description": "A failure while running one scenario. `stage` identifies the runtime layer\n(`\"runner\"` for PUT execution, input resolution, or tool simulation) and\n`error` is its diagnostic text.",
@@ -1494,6 +1919,10 @@
           "phase"
         ],
         "properties": {
+          "execution": {
+            "$ref": "#/components/schemas/RunExecution",
+            "description": "Deterministic execution evidence. `snapshot()` refreshes its live clock;\nafter `finish()` it is frozen for completed and failed runs."
+          },
           "phase": {
             "$ref": "#/components/schemas/RunPhase",
             "description": "The current LLM phase for this scenario."
@@ -1530,6 +1959,48 @@
               "null"
             ],
             "description": "The opening user message, for rendering the complete conversation live."
+          }
+        }
+      },
+      "RunStopReason": {
+        "type": "string",
+        "description": "Why a run stopped. This is deterministic execution bookkeeping, not a\nverdict on the trace.",
+        "enum": [
+          "final_completion",
+          "step_budget",
+          "token_budget",
+          "runtime_failure"
+        ]
+      },
+      "RunTiming": {
+        "type": "object",
+        "description": "Monotonic wall-clock time spent in each observable LLM phase.",
+        "required": [
+          "elapsed_ms",
+          "resolving_inputs_ms",
+          "preparing_tools_ms",
+          "put_loop_ms"
+        ],
+        "properties": {
+          "elapsed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "preparing_tools_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "put_loop_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "resolving_inputs_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -1632,6 +2103,26 @@
           }
         }
       },
+      "ToolCallRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "arguments"
+        ],
+        "properties": {
+          "arguments": {
+            "type": "string",
+            "description": "Raw JSON arguments as produced by the model (may be malformed;\nparsing is the caller's decision)."
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "ToolExchange": {
         "type": "object",
         "description": "One tool request and its simulated result within a PUT model turn.",
@@ -1695,7 +2186,8 @@
         ],
         "properties": {
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "The PUT's actual tool contract, also used by the simulator. Describe\nargument semantics AND returned shape: for repository tools, define root\naliases, literal vs regex search (and grammar), line numbering, errors,\ntruncation and which files belong to the inventory. A vague 'pattern'\nlets LLM and Lua implementations disagree silently. Example: 'path . or\nempty means root; search is literal case-sensitive substring; return\n{matches:[{path,line,text}],truncated}; no match is an empty array'.\nThese are caller-supplied semantics, not a built-in harness tool surface."
           },
           "example_responses": {
             "type": "array",
@@ -1746,11 +2238,16 @@
       "TraceView": {
         "type": "object",
         "required": [
+          "execution",
           "turns",
           "final_world_state",
           "tool_calls"
         ],
         "properties": {
+          "execution": {
+            "$ref": "#/components/schemas/RunExecution",
+            "description": "Deterministic termination, consumed budget and monotonic execution timing.\nA recorded trace need not contain a final PUT completion."
+          },
           "final_world_state": {
             "type": "object",
             "description": "World state at the end of the trace (after all applied patches).",
@@ -1860,7 +2357,7 @@
       },
       "WorkspaceOp": {
         "type": "object",
-        "description": "One operation the tool SIMULATOR performed against its simulation\nworkspace while rendering a tool response (e.g. it read a file, or\ngrepped, before answering). Recorded for the trace so the caller can\njudge whether an answer was GROUNDED in the workspace (looked up) or\nINVENTED by the model — transparency, not enforcement. Pure data.",
+        "description": "One operation the tool SIMULATOR performed against its simulation\nworkspace while rendering a tool response (e.g. it read a file, or\ngrepped, before answering). Supporting provenance, NOT the PUT observation:\na successful lookup does not prove the simulated response copied it faithfully.\nInspect ToolExchange.response against this record and the narrative. Pure data.",
         "required": [
           "tool",
           "args",

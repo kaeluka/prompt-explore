@@ -2,6 +2,35 @@ use super::*;
 use crate::llm::track::{UsageByRole, UsageTotals};
 use std::collections::BTreeMap;
 
+#[test]
+fn elapsed_axes_are_measured_without_usage_or_caller_grades() {
+    let mut snapshot = snap("timed");
+    snapshot.usage = None;
+    snapshot.timing = Some(crate::model::simulation::RunTiming {
+        elapsed_ms: 240,
+        resolving_inputs_ms: 10,
+        preparing_tools_ms: 80,
+        put_loop_ms: 150,
+    });
+    for (name, expected) in [
+        ("elapsed_ms", 240.0),
+        ("resolving_inputs_ms", 10.0),
+        ("preparing_tools_ms", 80.0),
+        ("put_loop_ms", 150.0),
+    ] {
+        assert_eq!(reserved_direction(name), Some(BetterDirection::Lower));
+        assert_eq!(resolve_reserved(&snapshot, name), Some(expected));
+        assert!(
+            validate_grades_patch(&GradesPatch {
+                grades: [(name.into(), Some(1.0))].into()
+            })
+            .is_err()
+        );
+    }
+    snapshot.timing = None;
+    assert_eq!(resolve_reserved(&snapshot, "elapsed_ms"), None);
+}
+
 fn snap(id: &str) -> InvestigationSnapshot {
     InvestigationSnapshot {
         id: id.into(),
@@ -12,6 +41,7 @@ fn snap(id: &str) -> InvestigationSnapshot {
         put_model: Some("zai_coding::glm-5.2".into()),
         sim_model: Some("zai_coding::glm-5.2".into()),
         steps_per_trace: vec![2, 4],
+        timing: None,
     }
 }
 

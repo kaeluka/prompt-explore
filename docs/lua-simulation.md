@@ -38,16 +38,18 @@ spend provider credits.
 
 Input resolution happens first. If the PUT has tools, the harness creates a
 valid fallback-only `.prompt-explore/tools.lua` in the per-trace in-memory
-workspace (an existing uploaded file at that path is preserved). The simulator
-gets a preparation turn and can specialize the module using its ordinary
-workspace tools. It can also revise the source during later LLM fallbacks.
-No tools means no preparation call. A fresh Lua VM loads the current revision
-for every invocation; private globals/upvalues do not survive calls.
+workspace. `.prompt-explore` is a reserved private harness namespace: uploads
+that contain it are rejected, and it is never application-world inventory. The
+native simulator tools used for authoring can read and revise the source during
+preparation and later LLM fallbacks. No tools means no preparation call. A
+fresh Lua VM loads the current revision for every invocation; private
+globals/upvalues do not survive calls.
 
 The simulator chooses how much to implement. Enabling the feature does not
 promise fewer model calls: leaving every stub untouched is permitted, and
-preparation then adds overhead. Narratives remain the ground truth. Source is
-an unverified interpretation, not a compiled guarantee of the author's intent.
+preparation then adds overhead. Narratives remain the ground truth. `computed`
+means the generated code executed; it is not a fidelity grade. Source is an
+unverified interpretation, not a compiled guarantee of the author's intent.
 
 ## Handler contract
 
@@ -83,10 +85,21 @@ error, not the delegation signal.
 
 `ctx.workspace.read/write/list_dir/grep` take the same argument tables and
 return the same result objects as the simulator's workspace tools. This is NOT
-the host filesystem. The generated program is simulation machinery, not an
-extra fact in the scenario's world; handlers must adapt workspace results to
-the PUT tool's actual contract and inventory. `ctx.world_state` is a copy of
-current state; use patches or workspace operations for persistent changes.
+the host filesystem. Lua handlers receive an application-facing view: private
+`.prompt-explore` files cannot be listed, read, grepped, or written (including
+through a root listing or unscoped grep). The generated program is simulation
+machinery, not an extra fact in the scenario's world; handlers must adapt
+workspace results to the PUT tool's actual contract and inventory.
+
+`list_dir` treats omitted `path`, `""`, and `"."` as the root; traversal and
+absolute paths remain invalid. Workspace `grep` is a literal Unicode-substring
+search, not regex. A PUT tool's requested semantics still come from its schema
+and description: Lua patterns are also not regex (`|` is not alternation). If
+a handler cannot implement a requested syntax faithfully, it should raise
+`PleaseSimulateException` rather than silently changing it. Legitimate
+in-band tool errors should remain computed response data rather than being
+automatically delegated. `ctx.world_state` is a copy of current state; use
+patches or workspace operations for persistent changes.
 
 All Lua workspace mutations are staged. Only a valid computed response commits
 the staged workspace and its patch. Delegation/crashes/limits discard it before

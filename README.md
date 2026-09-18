@@ -22,10 +22,20 @@ for different worlds/workspaces or repeated runs; use attributes to group them.
 There is no batch or sample-count field. Repeating a scenario samples its inputs
 and simulation anew, not just the PUT's response to fixed inputs.
 
-The request uses `scenario` (not `scenarios`). Inspect the complete conversation
-at `result.trace`, or the failure at `result.failure`; live and failed partial
-evidence remains in the flat `progress` object. The job's `phase` reports
-`resolving_inputs`, `preparing_tools`, or `put_loop`.
+The request uses `scenario` (not `scenarios`). Poll the job for status, then read
+`GET /api/investigations/{id}/evidence`: one complete conversation, without
+duplicated terminal progress. Inspect **actual tool responses**, not only final
+answers, workspace lookups or Lua `computed` counts. Execution success is not fidelity.
+The original job view still has `result.trace`, `result.failure`, and flat `progress`.
+
+`execution.stop_reason` distinguishes a final completion, step/token cutoff, and
+runtime failure. `done` does **not** mean a final answer was produced. Original
+budgets, consumed counters, completion timestamps and monotonic phase timings are
+retained. The observable phases remain `resolving_inputs`, `preparing_tools`, `put_loop`.
+
+After reading, PATCH your caller-owned `assessment` (summary, rubric and evidence
+references) with any justified grades. Local prose alone does not record the
+judgment in the product. See [the evidence-first workflow](docs/design/evidence-first.md).
 
 ## Multi-dimensional prompt optimization (grades + Pareto frontier)
 
@@ -36,8 +46,10 @@ supports this without ever judging for you:
 - **Measured axes** are harness-computed on every run and cannot be
   graded: `put_/sim_{input,output,cache_read}_tokens`, `put_/sim_cost_usd`
   (when the model catalog prices the model), and
-  `steps_per_trace_{avg,min,max,stdev}`. Their better-direction is baked
-  in (tokens lower, cache-read higher, cost lower, steps lower).
+  `steps_per_trace_{avg,min,max,stdev}`. Monotonic `elapsed_ms`,
+  `resolving_inputs_ms`, `preparing_tools_ms`, and `put_loop_ms` are also measured.
+  Their better-direction is baked in (tokens lower, cache-read higher,
+  cost/steps/duration lower).
 - **Judged axes** are yours: PATCH numeric grades with free-form axis
   names onto an investigation. The harness stores them and never
   interprets them.
@@ -63,8 +75,10 @@ supports this without ever judging for you:
   its missing grades remain visible in the API and UI as a grading backlog.
 
 Attributes are string-valued. `put_model`, `sim_model`, `put_thinking`,
-`sim_thinking`, `prompt_hash`, and `workspace_hash` are recorded automatically
-and cannot be overwritten or deleted. `label` is editable and displayed in
+`sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`,
+`step_budget`, and `token_budget` are recorded automatically and cannot be edited.
+For a backend comparison, explicitly group by `simulation_backend`; the default
+PUT grouping otherwise merges LLM and Lua runs. `label` is editable and displayed in
 the UI; other custom attributes are editable too. Renaming a label leaves the default
 grouping unchanged; explicitly grouping by `label` makes it an identity key
 like any other selected attribute. Model attributes use resolved names;
@@ -74,7 +88,10 @@ extracted paths and contents, not zip metadata.
 
 The UI groups investigation cards by the same selected attributes as the plot.
 Hover/focus links a point or legend entry to its card group; activate it to scroll
-there. For API browsing, filter the list with exact attribute matches:
+there. Dashboard attribute filters affect cards only, not frontier candidates.
+**Copy share link** preserves grouping, axes/directions and card filters for a
+colleague (not authentication). Assessment/grade drafts survive filtering and
+regrouping. For API browsing, filter the list with exact attribute matches:
 
 ```bash
 curl -sS -G http://127.0.0.1:8080/api/investigations \
@@ -84,7 +101,8 @@ curl -sS -G http://127.0.0.1:8080/api/investigations \
 Multiple pairs are ANDed; missing attributes do not match. This filters only
 the list response, never frontier candidacy.
 
-Everything remains in memory: restarting loses investigations, attributes, and grades.
+Everything remains in memory: restarting loses investigations, attributes, grades,
+and assessments. Archive `/evidence` and your original requests for durability.
 Groups and their frontier are computed on demand; an API caller polls the same
 POST to refresh. Group ids remain stable when membership or grades change.
 
@@ -406,7 +424,9 @@ is `done` or `failed`, or watch the run in the web UI:
 curl -sS http://127.0.0.1:8080/api/investigations/REPLACE_WITH_ID
 ```
 
-Read `result.trace.turns[]` for the model output and tool exchanges. A failed
+Read `GET /api/investigations/{id}/evidence` for `turns[]`, including actual tool
+responses and complete provenance. The original job still exposes
+`result.trace.turns[]`. A failed
 job exposes `result.failure`; inspect `progress.turns`, `progress.resolved_inputs`,
 and `progress.simulation_program` for the evidence collected before it failed.
 The caller judges the trace; the harness does not grade whether Luna behaved correctly.

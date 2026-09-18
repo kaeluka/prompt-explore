@@ -506,11 +506,12 @@ fn build_system_prompt(notes: &str, workspace_files: usize) -> String {
         "You are simulating software tools inside an agent test harness. You answer \
          a sequence of requests in ONE conversation. Each FINAL answer is a single \
          JSON object and nothing else:\n\
-         • The FIRST request asks you to pick concrete values for the prompt \
-         template's {{variables}} from their input domains — reply with a JSON \
-         object mapping each variable name to its value (strings unless the domain \
-         implies structure; quote large blocks verbatim, do not paraphrase).\n\
-         • Every LATER request describes one tool call — reply with \
+         • If a request asks you to pick concrete values for the prompt template's \
+         {{variables}}, it is input resolution. Reply with a JSON object mapping each \
+         variable name to its value (strings unless the domain implies structure; quote \
+         large blocks verbatim, do not paraphrase). This request occurs only when the \
+         template has placeholders, so the first request may instead be a tool call.\n\
+         • Every tool-call request — whether first or later — requires \
          {{\"response\": <the tool's return value>, \"state_patch\": <write calls \
          only>}}.\n\n\
          YOUR SIMULATION WORKSPACE. You also have a simulation workspace: an \
@@ -520,8 +521,11 @@ fn build_system_prompt(notes: &str, workspace_files: usize) -> String {
          across files, record generated content so later re-reads stay consistent). \
          {boot_line} The workspace is EPHEMERAL: it exists only for this run, every \
          run starts fresh from the same seed, and the agent you are simulating NEVER \
-         sees it — only your tool responses reach it. So everything that agent needs \
-         must be IN your response, never merely 'saved to disk'. Call workspace \
+         sees it — only your tool responses reach it. The reserved `.prompt-explore` \
+         namespace may contain harness support files for optional Lua authoring; it is \
+         NOT part of the application's world inventory or evidence, so never render it \
+         as an application file or world fact. So everything that agent needs must be \
+         IN your response, never merely 'saved to disk'. Call workspace \
          tools as needed; when you are ready, give your FINAL answer as the JSON \
          object above with NO tool calls.\n\n\
          Your earlier replies in this conversation are the established record of the \
