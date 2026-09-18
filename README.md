@@ -305,17 +305,27 @@ bodies. Authentication, request-validation, and billing/quota errors still
 fail promptly. Only the failed completion is retried, with the same request;
 completed tool calls and scenarios are not replayed.
 
+A single attempt also has a **60-second deadline**: a request that produces no
+response in that window is cancelled and retried exactly like a dropped
+connection, with the same attempt budget and backoff. This bounds a stalled
+socket, which no retry count or step/token budget could. When the budget is
+exhausted the failure says so explicitly ("timed out with no response within
+60s on each of 21 attempt(s)") rather than looking like a provider answer.
+
 Process-level overrides:
 
 - `PROMPT_EXPLORE_MAX_RETRIES=20` — retries per completion; `0` disables them.
 - `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS=5000` — linear waits of 5s, 10s, …, 100s.
+- `PROMPT_EXPLORE_REQUEST_TIMEOUT_MS=60000` — per-attempt deadline; `0` waits
+  forever (the pre-timeout behavior).
 - `PROMPT_EXPLORE_RETRY_JITTER_PERCENT=10` — adds up to 10% positive jitter.
 
 A longer provider `Retry-After` (seconds or HTTP-date) or `retry-after-ms`
 extends the wait. Retry number, delay, model, and failure category are logged
-without dumping request bodies or headers. Exhausting the default budget
-can take roughly 18–19 minutes in backoff alone, plus request time; retries
-are generous, not unlimited. A lost response may still have been generated
+without dumping request bodies or headers. Exhausting the default budget can
+take roughly 18–19 minutes in backoff alone, plus request time; with the
+per-attempt deadline the worst case is a further 21 × 60s, so retries are
+generous, not unlimited. A lost response may still have been generated
 and billed by the provider, so actual costs can exceed reported usage.
 
 Malformed **simulator content** has a separate repair budget: **20 total

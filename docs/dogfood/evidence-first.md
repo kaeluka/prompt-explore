@@ -196,11 +196,18 @@ That stalled job never recovered: `42bf7dd2` sat `running` for ~19 minutes with
 `steps_used: 0` and `put_tokens_used: 1004` frozen while `elapsed_ms` grew, and
 the server log showed a transport retry that never completed. It could not be
 deleted (409 by design — a running job's provider calls would keep spending),
-so the only way to clear it was to restart the server. Two gaps are worth a
-follow-up decision, both outside this change: individual provider attempts have
-no wall-clock deadline, so a hung request is bounded by neither the retry budget
-nor the step/token budget; and a caller has no way to abandon a job that will
-never progress.
+so the only way to clear it was to restart the server.
+
+That gap is now closed by a **per-attempt deadline**
+(`PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`, default 60000; `0` disables): a request
+with no response inside the window is cancelled and retried exactly like a
+dropped connection, sharing the existing attempt budget and backoff, and an
+exhausted budget reports "timed out with no response within 60s on each of N
+attempt(s)" instead of looking like a provider answer. Note the arithmetic that
+remains: retries are bounded, not short — the default 21 attempts plus the
+linear backoff is still tens of minutes worst case, so a caller who wants a
+bounded *job* rather than a bounded *attempt* would need an overall deadline
+(a follow-up decision, not implemented).
 
 ## What this does and does not show
 

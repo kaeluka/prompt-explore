@@ -9,7 +9,108 @@ fn settings(max_retries: u32) -> RetrySettings {
         max_retries,
         base_delay_ms: 0,
         jitter_percent: 0,
+        request_timeout: None,
     }
+}
+
+/// Settings with a per-attempt deadline, so a test can stall on purpose.
+fn settings_with_timeout(max_retries: u32, millis: u64) -> RetrySettings {
+    RetrySettings {
+        request_timeout: attempt_deadline(millis),
+        ..settings(max_retries)
+    }
+}
+
+#[test]
+fn zero_millis_disables_the_deadline_rather_than_expiring_instantly() {
+    assert_eq!(attempt_deadline(0), None);
+    assert_eq!(
+        attempt_deadline(60_000),
+        Some(Duration::from_millis(60_000))
+    );
+}
+
+#[tokio::test]
+async fn a_stalled_attempt_times_out_and_is_retried_like_a_5xx() {
+    let mut calls = 0;
+    let result = retry_provider_call("test", settings_with_timeout(3, 20), || {
+        calls += 1;
+        async move {
+            if calls == 1 {
+                // Never answers: only the per-attempt deadline can end it.
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            Ok("recovered after timeout")
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result, "recovered after timeout");
+    assert_eq!(calls, 2, "the stalled attempt is retried exactly once");
+}
+
+#[tokio::test]
+async fn timeout_exhaustion_names_the_deadline_and_the_attempt_count() {
+    let mut calls = 0;
+    let err = retry_provider_call::<(), _, _>("test", settings_with_timeout(2, 15), || {
+        calls += 1;
+        async {
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(calls, 3, "one initial attempt plus the retry budget");
+    let message = err.to_string();
+    assert!(message.contains("timed out"), "{message}");
+    assert!(message.contains("15ms"), "{message}");
+    assert!(message.contains("3 attempt"), "{message}");
+}
+
+#[tokio::test]
+async fn no_deadline_means_a_slow_answer_is_not_cancelled() {
+    let mut calls = 0;
+    let result = retry_provider_call("test", settings(3), || {
+        calls += 1;
+        async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            Ok("slow but fine")
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result, "slow but fine");
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn a_timeout_is_retryable_and_carries_no_provider_retry_after() {
+    let err = AttemptError::Timeout(Duration::from_secs(60));
+    assert!(attempt_is_retryable(&err));
+    assert_eq!(attempt_kind(&err), "no response within 60s");
+    assert_eq!(
+        attempt_kind(&AttemptError::Timeout(Duration::from_millis(1500))),
+        "no response within 1500ms"
+    );
+    assert!(attempt_message(&err, 4).contains("4 attempt"));
+    // The 5xx/transport classification is unchanged for provider answers.
+    assert!(attempt_is_retryable(&AttemptError::Provider(http_error(
+        503, "busy"
+    ))));
+    assert!(!attempt_is_retryable(&AttemptError::Provider(http_error(
+        400,
+        "bad request"
+    ))));
+    let retry = RetrySettings {
+        base_delay_ms: 5_000,
+        ..settings_with_timeout(20, 60_000)
+    };
+    assert_eq!(
+        retry.backoff_attempt(2, &err, SystemTime::UNIX_EPOCH),
+        Duration::from_secs(10)
+    );
 }
 
 fn http_error(status: u16, body: &str) -> genai::Error {

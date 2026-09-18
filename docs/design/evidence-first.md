@@ -113,6 +113,20 @@ instruction, not semantic enforcement. Legitimate in-band tool
 errors remain data and do not automatically trigger fallback. There is no new
 cache, narrative DSL or semantic consistency checker.
 
+## Transport bounds
+
+A provider attempt has a wall-clock deadline (`PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`,
+default 60000; `0` disables) applied around the HTTP request. Expiry is a
+retryable transport failure — it shares the existing attempt budget and backoff
+and is logged as `no response within 60s` — because a stalled socket is
+otherwise bounded by nothing: the retry budget counts attempts, and step/token
+budgets only advance on completions, so a wedged request could hold a job
+`running` forever (observed: ~19 minutes at `steps_used: 0` with
+`put_tokens_used` frozen). Exhaustion reports the deadline and the attempt
+count, so a timeout is distinguishable from a provider answer. Retries stay
+generous, not short: a caller wanting a bounded *job* rather than a bounded
+*attempt* would need an overall deadline, which is deliberately not added here.
+
 ## Model discovery
 
 `GET /api/models` reports `generation_checked:false`. Catalog/configuration

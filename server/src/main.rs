@@ -799,6 +799,10 @@ fn print_help() {
     println!("                           Retry-After can extend the configured backoff.");
     println!("    PROMPT_EXPLORE_RETRY_BASE_DELAY_MS");
     println!("                           Linear retry backoff step in ms (default: 5000).");
+    println!("    PROMPT_EXPLORE_REQUEST_TIMEOUT_MS");
+    println!("                           Deadline for ONE provider attempt (default: 60000). A");
+    println!("                           stalled request is retried like a transport failure; 0");
+    println!("                           disables the deadline.");
     println!("    PROMPT_EXPLORE_RETRY_JITTER_PERCENT");
     println!("                           Maximum positive retry jitter (default: 10 percent).");
     println!("    PROMPT_EXPLORE_WORKSPACE_COMPRESSED_LIMIT");

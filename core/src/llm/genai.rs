@@ -39,6 +39,14 @@ pub const DEFAULT_MAX_RETRIES: u32 = 20;
 /// Default initial linear-backoff interval in milliseconds. Override with
 /// `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS`.
 pub const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 5_000;
+/// Default wall-clock deadline for ONE provider HTTP attempt. Without it a
+/// stalled socket is bounded by nothing: the retry budget counts attempts (not
+/// time) and the step/token budgets only advance on completions, so a wedged
+/// request can hold a job `running` indefinitely. A deadline that expires is
+/// treated exactly like a transport failure — retryable, with the same attempt
+/// budget and backoff. Override with `PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`; `0`
+/// disables the deadline (a caller who prefers waiting forever).
+pub const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 60_000;
 /// Default maximum positive retry jitter percentage. Override with
 /// `PROMPT_EXPLORE_RETRY_JITTER_PERCENT`.
 pub const DEFAULT_RETRY_JITTER_PERCENT: u64 = 10;
@@ -384,7 +392,9 @@ pub fn qualify_model(model: &str, default_provider: &str) -> String {
 }
 
 /// Retry transient HTTP/transport failures with linear backoff and positive
-/// jitter, honoring a longer provider Retry-After. The budget is per completion,
+/// jitter, honoring a longer provider Retry-After. A per-attempt deadline
+/// (see `DEFAULT_REQUEST_TIMEOUT_MS`) turns a stalled request into one of those
+/// transient failures. The budget is per completion,
 /// not per investigation; authentication, validation, and hard quota failures
 /// still fail fast. Keep raw prompts, responses, and headers out of retry logs.
 async fn retry_provider_call<T, F, Fut>(
@@ -398,24 +408,82 @@ where
 {
     let mut retries = 0;
     loop {
-        match call().await {
+        match deadline_attempt(retry.request_timeout, call()).await {
             Ok(response) => return Ok(response),
-            Err(err) if retries < retry.max_retries && is_retryable(&err) => {
+            Err(err) if retries < retry.max_retries && attempt_is_retryable(&err) => {
                 retries += 1;
-                let backoff = retry.backoff(retries, &err, std::time::SystemTime::now());
-                let kind = err.status().map_or_else(
-                    || "transport/response failure".to_string(),
-                    |status| format!("HTTP {status}"),
-                );
+                let backoff = retry.backoff_attempt(retries, &err, std::time::SystemTime::now());
                 eprintln!(
-                    "LLM {model}: retry {retries}/{} in {:.3}s ({kind})",
+                    "LLM {model}: retry {retries}/{} in {:.3}s ({})",
                     retry.max_retries,
                     backoff.as_secs_f64(),
+                    attempt_kind(&err),
                 );
                 tokio::time::sleep(backoff).await;
             }
-            Err(err) => return Err(LlmError::Provider(provider_error_message(&err))),
+            Err(err) => return Err(LlmError::Provider(attempt_message(&err, retries + 1))),
         }
+    }
+}
+
+/// Run one attempt under the configured deadline. Cancelling the future on
+/// expiry drops the in-flight request and its connection, so a stalled socket
+/// cannot outlive the attempt.
+async fn deadline_attempt<T, Fut>(
+    limit: Option<std::time::Duration>,
+    attempt: Fut,
+) -> Result<T, AttemptError>
+where
+    Fut: std::future::Future<Output = genai::Result<T>>,
+{
+    match limit {
+        None => attempt.await.map_err(AttemptError::Provider),
+        Some(limit) => match tokio::time::timeout(limit, attempt).await {
+            Ok(result) => result.map_err(AttemptError::Provider),
+            Err(_elapsed) => Err(AttemptError::Timeout(limit)),
+        },
+    }
+}
+
+fn attempt_is_retryable(err: &AttemptError) -> bool {
+    match err {
+        AttemptError::Timeout(_) => true,
+        AttemptError::Provider(err) => is_retryable(err),
+    }
+}
+
+/// Short retry-log label. Never includes prompt or response bytes.
+fn attempt_kind(err: &AttemptError) -> String {
+    match err {
+        AttemptError::Timeout(limit) => format!("no response within {}", format_deadline(*limit)),
+        AttemptError::Provider(err) => err.status().map_or_else(
+            || "transport/response failure".to_string(),
+            |status| format!("HTTP {status}"),
+        ),
+    }
+}
+
+/// Whole-second deadlines read as `60s`; sub-second ones keep their unit so a
+/// configured `15` does not print as `0s`.
+fn format_deadline(limit: std::time::Duration) -> String {
+    let millis = limit.as_millis();
+    if millis % 1000 == 0 {
+        format!("{}s", limit.as_secs())
+    } else {
+        format!("{millis}ms")
+    }
+}
+
+/// Terminal message after the budget is spent. The attempt count matters
+/// because a timeout is indistinguishable from a hung provider without it.
+fn attempt_message(err: &AttemptError, attempts: u32) -> String {
+    match err {
+        AttemptError::Timeout(limit) => format!(
+            "provider request timed out with no response within {} on each of \
+             {attempts} attempt(s)",
+            format_deadline(*limit)
+        ),
+        AttemptError::Provider(err) => provider_error_message(err),
     }
 }
 
@@ -516,6 +584,21 @@ struct RetrySettings {
     max_retries: u32,
     base_delay_ms: u64,
     jitter_percent: u64,
+    /// `None` = no per-attempt deadline (disables the timeout).
+    request_timeout: Option<std::time::Duration>,
+}
+
+/// Deadline for one attempt; `0` means "no deadline" rather than "expire
+/// immediately", because a zero-ms timeout would cancel every call.
+fn attempt_deadline(millis: u64) -> Option<std::time::Duration> {
+    (millis > 0).then(|| std::time::Duration::from_millis(millis))
+}
+
+/// Why one attempt failed. A timeout is not a provider answer, but it is
+/// retryable for the same reason a dropped connection is.
+enum AttemptError {
+    Provider(genai::Error),
+    Timeout(std::time::Duration),
 }
 
 impl RetrySettings {
@@ -530,6 +613,24 @@ impl RetrySettings {
         jittered(delay, self.jitter_percent)
     }
 
+    /// Backoff for either kind of attempt failure. A timeout carries no
+    /// provider Retry-After, so only our own delay applies; a provider answer
+    /// may ask for a longer wait.
+    fn backoff_attempt(
+        self,
+        attempt: u32,
+        err: &AttemptError,
+        now: std::time::SystemTime,
+    ) -> std::time::Duration {
+        match err {
+            AttemptError::Timeout(_) => jittered(
+                retry_delay(attempt, self.base_delay_ms),
+                self.jitter_percent,
+            ),
+            AttemptError::Provider(err) => self.backoff(attempt, err, now),
+        }
+    }
+
     fn from_env() -> Self {
         Self {
             max_retries: env_number("PROMPT_EXPLORE_MAX_RETRIES", DEFAULT_MAX_RETRIES),
@@ -541,6 +642,10 @@ impl RetrySettings {
                 "PROMPT_EXPLORE_RETRY_JITTER_PERCENT",
                 DEFAULT_RETRY_JITTER_PERCENT,
             ),
+            request_timeout: attempt_deadline(env_number(
+                "PROMPT_EXPLORE_REQUEST_TIMEOUT_MS",
+                DEFAULT_REQUEST_TIMEOUT_MS,
+            )),
         }
     }
 }
