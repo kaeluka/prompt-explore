@@ -12,7 +12,6 @@ use mlua::{
     ChunkMode, Error as LuaError, HookTriggers, Lua, LuaOptions as MluaOptions, StdLib, Table,
     Value as LuaValue, VmState,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::model::{
@@ -20,71 +19,12 @@ use crate::model::{
     simulation::{ToolCall, WorkspaceOp},
 };
 
+/// Re-exported so `simulate::lua::LuaOptions` keeps naming the caller-facing
+/// limits type (it now lives in the model layer, next to the scenario).
+pub use crate::model::lua::LuaOptions;
+use crate::model::lua::MAX_VALUE_DEPTH;
+
 use super::workspace::Workspace;
-
-/// Conventional workspace-relative path for a generated Lua handler module.
-pub const PROGRAM_PATH: &str = ".prompt-explore/tools.lua";
-/// Hard ceilings are process-safety boundaries, not defaults. API callers may
-/// lower limits or raise defaults only this far; direct library callers get the
-/// same validation.
-pub const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_INSTRUCTIONS: u64 = 10_000_000;
-pub const MAX_HOST_CALLS: usize = 1024;
-pub const MAX_HOST_BYTES: usize = 32 * 1024 * 1024;
-pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
-pub const MAX_DURATION_MS: u64 = 10_000;
-pub const MAX_VALUE_DEPTH: usize = 128;
-pub const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
-
-/// Resource controls for one Lua tool-handler invocation.
-///
-/// All fields are explicit, documented overrides. Zero is invalid even for
-/// direct library callers. The duration limit is cooperative: it is checked by
-/// the VM hook and around Rust/Lua conversion boundaries, but a single native
-/// Lua C operation cannot be preempted until it returns.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct LuaOptions {
-    /// Lua allocator limit, including handler-created values (default 16 MiB).
-    #[schema(minimum = 1, maximum = 67108864)]
-    pub max_memory_bytes: usize,
-    /// Shared VM/conversion work budget across initialization and handler execution (default 1 million).
-    #[schema(minimum = 1, maximum = 10000000)]
-    pub max_instructions: u64,
-    /// Workspace capability-call limit (default 128).
-    #[schema(minimum = 1, maximum = 1024)]
-    pub max_host_calls: usize,
-    /// Cumulative serialized workspace capability argument/result traffic limit (default 8 MiB).
-    #[schema(minimum = 1, maximum = 33554432)]
-    pub max_host_bytes: usize,
-    /// UTF-8 source limit before parsing; bytecode is never loaded (default 256 KiB).
-    #[schema(minimum = 1, maximum = 1048576)]
-    pub max_source_bytes: usize,
-    /// Cooperative wall-clock deadline for the whole invocation (default 2000 ms).
-    #[schema(minimum = 1, maximum = 10000)]
-    pub max_duration_ms: u64,
-    /// Maximum JSON/Lua nesting depth (default 128; hard ceiling 128 for host stack safety).
-    #[schema(minimum = 1, maximum = 128)]
-    pub max_value_depth: usize,
-    /// Maximum serialized size per converted value, shared by response and state-patch values (default 1 MiB).
-    #[schema(minimum = 1, maximum = 4194304)]
-    pub max_result_bytes: usize,
-}
-
-impl Default for LuaOptions {
-    fn default() -> Self {
-        Self {
-            max_memory_bytes: 16 * 1024 * 1024,
-            max_instructions: 1_000_000,
-            max_host_calls: 128,
-            max_host_bytes: 8 * 1024 * 1024,
-            max_source_bytes: 256 * 1024,
-            max_duration_ms: 2_000,
-            max_value_depth: MAX_VALUE_DEPTH,
-            max_result_bytes: 1024 * 1024,
-        }
-    }
-}
 
 /// The outcome of one specialized tool handler invocation.
 pub enum LuaExecution {
@@ -104,43 +44,30 @@ pub enum LuaExecution {
     },
 }
 
-/// Generate a syntactically valid module that declines every named tool.
-pub fn fallback_source(tools: &[ToolSchema]) -> String {
-    let mut out = String::from("return {\n");
-    for tool in tools {
-        out.push_str("  [");
-        out.push_str(&lua_quote(&tool.name));
-        out.push_str(
-            "] = function(args, ctx) return PleaseSimulateException(\"not specialized\") end,\n",
-        );
+/// Compile one caller-supplied implementation without executing it.
+///
+/// Deterministic validation only: a syntax error is a caller mistake worth
+/// reporting at upload time with the tool name attached. Whether the chunk
+/// RETURNS a function, and whether that function is faithful to the declared
+/// tool contract, is established by running it (`POST .../simulations`), never
+/// by this check — and never by the harness rewriting the source.
+pub fn check_source(tool: &str, source: &str, options: &LuaOptions) -> Result<(), String> {
+    crate::model::lua::validate(options).map_err(|error| error.to_string())?;
+    if source.len() > options.max_source_bytes {
+        return Err(format!(
+            "implementation source is {} bytes, above max_source_bytes {} (raise it, or shorten the implementation)",
+            source.len(),
+            options.max_source_bytes
+        ));
     }
-    out.push_str("}\n");
-    out
-}
-
-fn lua_quote(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => quoted.push_str("\\\""),
-            '\\' => quoted.push_str("\\\\"),
-            '\n' => quoted.push_str("\\n"),
-            '\r' => quoted.push_str("\\r"),
-            '\t' => quoted.push_str("\\t"),
-            '\u{08}' => quoted.push_str("\\008"),
-            '\u{0C}' => quoted.push_str("\\012"),
-            // Lua decimal escapes encode bytes, not Unicode scalar values.
-            // Escape only ASCII controls; C1 controls remain their UTF-8 bytes.
-            c if (c as u32) <= 0x1f || c == '\u{7f}' => {
-                use fmt::Write;
-                write!(quoted, "\\{:03}", c as u32).expect("writing a String cannot fail");
-            }
-            c => quoted.push(c),
-        }
-    }
-    quoted.push('"');
-    quoted
+    let lua = Lua::new_with(StdLib::ALL_SAFE, MluaOptions::default())
+        .map_err(|error| format!("could not create Lua VM: {error}"))?;
+    lua.load(source)
+        .set_name(tool)
+        .set_mode(ChunkMode::Text)
+        .into_function()
+        .map(|_| ())
+        .map_err(|error| format!("does not parse as Lua: {error}"))
 }
 
 /// Execute in a fresh VM. Workspace mutations are returned only on a valid
@@ -154,7 +81,7 @@ pub fn execute(
     workspace: &Workspace,
     options: &LuaOptions,
 ) -> LuaExecution {
-    if let Err(error) = validate_options(options) {
+    if let Err(error) = crate::model::lua::validate(options) {
         return LuaExecution::Failed {
             error: clip(&error, options.max_result_bytes),
             operations: Vec::new(),
@@ -198,80 +125,6 @@ pub fn execute(
             operations: host.operations.clone(),
         },
     }
-}
-
-impl LuaOptions {
-    /// Validate limits for both API and standalone callers. No zero means
-    /// unlimited, and callers cannot disable host stack protection.
-    pub fn validate(&self) -> Result<(), String> {
-        validate_options(self)
-    }
-}
-
-fn validate_options(options: &LuaOptions) -> Result<(), String> {
-    for (name, value, maximum) in [
-        (
-            "max_memory_bytes",
-            options.max_memory_bytes as u64,
-            MAX_MEMORY_BYTES as u64,
-        ),
-        (
-            "max_instructions",
-            options.max_instructions,
-            MAX_INSTRUCTIONS,
-        ),
-        (
-            "max_host_calls",
-            options.max_host_calls as u64,
-            MAX_HOST_CALLS as u64,
-        ),
-        (
-            "max_host_bytes",
-            options.max_host_bytes as u64,
-            MAX_HOST_BYTES as u64,
-        ),
-        (
-            "max_source_bytes",
-            options.max_source_bytes as u64,
-            MAX_SOURCE_BYTES as u64,
-        ),
-        ("max_duration_ms", options.max_duration_ms, MAX_DURATION_MS),
-        (
-            "max_value_depth",
-            options.max_value_depth as u64,
-            MAX_VALUE_DEPTH as u64,
-        ),
-        (
-            "max_result_bytes",
-            options.max_result_bytes as u64,
-            MAX_RESULT_BYTES as u64,
-        ),
-    ] {
-        if value > maximum {
-            return Err(format!("Lua option '{name}' must not exceed {maximum}"));
-        }
-    }
-    if Instant::now()
-        .checked_add(std::time::Duration::from_millis(options.max_duration_ms))
-        .is_none()
-    {
-        return Err("Lua option 'max_duration_ms' exceeds the platform clock range".into());
-    }
-    for (name, zero) in [
-        ("max_memory_bytes", options.max_memory_bytes == 0),
-        ("max_instructions", options.max_instructions == 0),
-        ("max_host_calls", options.max_host_calls == 0),
-        ("max_host_bytes", options.max_host_bytes == 0),
-        ("max_source_bytes", options.max_source_bytes == 0),
-        ("max_duration_ms", options.max_duration_ms == 0),
-        ("max_value_depth", options.max_value_depth == 0),
-        ("max_result_bytes", options.max_result_bytes == 0),
-    ] {
-        if zero {
-            return Err(format!("Lua option '{name}' must be greater than zero"));
-        }
-    }
-    Ok(())
 }
 
 fn clip(value: &str, max_bytes: usize) -> String {
@@ -370,20 +223,20 @@ fn run(
     let json = install_sandbox(&lua)?;
 
     budget.charge().map_err(classify_lua_error)?;
-    let handlers: Table = lua
+    let handler: LuaValue = lua
         .load(source)
         .set_mode(ChunkMode::Text)
         .eval()
         .map_err(classify_lua_error)?;
-    let handler: LuaValue = handlers
-        .get(tool.name.as_str())
-        .map_err(classify_lua_error)?;
+    // Each tool carries ITS OWN implementation, so the chunk returns the
+    // handler function directly. Nothing is looked up by name here.
     let function = match handler {
-        LuaValue::Nil => return Err(RunError::Fallback("no specialized handler".into())),
         LuaValue::Function(function) => function,
         _ => {
             return Err(RunError::Failed(
-                "selected Lua handler is not a function".into(),
+                "supplied implementation does not return a function; write \
+                 `return function(args, ctx) ... end`"
+                    .into(),
             ));
         }
     };
@@ -1044,6 +897,10 @@ fn classify_lua_error(error: LuaError) -> RunError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::lua::{
+        MAX_DURATION_MS, MAX_HOST_BYTES, MAX_HOST_CALLS, MAX_INSTRUCTIONS, MAX_MEMORY_BYTES,
+        MAX_RESULT_BYTES, MAX_SOURCE_BYTES, MAX_VALUE_DEPTH,
+    };
 
     fn tool(name: &str, side_effect: SideEffect) -> ToolSchema {
         ToolSchema {
@@ -1162,7 +1019,7 @@ mod tests {
             ..Default::default()
         };
         let error = failed(execute(
-            "return {x=function() return {response=string.rep('x',1000000)} end}",
+            "return function() return {response=string.rep('x',1000000)} end",
             &t,
             &call(Value::Null),
             &Map::new(),
@@ -1172,7 +1029,7 @@ mod tests {
         assert!(error.to_lowercase().contains("memory"));
         for source in [
             "\x1bLua",
-            "return {x=function() local t={}; t.self=t; return {response=t} end}",
+            "return function() local t={}; t.self=t; return {response=t} end",
         ] {
             assert!(matches!(
                 execute(
@@ -1186,7 +1043,7 @@ mod tests {
                 LuaExecution::Failed { .. }
             ));
         }
-        let source = "return {x=function(a,c) c.workspace.write({path='x',content='staged'}); c.workspace.write({path='y',content='staged'}); return {response=true} end}";
+        let source = "return function(a,c) c.workspace.write({path='x',content='staged'}); c.workspace.write({path='y',content='staged'}); return {response=true} end";
         let limits = LuaOptions {
             max_host_calls: 1,
             ..Default::default()
@@ -1216,7 +1073,7 @@ mod tests {
             ),
             LuaExecution::Failed { .. }
         ));
-        let source = "return {x=function() return {response=(getmetatable==nil and setmetatable==nil and pcall==nil)} end}";
+        let source = "return function() return {response=(getmetatable==nil and setmetatable==nil and pcall==nil)} end";
         assert_eq!(
             computed(execute(
                 source,
@@ -1232,30 +1089,11 @@ mod tests {
     }
 
     #[test]
-    fn weird_tool_names_quote_as_exact_utf8() {
-        let names = [
-            "quote\" slash\\ nul\0 newline\n",
-            "c1-\u{0080}\u{009f}-snow-雪",
-            "del-\u{007f}",
-        ];
-        let tools: Vec<_> = names
-            .iter()
-            .map(|name| tool(name, SideEffect::Read))
-            .collect();
-        let source = fallback_source(&tools);
-        for tool in &tools {
-            assert!(
-                matches!(execute(&source, tool, &call(Value::Null), &Map::new(), &Workspace::empty(), &LuaOptions::default()), LuaExecution::Fallback { reason, .. } if reason == "not specialized")
-            );
-        }
-    }
-
-    #[test]
     fn typed_fallback_is_not_an_error_message_substring() {
         let t = tool("x", SideEffect::Read);
         assert!(matches!(
             execute(
-                "return {x=function() PleaseSimulateException('no') end}",
+                "return function() PleaseSimulateException('no') end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1266,7 +1104,7 @@ mod tests {
         ));
         assert!(matches!(
             execute(
-                "return {x=function() error('PleaseSimulateException') end}",
+                "return function() error('PleaseSimulateException') end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1277,14 +1115,14 @@ mod tests {
         ));
         assert!(matches!(
             execute(
-                "return {}",
+                "return 42",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
                 &Workspace::empty(),
                 &LuaOptions::default()
             ),
-            LuaExecution::Fallback { .. }
+            LuaExecution::Failed { .. }
         ));
     }
 
@@ -1292,7 +1130,7 @@ mod tests {
     fn state_and_workspace_commit_only_on_valid_compute() {
         let write = tool("x", SideEffect::Write);
         let original = Workspace::empty();
-        let source = "return {x=function(a,c) c.workspace.write({path='x',content='bad'}); PleaseSimulateException('no') end}";
+        let source = "return function(a,c) c.workspace.write({path='x',content='bad'}); PleaseSimulateException('no') end";
         let outcome = execute(
             source,
             &write,
@@ -1310,7 +1148,7 @@ mod tests {
                 .exec("read", &serde_json::json!({"path":"x"}))["error"],
             "not found"
         );
-        let source = "return {x=function(a,c) c.workspace.write({path='x',content='ok'}); return {response=json.null,state_patch={a=1}} end}";
+        let source = "return function(a,c) c.workspace.write({path='x',content='ok'}); return {response=json.null,state_patch={a=1}} end";
         let (response, patch, mut workspace, _) = computed(execute(
             source,
             &write,
@@ -1330,7 +1168,7 @@ mod tests {
     #[test]
     fn json_null_empty_collections_unicode_and_integers_are_safe() {
         let t = tool("x", SideEffect::Read);
-        let source = "return {x=function(a) return {response={null=json.null,array=json.array({}),object={},word='雪',n=a.n}} end}";
+        let source = "return function(a) return {response={null=json.null,array=json.array({}),object={},word='雪',n=a.n}} end";
         assert_eq!(
             computed(execute(
                 source,
@@ -1344,7 +1182,7 @@ mod tests {
             serde_json::json!({"null":null,"array":[],"object":{},"word":"雪","n":9223372036854775807i64})
         );
         let error = failed(execute(
-            "return {x=function() return {response=true} end}",
+            "return function() return {response=true} end",
             &t,
             &call(serde_json::json!({"n":9223372036854775808u64})),
             &Map::new(),
@@ -1357,7 +1195,7 @@ mod tests {
     #[test]
     fn sandbox_and_null_are_not_mutable_escape_hatches() {
         let t = tool("x", SideEffect::Read);
-        let source = "return {x=function() return {response=(io==nil and os==nil and package==nil and debug==nil and require==nil and load==nil and pcall==nil and xpcall==nil and coroutine==nil and string.dump==nil and math.random==nil)} end}";
+        let source = "return function() return {response=(io==nil and os==nil and package==nil and debug==nil and require==nil and load==nil and pcall==nil and xpcall==nil and coroutine==nil and string.dump==nil and math.random==nil)} end";
         assert_eq!(
             computed(execute(
                 source,
@@ -1372,7 +1210,7 @@ mod tests {
         );
         assert!(matches!(
             execute(
-                "return {x=function() json.array(json.null); return {response=true} end}",
+                "return function() json.array(json.null); return {response=true} end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1383,7 +1221,7 @@ mod tests {
         ));
         assert!(matches!(
             execute(
-                "return {x=function() json.null.x=1; return {response=true} end}",
+                "return function() json.null.x=1; return {response=true} end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1414,7 +1252,7 @@ mod tests {
         instructions.max_instructions = 100;
         for source in [
             "while true do end; return {}",
-            "return {x=function() while true do end end}",
+            "return function() while true do end end",
         ] {
             assert!(matches!(
                 execute(
@@ -1461,7 +1299,7 @@ mod tests {
         depth.max_value_depth = 8;
         assert!(matches!(
             execute(
-                "return {x=function() local t={}; local p=t; for i=1,20 do local n={}; p.a=n; p=n end; return {response=t} end}",
+                "return function() local t={}; local p=t; for i=1,20 do local n={}; p.a=n; p=n end; return {response=t} end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1473,10 +1311,10 @@ mod tests {
         let mut size = LuaOptions::default();
         size.max_result_bytes = 64;
         for source in [
-            "return {x=function() return {response=string.rep('x', 1000)} end}",
-            "return {x=function() return {response={[1000000000]=true}} end}",
-            "return {x=function() local a={x='1234567890'}; return {response={a,a,a,a,a,a,a,a,a,a,a,a}} end}",
-            "return {x=function() return {response=json.array({[1000000000]=true})} end}",
+            "return function() return {response=string.rep('x', 1000)} end",
+            "return function() return {response={[1000000000]=true}} end",
+            "return function() local a={x='1234567890'}; return {response={a,a,a,a,a,a,a,a,a,a,a,a}} end",
+            "return function() return {response=json.array({[1000000000]=true})} end",
         ] {
             assert!(
                 matches!(
@@ -1503,7 +1341,7 @@ mod tests {
             "write",
             &serde_json::json!({"path":"src/a.txt","content":"alpha\nbeta"}),
         );
-        let source = "return {x=function(a,c) local l=c.workspace.list_dir({path='src'}); local r=c.workspace.read({path='src/a.txt'}); local g=c.workspace.grep({pattern='beta'}); return {response={n=#l.entries,text=r.content,hits=#g.matches}} end}";
+        let source = "return function(a,c) local l=c.workspace.list_dir({path='src'}); local r=c.workspace.read({path='src/a.txt'}); local g=c.workspace.grep({pattern='beta'}); return {response={n=#l.entries,text=r.content,hits=#g.matches}} end";
         let (response, _, _, operations) = computed(execute(
             source,
             &t,
@@ -1521,7 +1359,7 @@ mod tests {
         host.max_host_calls = 1;
         assert!(matches!(
             execute(
-                "return {x=function(a,c) c.workspace.list_dir({}); c.workspace.list_dir({}); return {response=true} end}",
+                "return function(a,c) c.workspace.list_dir({}); c.workspace.list_dir({}); return {response=true} end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1542,9 +1380,9 @@ mod tests {
         );
         workspace.exec(
             "write",
-            &serde_json::json!({"path":PROGRAM_PATH,"content":"private needle"}),
+            &serde_json::json!({"path":".prompt-explore/notes.txt","content":"private needle"}),
         );
-        let source = "return {x=function(a,c) local root=c.workspace.list_dir({path='.'}); local r=c.workspace.read({path='.prompt-explore/tools.lua'}); local g=c.workspace.grep({pattern='private needle'}); local scoped=c.workspace.grep({pattern='needle',path='.prompt-explore'}); local w=c.workspace.write({path='.prompt-explore/blocked.lua',content='no'}); return {response={root=root,read=r,grep=g,scoped=scoped,write=w}} end}";
+        let source = "return function(a,c) local root=c.workspace.list_dir({path='.'}); local r=c.workspace.read({path='.prompt-explore/notes.txt'}); local g=c.workspace.grep({pattern='private needle'}); local scoped=c.workspace.grep({pattern='needle',path='.prompt-explore'}); local w=c.workspace.write({path='.prompt-explore/blocked.txt',content='no'}); return {response={root=root,read=r,grep=g,scoped=scoped,write=w}} end";
         let (response, _, _, operations) = computed(execute(
             source,
             &t,
@@ -1577,7 +1415,7 @@ mod tests {
         let t = tool("x", SideEffect::Read);
         assert!(matches!(
             execute(
-                "return {x=function() leaked=7; return {response=true} end}",
+                "return function() leaked=7; return {response=true} end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1588,7 +1426,7 @@ mod tests {
         ));
         assert_eq!(
             computed(execute(
-                "return {x=function() return {response=(leaked==nil)} end}",
+                "return function() return {response=(leaked==nil)} end",
                 &t,
                 &call(Value::Null),
                 &Map::new(),
@@ -1602,8 +1440,8 @@ mod tests {
             "return {",
             "return 2",
             "return {x=3}",
-            "return {x=function() return nil end}",
-            "return {x=function() return {response=1,state_patch={a=1}} end}",
+            "return function() return nil end",
+            "return function() return {response=1,state_patch={a=1}} end",
         ] {
             assert!(matches!(
                 execute(

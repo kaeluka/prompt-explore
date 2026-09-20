@@ -10,7 +10,7 @@ use serde_json::json;
 
 use prompt_explore::llm::ProviderClient;
 use prompt_explore::model::*;
-use prompt_explore::simulate::{Runner, RunnerOptions};
+use prompt_explore::simulate::{Runner, RunnerOptions, ScenarioRuntime, Workspace};
 
 const MODEL: &str = "glm-5.2";
 
@@ -95,11 +95,11 @@ async fn main() {
         client,
         MODEL,
         None,
-        prompt_explore::simulate::Workspace::empty(),
         RunnerOptions::default(),
     );
+    let runtime = ScenarioRuntime::from_put(&put, scenario.clone(), Workspace::empty());
     let trace = runner
-        .run(&put, &scenario, &budget, None)
+        .run(&put, &runtime, &budget, None, None)
         .await
         .expect("run failed");
 

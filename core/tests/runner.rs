@@ -7,7 +7,13 @@ use serde_json::json;
 
 use prompt_explore::llm::{ChatResponse, MockLlmClient, ToolCallRequest, Usage};
 use prompt_explore::model::*;
-use prompt_explore::simulate::{Runner, RunnerOptions, Workspace};
+use prompt_explore::simulate::{Runner, RunnerOptions, ScenarioRuntime, Workspace};
+
+/// The runtime projection of a scenario: for these tests the tool contracts
+/// come from the prompt under test and no Lua implementation is supplied.
+fn runtime(put: &PromptUnderTest, scenario: Scenario, workspace: Workspace) -> ScenarioRuntime {
+    ScenarioRuntime::from_put(put, scenario, workspace)
+}
 
 fn support_put() -> PromptUnderTest {
     PromptUnderTest {
@@ -84,11 +90,16 @@ async fn tool_call_loop_runs_and_mutates_state() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget(), None)
+        .run(
+            &support_put(),
+            &runtime(&support_put(), scenario(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -129,12 +140,17 @@ async fn empty_text_is_a_final_completion_not_a_cap() {
         Arc::new(MockLlmClient::scripted(vec![])),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
 
     let trace = runner
-        .run(&put, &scenario(), &budget(), None)
+        .run(
+            &put,
+            &runtime(&put, scenario(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(trace.turns.len(), 1);
@@ -156,20 +172,21 @@ async fn zero_step_budget_stops_without_calling_the_put() {
         Arc::new(MockLlmClient::scripted(vec![])),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
+    let put = PromptUnderTest {
+        tools: vec![],
+        ..support_put()
+    };
     let trace = runner
         .run(
-            &PromptUnderTest {
-                tools: vec![],
-                ..support_put()
-            },
-            &scenario(),
+            &put,
+            &runtime(&put, scenario(), Workspace::empty()),
             &Budget {
                 max_steps_per_trace: 0,
                 max_tokens: None,
             },
+            None,
             None,
         )
         .await
@@ -207,17 +224,17 @@ async fn token_cutoff_preserves_unaccepted_completion_without_simulating_tools()
         Arc::new(MockLlmClient::scripted(vec![])),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
     let trace = runner
         .run(
             &put,
-            &scenario(),
+            &runtime(&put, scenario(), Workspace::empty()),
             &Budget {
                 max_steps_per_trace: 1,
                 max_tokens: Some(4),
             },
+            None,
             None,
         )
         .await
@@ -273,11 +290,16 @@ async fn invalid_arguments_are_fed_back_without_simulator_call() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&support_put(), &scenario(), &budget(), None)
+        .run(
+            &support_put(),
+            &runtime(&support_put(), scenario(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -309,12 +331,17 @@ async fn runner_options_reach_put_requests() {
         Arc::new(MockLlmClient::scripted(vec![])),
         "sim-model",
         None,
-        Workspace::empty(),
         options,
     );
 
     runner
-        .run(&put, &scenario(), &budget(), None)
+        .run(
+            &put,
+            &runtime(&put, scenario(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -343,11 +370,16 @@ async fn empty_tool_array_means_single_shot() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
     let trace = runner
-        .run(&put, &scenario(), &budget(), None)
+        .run(
+            &put,
+            &runtime(&put, scenario(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -403,7 +435,6 @@ async fn failed_sibling_keeps_completed_exchanges_in_one_progress_turn() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
     let progress = Arc::new(Mutex::new(RunProgress::default()));
@@ -411,8 +442,9 @@ async fn failed_sibling_keeps_completed_exchanges_in_one_progress_turn() {
     let error = runner
         .run(
             &support_put(),
-            &scenario(),
+            &runtime(&support_put(), scenario(), Workspace::empty()),
             &budget(),
+            None,
             Some(progress.clone()),
         )
         .await
@@ -509,17 +541,17 @@ async fn multi_tool_completion_is_one_atomic_turn() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
     let trace = runner
         .run(
             &support_put(),
-            &scenario(),
+            &runtime(&support_put(), scenario(), Workspace::empty()),
             &Budget {
                 max_steps_per_trace: 1,
                 max_tokens: None,
             },
+            None,
             None,
         )
         .await

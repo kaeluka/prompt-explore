@@ -13,4 +13,5 @@ pub mod frontier;
 pub mod generate;
 pub mod llm;
 pub mod model;
+pub mod scenario;
 pub mod simulate;

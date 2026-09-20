@@ -7,6 +7,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::model::scenario::ToolImplementation;
+
 /// One operation the tool SIMULATOR performed against its simulation
 /// workspace while rendering a tool response (e.g. it read a file, or
 /// grepped, before answering). Supporting provenance, NOT the PUT observation:
@@ -23,31 +25,6 @@ pub struct WorkspaceOp {
     pub result: Value,
 }
 
-/// A generated executable simulation, not an oracle. The narrative remains
-/// ground truth; the caller judges whether this code implements it faithfully.
-/// Code may be specialized during setup or later LLM fallbacks. All revisions
-/// are retained so each exchange identifies the exact implementation it tried.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct SimulationProgram {
-    pub path: String,
-    /// Zero-based revisions, including the initial fallback-only module.
-    pub revisions: Vec<ProgramRevision>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub setup_workspace_ops: Vec<WorkspaceOp>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup_thinking: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ProgramRevision {
-    /// Lua source, displayed as data, never executed by the browser. If error
-    /// reports an oversized/non-UTF8 file this is a bounded preview, not an
-    /// executable replacement; that revision always falls back to the LLM.
-    pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
 /// Evidence of a Lua attempt before a tool response. Computed means executed,
 /// NOT faithful or correct: code can return an invalid-path error or false-empty
 /// search successfully. Inspect ToolExchange.response against the tool contract.
@@ -56,7 +33,11 @@ pub struct ProgramRevision {
 /// exchange's ordinary workspace_ops instead.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LuaExecutionRecord {
-    pub program_revision: usize,
+    /// The tool whose supplied implementation was attempted.
+    pub tool: String,
+    /// SHA-256 of the exact source that ran, matching the scenario's
+    /// `implementations` entry for this tool.
+    pub source_hash: String,
     pub outcome: LuaOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -73,15 +54,15 @@ pub enum LuaOutcome {
 }
 
 /// The LLM phase of the single scenario currently being run. Exposed so a
-/// reader can see live work rather than a bare "running" status.
+/// reader can see live work rather than a bare "running" status. There is no
+/// preparation phase: Lua implementations are authored by the caller and
+/// supplied with the scenario, never generated during a run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
     /// The simulator is choosing concrete values from the input domain.
     #[default]
     ResolvingInputs,
-    /// The optional Lua simulator is preparing its program.
-    PreparingTools,
     /// The prompt under test is executing its conversation/tool loop.
     PutLoop,
 }
@@ -106,7 +87,6 @@ pub enum RunStopReason {
 pub struct RunTiming {
     pub elapsed_ms: u64,
     pub resolving_inputs_ms: u64,
-    pub preparing_tools_ms: u64,
     pub put_loop_ms: u64,
 }
 
@@ -152,8 +132,8 @@ struct RunClock {
 }
 
 /// Live progress for one scenario. The runner updates this flat value as work
-/// proceeds; if the run fails, already resolved inputs, program revisions, and
-/// completed turns remain available as evidence.
+/// proceeds; if the run fails, already resolved inputs, supplied tool
+/// implementations, and completed turns remain available as evidence.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunProgress {
     /// The current LLM phase for this scenario.
@@ -162,9 +142,11 @@ pub struct RunProgress {
     /// after `finish()` it is frozen for completed and failed runs.
     #[serde(default)]
     pub execution: RunExecution,
-    /// Generated Lua program and revisions, when optional Lua simulation is enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub simulation_program: Option<SimulationProgram>,
+    /// The caller-supplied Lua implementations this run may execute, with the
+    /// exact source hashes each exchange's `lua_execution` refers to. Empty
+    /// when every tool is rendered by the simulator LLM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implementations: Vec<ToolImplementation>,
     /// Completed PUT model turns accumulated so far. If a sibling tool call
     /// fails, the final turn may contain only that completion's successfully
     /// rendered exchanges; no failed exchange is invented.
@@ -190,7 +172,7 @@ impl RunProgress {
         let now = Instant::now();
         self.phase = RunPhase::ResolvingInputs;
         self.execution = RunExecution::default();
-        self.simulation_program = None;
+        self.implementations.clear();
         self.turns.clear();
         self.user_message = user_message;
         self.resolved_inputs.clear();
@@ -259,13 +241,6 @@ impl RunProgress {
                     .resolving_inputs_ms
                     .saturating_add(phase_ms)
             }
-            RunPhase::PreparingTools => {
-                self.execution.timing.preparing_tools_ms = self
-                    .execution
-                    .timing
-                    .preparing_tools_ms
-                    .saturating_add(phase_ms)
-            }
             RunPhase::PutLoop => {
                 self.execution.timing.put_loop_ms =
                     self.execution.timing.put_loop_ms.saturating_add(phase_ms)
@@ -273,8 +248,10 @@ impl RunProgress {
         }
     }
 
-    pub fn set_program(&mut self, program: SimulationProgram) {
-        self.simulation_program = Some(program);
+    /// Record the scenario's supplied implementations so a live reader sees
+    /// what code may serve responses, and each exchange can name its revision.
+    pub fn set_implementations(&mut self, implementations: Vec<ToolImplementation>) {
+        self.implementations = implementations;
     }
 
     /// Append one completed PUT model turn.
@@ -455,9 +432,10 @@ pub struct Trace {
     /// Defaults when deserializing older trace data that predates this field.
     #[serde(default)]
     pub execution: RunExecution,
-    /// Generated simulation code and its revision history, when enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub simulation_program: Option<SimulationProgram>,
+    /// The caller-supplied Lua implementations available during this trace,
+    /// with source hashes. Empty when all tools are LLM-rendered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implementations: Vec<ToolImplementation>,
     /// The trace grouped by actual PUT model completion. Multi-tool calls are
     /// nested in one turn instead of appearing as several sequential turns.
     pub turns: Vec<TraceTurn>,

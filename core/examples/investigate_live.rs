@@ -11,7 +11,7 @@ use serde_json::json;
 use prompt_explore::generate::{InvestigateOutcome, Investigator, LlmRole};
 use prompt_explore::llm::ProviderClient;
 use prompt_explore::model::*;
-use prompt_explore::simulate::{RunnerOptions, render_transcript};
+use prompt_explore::simulate::{RunnerOptions, ScenarioRuntime, Workspace, render_transcript};
 
 const MODEL: &str = "glm-5.2";
 
@@ -97,16 +97,12 @@ async fn main() {
     let investigator = Investigator {
         runner_put: role.clone(),
         runner_sim: role.clone(),
-        workspace_seed: prompt_explore::simulate::Workspace::empty(),
         runner_options: RunnerOptions::default(),
     };
 
-    let InvestigateOutcome {
-        scenario,
-        trace,
-        failure,
-    } = investigator
-        .investigate(&investigation, &put, &scenario, None)
+    let runtime = ScenarioRuntime::from_put(&put, scenario.clone(), Workspace::empty());
+    let InvestigateOutcome { trace, failure } = investigator
+        .investigate(&investigation, &put, &runtime, None, None)
         .await;
 
     println!("\n=== SCENARIO ===\n{}", scenario.world);

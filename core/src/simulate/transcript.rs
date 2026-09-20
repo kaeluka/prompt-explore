@@ -7,23 +7,11 @@ use crate::model::simulation::Trace;
 
 pub fn render_transcript(trace: &Trace) -> String {
     let mut out = String::new();
-    if let Some(program) = &trace.simulation_program {
-        out.push_str(&format!("--- simulation program: {} ---\n", program.path));
-        for (revision, source) in program.revisions.iter().enumerate() {
-            out.push_str(&format!("revision {revision}:\n{}\n", source.source));
-            if let Some(error) = &source.error {
-                out.push_str(&format!("program error: {error}\n"));
-            }
-        }
-        if !program.setup_workspace_ops.is_empty() {
-            out.push_str(&format!(
-                "setup workspace operations: {}\n",
-                serde_json::to_string(&program.setup_workspace_ops).unwrap_or_default()
-            ));
-        }
-        if let Some(thinking) = &program.setup_thinking {
-            out.push_str(&format!("setup thinking: {thinking}\n"));
-        }
+    for implementation in &trace.implementations {
+        out.push_str(&format!(
+            "--- tool implementation: {} ({}) ---\n{}\n",
+            implementation.tool, implementation.source_hash, implementation.source
+        ));
     }
     for (i, turn) in trace.turns.iter().enumerate() {
         out.push_str(&format!("--- PUT turn {} ---\n", i + 1));

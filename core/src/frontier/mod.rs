@@ -395,12 +395,6 @@ fn resolve_reserved(snapshot: &InvestigationSnapshot, axis: &str) -> Option<f64>
                 .as_ref()
                 .map(|t| t.resolving_inputs_ms as f64);
         }
-        "preparing_tools_ms" => {
-            return snapshot
-                .timing
-                .as_ref()
-                .map(|t| t.preparing_tools_ms as f64);
-        }
         "put_loop_ms" => return snapshot.timing.as_ref().map(|t| t.put_loop_ms as f64),
         _ => {}
     }

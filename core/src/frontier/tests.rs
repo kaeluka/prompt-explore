@@ -9,13 +9,11 @@ fn elapsed_axes_are_measured_without_usage_or_caller_grades() {
     snapshot.timing = Some(crate::model::simulation::RunTiming {
         elapsed_ms: 240,
         resolving_inputs_ms: 10,
-        preparing_tools_ms: 80,
         put_loop_ms: 150,
     });
     for (name, expected) in [
         ("elapsed_ms", 240.0),
         ("resolving_inputs_ms", 10.0),
-        ("preparing_tools_ms", 80.0),
         ("put_loop_ms", 150.0),
     ] {
         assert_eq!(reserved_direction(name), Some(BetterDirection::Lower));

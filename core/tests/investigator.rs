@@ -9,7 +9,7 @@ use prompt_explore::llm::{
     ChatRequest, ChatResponse, LlmClient, LlmError, MockLlmClient, ToolCallRequest,
 };
 use prompt_explore::model::*;
-use prompt_explore::simulate::{RunnerOptions, Workspace};
+use prompt_explore::simulate::{RunnerOptions, ScenarioRuntime, Workspace};
 use serde_json::json;
 
 fn investigation() -> Investigation {
@@ -55,6 +55,10 @@ fn scenario() -> Scenario {
     }
 }
 
+fn runtime(put: &PromptUnderTest, scenario: Scenario) -> ScenarioRuntime {
+    ScenarioRuntime::from_put(put, scenario, Workspace::empty())
+}
+
 fn investigator(put_client: Arc<dyn LlmClient>, sim_client: Arc<dyn LlmClient>) -> Investigator {
     Investigator {
         runner_put: LlmRole {
@@ -67,7 +71,6 @@ fn investigator(put_client: Arc<dyn LlmClient>, sim_client: Arc<dyn LlmClient>) 
             model: "sim".into(),
             thinking_level: None,
         },
-        workspace_seed: Workspace::empty(),
         runner_options: RunnerOptions::default(),
     }
 }
@@ -80,7 +83,6 @@ fn progress_snapshot_uses_a_monotonic_clock_and_finish_freezes_it() {
     let resolving = progress.snapshot();
     assert!(resolving.execution.timing.elapsed_ms >= 1);
     assert!(resolving.execution.timing.resolving_inputs_ms >= 1);
-    assert_eq!(resolving.execution.timing.preparing_tools_ms, 0);
 
     progress.set_phase(RunPhase::PutLoop);
     std::thread::sleep(Duration::from_millis(2));
@@ -132,10 +134,15 @@ async fn investigate_returns_one_trace_and_flat_live_progress() {
     let progress = Arc::new(Mutex::new(RunProgress::default()));
 
     let outcome = investigator(put_client, Arc::new(MockLlmClient::scripted(vec![])))
-        .investigate(&investigation(), &put(), &scenario, Some(progress.clone()))
+        .investigate(
+            &investigation(),
+            &put(),
+            &runtime(&put(), scenario.clone()),
+            None,
+            Some(progress.clone()),
+        )
         .await;
 
-    assert_eq!(outcome.scenario.world, scenario.world);
     assert!(outcome.failure.is_none());
     assert_eq!(outcome.trace.unwrap().turns.len(), 1);
     let progress = progress.lock().unwrap();
@@ -187,7 +194,8 @@ async fn investigate_failure_keeps_inputs_and_completed_turns() {
         .investigate(
             &investigation(),
             &probe_put(),
-            &scenario,
+            &runtime(&probe_put(), scenario.clone()),
+            None,
             Some(progress.clone()),
         )
         .await;
@@ -228,10 +236,15 @@ async fn investigate_captures_runner_task_panics_as_failure_evidence() {
         Arc::new(PanicClient),
         Arc::new(MockLlmClient::scripted(vec![])),
     )
-    .investigate(&investigation(), &put(), &scenario, Some(progress.clone()))
+    .investigate(
+        &investigation(),
+        &put(),
+        &runtime(&put(), scenario.clone()),
+        None,
+        Some(progress.clone()),
+    )
     .await;
 
-    assert_eq!(outcome.scenario.world, scenario.world);
     assert!(outcome.trace.is_none());
     let failure = outcome.failure.expect("panic becomes one failure");
     assert_eq!(failure.stage, "runner");
