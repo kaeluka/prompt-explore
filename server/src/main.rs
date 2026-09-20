@@ -607,14 +607,26 @@ struct InvestigationPatchView {
                        judgments now reduces cherry-picking and lets the user independently inspect \
                        your comparison in the dashboard. Neither numbers nor a frontier prove quality.
  \
-                       First agree what better means WITH the user: the quality axes, their scales, \
-                       acceptable tradeoffs, and treatment of missing answers. If the user already \
-                       supplied an acceptance rubric, use it; otherwise propose concrete metrics and \
-                       ask for confirmation before calling them agreed. For a security audit, recall \
-                       (true paths reported / known true paths) and precision (true paths reported / \
-                       all reported paths) separate omissions from false accusations. Define the \
-                       empty-report case too. Keep the rubric stable and store it in assessment.rubric; \
-                       use measured put_cost_usd or elapsed_ms alongside quality, not instead of it.
+                       BEFORE RUNNING THE EXPERIMENT, agree what better means WITH the user: the \
+                       quality axes, their scales, acceptable tradeoffs, which delivered outputs count, \
+                       and the outcome of a NON-DELIVERING attempt (for example, empty output or a \
+                       tool loop capped before delivering a review). If the user already supplied an \
+                       acceptance rubric, use it; otherwise propose concrete metrics and ask for \
+                       confirmation before calling them agreed. Do not wait for results to decide \
+                       whether non-deliveries count, or silently omit them from the recommendation. \
+                       Keep the rubric stable and store it in assessment.rubric; use measured \
+                       put_cost_usd or elapsed_ms alongside quality, not instead of it.
+ \
+                       Example caller-owned rubric for an audit with known positive findings: \
+                       delivered_recall = real actionable paths reported in the delivered review / \
+                       known true paths; no delivered findings means 0. Precision = real warnings / \
+                       emitted warnings; with no warnings it is undefined, not automatically 0 or 1. \
+                       Optionally track usable_report separately (1 for a usable review, otherwise 0, \
+                       under an agreed definition; nonempty text alone is not sufficient). Two \
+                       comparable completed attempts, one with full delivered recall and one with \
+                       no review, have mean delivered_recall 0.5, not 1.0. A genuinely ungradable \
+                       trace, such as one with unreliable simulation evidence, instead needs an \
+                       explanatory assessment and absent grades, not an invented failure score.
  \
                        For EACH completed investigation: (1) GET /api/investigations/{id}/evidence \
                        and read the actual conversation, stop reason and simulation fidelity. \
@@ -631,7 +643,12 @@ struct InvestigationPatchView {
  \
                        Then SEND POST /api/frontier and READ its returned points before the next \
                        prompt edit. Example request: \
-                       {\"group_by\":[\"put_model\",\"put_thinking\",\"prompt_hash\"],\"axes\":[{\"name\":\"recall\",\"better\":\"higher\"},{\"name\":\"precision\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. \
+                       {\"group_by\":[\"put_model\",\"put_thinking\",\"prompt_hash\"],\"axes\":[{\"name\":\"delivered_recall\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. \
+                       Every requested axis must exist on a run for it to contribute. Adding \
+                       undefined precision to this primary comparison would exclude the no-review \
+                       attempt again: inspect precision in a separate, explicitly conditional view \
+                       and report its denominator. Execution-failed jobs remain excluded even when \
+                       graded; account for them explicitly in the recommendation too. \
                        Inspect points[].values, included, excluded, preliminary, on_frontier and \
                        dominated_by. Missing requested grades remain explicit backlog; measured-only \
                        frontiers need no grades but cannot establish quality. Pending means no common \
