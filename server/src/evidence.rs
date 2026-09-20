@@ -14,6 +14,13 @@ use super::*;
 /// from a budget cutoff or runtime failure; `status=done` alone does not. Full
 /// responses, model/simulator reasoning, workspace operations and Lua source are
 /// all preserved here. No semantic compression or inferred correctness flags.
+///
+/// Reading this is only half the step. The other half is recording what you
+/// conclude: PATCH the id with `grades` for the axes you and your user agreed on and
+/// an `assessment` naming the rubric and the turn/exchange your judgment rests on.
+/// A trace that was read but not judged cannot be compared with the next prompt
+/// version (POST /api/frontier averages graded runs only), so the next prompt change
+/// becomes a guess.
 #[derive(Serialize, utoipa::ToSchema)]
 pub(super) struct InvestigationEvidence {
     id: String,

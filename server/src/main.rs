@@ -596,6 +596,36 @@ struct InvestigationPatchView {
                        `reason` is advisory framing for whoever reads the traces.
 
  \
+                       GRADING AND THE FRONTIER ARE THE METHOD, NOT A REPORTING NICETY. \
+                       Your job is not to read one trace and feel that the prompt improved. It is to \
+                       run a corpus, judge every run the same way, and compare the runs. That only \
+                       works if the judgment is RECORDED, because memory is not a corpus: the \
+                       spectacular failure is vivid, the three runs that quietly drifted are not, and \
+                       re-reading traces while searching for the conclusion you already expect is how \
+                       confirmation bias gets in. So: (a) `grades` (PATCH /api/investigations/{id}) \
+                       are how a run becomes comparable — they are YOUR judgment stored in the \
+                       product, never a harness verdict, and an UNGRADED run is invisible to the \
+                       frontier and to your user, because there is nothing to compare; (b) POST \
+                       /api/frontier is the table of what you actually compared, across the whole \
+                       corpus at once; (c) reading it is how you report to your user, who can then \
+                       see the comparison themselves instead of trusting your summary.
+ \
+                       DEFINE THE METRIC(S) WITH YOUR USER BEFORE SPENDING RUNS. Ask what \"better\" \
+                       means — usually more than one thing at once. Prefer axes that can be checked \
+                       against the evidence (for a security audit, `found_all`: share of the planted \
+                       defects the run reported, 0..1; `precision`: 1 minus the share of reported \
+                       paths that are not real) over a vague `quality`. Cost and effort are already \
+                       measured for you (`put_cost_usd`, `steps_per_trace_avg`, `elapsed_ms`). \
+                       Measured axes are harness-computed and cannot be graded; judged axes are \
+                       yours to name, and `assessment.rubric` is where the scale is written down so \
+                       the next run — or the next reader — applies the same standard. Keep the axes \
+                       stable across a corpus: if the metric moves, the comparison dies.
+ \
+                       NEVER UPDATE A PROMPT ON IMPRESSION. The order is: run a batch, read the \
+                       traces, grade EVERY run against the agreed metric, read the frontier, and \
+                       only then change the prompt. The frontier is what distinguishes \"this change \
+                       helped everywhere\" from \"it helped the two runs I happen to remember\".
+ \
                        WORKED LOOP (the caller does every judgment):
  \
                        1. POST /api/scenarios registers the world: `world`, `input_domain`, \
@@ -643,11 +673,14 @@ struct InvestigationPatchView {
                        that the response is faithful. A final correct answer can hide invalid \
                        root listings, false-empty searches, or invented files.
  \
-                       7. Record the judgment in the product: PATCH the id with grades and \
-                       assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. \
+                       7. Record the judgment in the product. This is the step that makes the run \
+                       usable, not paperwork: PATCH the id with `grades` (one number per agreed axis) and \
+                       `assessment` (summary, the `rubric` scale, and `evidence` entries naming the \
+                       turn/exchange the judgment rests on). Example: \
+                       {\"grades\":{\"found_all\":0.5,\"precision\":1.0},\"assessment\":{\"summary\":\"Found three of four planted paths; missed the sanitizer bypass\",\"rubric\":\"found_all: share of planted paths reported, 0..1; precision: 1 - share of reported paths that are not real\",\"evidence\":[{\"turn\":1,\"exchange\":0,\"note\":\"cleared the highlight helper after reading stripTags; the surviving unclosed-tag payload never appears in the trace\"}]}}. \
                        Clear stale grades in the SAME PATCH when an assessment invalidates them \
-                       (grades:{\"quality\":null}). Grades are caller-owned; the harness stores them \
-                       and never interprets them.
+                       (grades:{\"found_all\":null}). Grades are caller-owned; the harness stores and \
+                       compares them and NEVER substitutes a verdict of its own. \
  \
                        8. Fixing a simulation after traces exist: the scenario is pinned, so \
                        POST /api/scenarios/{id}/fork (optionally with a `correction` note naming \
@@ -656,12 +689,20 @@ struct InvestigationPatchView {
                        scenario_revision and scenario_definition_hash, so you can tell exactly \
                        which traces ran the old definition and re-run only those.
  \
-                       9. POST /api/frontier with explicit grouping for the variables you compare \
-                       (attributes include scenario_id/scenario_revision/scenario_hash, \
-                       simulation_backend, step_budget and token_budget). All stored jobs remain \
-                       candidates; a card filter never limits candidacy. The caller owns corpus \
-                       comparability and grade scales. Share state via URL-encoded query values \
-                       (group_by, axes, attributes) — never a bearer token.
+                       9. READ THE FRONTIER BEFORE YOU CHANGE THE PROMPT. POST /api/frontier with \
+                       `group_by` naming the variables you are comparing (put_model, put_thinking, \
+                       prompt_hash, or your own labels such as a prompt-version attribute; the reserved \
+                       provenance attributes also include scenario_id/scenario_revision/scenario_hash, \
+                       simulation_backend, step_budget and token_budget) and `axes` naming the metrics you \
+                       agreed with your user (your judged grades plus measured ones like put_cost_usd, \
+                       steps_per_trace_avg, elapsed_ms). This is the corpus-wide table of what you \
+                       compared, not a chart: a group with no coordinates means runs there are still \
+                       ungraded — that backlog is a to-do list, not a result, and a group marked \
+                       preliminary (some members excluded) must not be read as a win. All stored jobs \
+                       remain candidates; a card filter never limits candidacy. The caller owns corpus \
+                       comparability and grade scales. After reading it — and only then — change the \
+                       prompt. Share state via URL-encoded query values (group_by, axes, attributes) — \
+                       never a bearer token. \
  \
                        Archiving: scenarios, investigations, grades and probes are all in \
                        memory and lost on restart. GET /api/scenarios/{id}/workspace exports the \
@@ -2189,11 +2230,18 @@ async fn get_investigation(
     }))
 }
 
-/// Record caller judgment and campaign metadata on an investigation. `grades`
-/// is caller-owned numeric judgment (for example `tone_of_voice: 0.8`);
-/// `attributes` is caller-owned string metadata (for example `label: "baseline"`).
-/// The harness records both and never interprets a grade. Read traces before
-/// grading: the caller, not a mechanical extractor, owns that semantic work.
+/// Record caller judgment and campaign metadata on an investigation. This is how a run
+/// becomes COMPARABLE: `POST /api/frontier` averages graded runs only, so an ungraded
+/// run is excluded from every group — invisible to your comparison and to the user
+/// reading the dashboard, however good its trace was.
+///
+/// `grades` is caller-owned numeric judgment, one number per axis you and your user
+/// agreed on (for example `found_all: 0.5`, `precision: 1.0`, `tone_of_voice: 0.8`);
+/// `attributes` is caller-owned string metadata (for example `label: "baseline"`, or a
+/// prompt-version tag you group by later). The harness records both and never
+/// interprets a grade. Grade the run against the EVIDENCE — the tool responses it
+/// actually received, not the plausibility of its final answer. `assessment` is where
+/// you say why: the rubric scale and the turn/exchange the judgment rests on.
 ///
 /// Both maps have merge semantics: a number/string sets or overwrites and
 /// JSON `null` deletes that key. `assessment` is caller-owned summary, rubric and
@@ -2447,16 +2495,28 @@ struct FrontierQuery {
     format: Option<String>,
 }
 
-/// Compute a grouped Pareto frontier over ALL investigations currently held by
-/// this server. There is no investigation-selection list: `group_by` chooses
-/// the provenance/campaign attributes that define one candidate point (default:
-/// put model, thinking setting, and behavior-only prompt hash). Each point
-/// retains its member ids and explicit exclusions. Running/failed/ungraded
-/// members are successful evidence, not a 422: poll jobs, PATCH grades, then
-/// POST this same request again to update preliminary coordinates. A failed
-/// run (`result.failure` is present and `result.trace` is null) is a failed
-/// exclusion; a done job contributes its single trace. Judging trace adequacy
-/// remains the caller's responsibility.
+/// The comparison table for a prompt-optimization loop. Read it BEFORE changing a
+/// prompt: it answers "did this change help across the corpus, or only in the runs I
+/// remember?" — a question a handful of re-read traces cannot answer without
+/// confirmation bias.
+///
+/// There is no investigation-selection list: every investigation the server holds is
+/// a candidate, and a card filter never limits candidacy. `group_by` chooses the
+/// provenance/campaign attributes that define one candidate point (default: put
+/// model, thinking setting, and behavior-only prompt hash), so two runs share a group
+/// exactly when they differ in nothing you asked to compare. Coordinates average the
+/// requested `axes` over the group's completed, fully graded members; measured axes
+/// (tokens, cost, steps, durations) are harness-computed, judged axes are the
+/// caller's PATCHed grades.
+///
+/// A group with no coordinates is NOT a result: some member is still running, failed,
+/// or UNGRADED. That backlog is your to-do list — poll the jobs, PATCH the missing
+/// grades (including any your assessment invalidated), then submit the same request
+/// again. A group whose members are partly excluded is `preliminary` and must not be
+/// read as a win. A failed run (`result.failure` present, `result.trace` null) is a
+/// failed exclusion; a done job contributes its single trace. Judging trace adequacy
+/// remains the caller's responsibility, and the harness never substitutes a verdict
+/// of its own.
 #[utoipa::path(
     post,
     path = "/api/frontier",
