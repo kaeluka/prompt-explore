@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Inspect prompt-explore investigations, scenario simulations, caller assessments, and grouped Pareto frontiers.">
 <!-- Service description: the OpenAPI spec. RFC 8631 rel="service-desc",
      also surfaced via a Link header on every response. -->
 <link rel="service-desc" href="/openapi.json" title="OpenAPI spec">
@@ -13,8 +14,8 @@
     color-scheme: light;
     /* Solarized: role/difference hues have matched perceptual lightness;
        red/green/yellow are reserved for outcome labels. */
-    --bg: #fdf6e3; --panel: #eee8d5; --panel-2: #fdf6e3; --border: #93a1a1;
-    --text: #586e75; --text-dim: #657b83; --accent: #268bd2; --accent-2: #2176b5;
+    --bg: #f6f8f7; --panel: #ffffff; --panel-2: #f1f4f3; --border: #d7dfdd;
+    --text: #203033; --text-dim: #68797c; --accent: #087b80; --accent-2: #07666a;
     --accent-text: #268bd2; --accent-soft: rgba(38,139,210,0.10); --accent-border: rgba(38,139,210,0.38);
     --put: #268bd2; --put-soft: rgba(38,139,210,0.10); --put-border: rgba(38,139,210,0.38);
     --sim: #6c71c4; --sim-soft: rgba(108,113,196,0.10); --sim-border: rgba(108,113,196,0.38);
@@ -26,8 +27,8 @@
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #002b36; --panel: #073642; --panel-2: #002b36; --border: #586e75;
-    --text: #93a1a1; --text-dim: #839496; --accent: #268bd2; --accent-2: #2f9ee9;
+    --bg: #101718; --panel: #172123; --panel-2: #111a1c; --border: #334245;
+    --text: #e4ecea; --text-dim: #93a4a6; --accent: #49aeb2; --accent-2: #6bc2c5;
     --accent-text: #268bd2; --accent-soft: rgba(38,139,210,0.14); --accent-border: rgba(38,139,210,0.45);
     --put: #268bd2; --put-soft: rgba(38,139,210,0.14); --put-border: rgba(38,139,210,0.45);
     --sim: #6c71c4; --sim-soft: rgba(108,113,196,0.14); --sim-border: rgba(108,113,196,0.45);
@@ -38,19 +39,16 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.55; }
-  /* The standard 760px plot plus one complete legend column needs roughly
-     1100px after card padding. Keep ordinary labels visible without making the
-     user discover a horizontal scrollbar; genuinely long values still scroll
-     inside .frontier-svg rather than being truncated. */
-  .wrap { max-width: 1240px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
-  header { display: flex; align-items: baseline; gap: 0.7rem; margin-bottom: 1.2rem; flex-wrap: wrap; }
-  header h1 { font-size: 1.15rem; margin: 0; }
-  header .sub { color: var(--text-dim); font-size: 0.85rem; }
-  header .auto { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
-  .meta { color: var(--text-dim); font-size: 0.85rem; }
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.45; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  .wrap { max-width: 1460px; margin: 0 auto; padding: 0 1.5rem 4rem; }
+  header { min-height: 58px; display: flex; align-items: center; gap: 0.8rem; border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 1rem; margin: 0; letter-spacing: -0.015em; }
+  header .sub { color: var(--text-dim); font-size: 0.78rem; }
+  header .auto { margin-left: auto; display: flex; align-items: center; gap: 0.35rem; }
+  .meta { color: var(--text-dim); font-size: 0.78rem; }
   .card { background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 1rem 1.1rem; margin: 0.7rem 0; }
+    border-radius: 6px; padding: 1rem 1.1rem; margin: 0.7rem 0; }
   .card.enter { animation: card-in 0.24s ease-out; }
   @keyframes card-in {
     from { opacity: 0; transform: translateY(14px); }
@@ -75,9 +73,10 @@
     animation: spin 0.8s linear infinite; vertical-align: -2px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .empty { color: var(--text-dim); text-align: center; padding: 3rem 0; }
-  details { margin-top: 0.4rem; }
-  summary { cursor: pointer; color: var(--text-dim); font-size: 0.84rem; user-select: none; }
+  details { margin-top: 0.35rem; }
+  summary { cursor: pointer; color: var(--text-dim); font-size: 0.82rem; user-select: none; }
   summary:hover { color: var(--text); }
+  details[open] > summary { color: var(--text); }
   .scen { border-left: 2px solid var(--border); padding-left: 0.8rem; margin: 0.6rem 0; }
   .scen-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .scen-id { font-family: var(--mono); font-size: 0.82rem; }
@@ -116,10 +115,11 @@
      the model's inner voice, distinct from spoken output. */
   .bubble .body.think { font-style: italic; color: var(--text-dim); }
   .note { color: var(--amber); font-size: 0.82rem; }
-  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 0.3rem 0.7rem; cursor: pointer; font-size: 0.8rem; }
-  button:hover { border-color: var(--accent); }
-  .toggle { font-size: 0.78rem; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 0.32rem 0.65rem; cursor: pointer; font-size: 0.78rem; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .toggle { font-size: 0.75rem; }
   /* Solarized role hues distinguish sources without implying preference. */
   .usage-line { margin-top: 0.15rem; }
   .uchip { display: inline-block; font-size: 0.66rem; font-weight: 700; padding: 0.06rem 0.4rem;
@@ -132,8 +132,8 @@
   .wsop { margin: 0.2rem 0; }
   /* Grades editor + frontier panel */
   input[type=text], input[type=number], select, textarea {
-    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 0.22rem 0.5rem; font-size: 0.8rem; font-family: var(--mono); }
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 0.3rem 0.5rem; font-size: 0.78rem; font-family: inherit; }
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
   textarea { width: 100%; min-height: 4.5em; resize: vertical; }
   .evidence-primary { border-left: 3px solid var(--put-border); padding-left: .45rem; }
@@ -166,18 +166,21 @@
   .ptable .dom { color: var(--text-dim); }
   .ptable .nd { color: var(--green); font-weight: 700; }
   .frontier-svg {
-    /* Inherited by the inline SVG; no server request needed on theme changes.
-       Keep point hues stable while adapting surfaces, text, grid and outlines. */
-    --frontier-page: var(--panel); --frontier-panel: var(--panel-2);
+    /* Inherited by the inline SVG; no server request needed on theme changes. */
+    --frontier-page: var(--panel); --frontier-panel: var(--panel);
     --frontier-label: var(--text); --frontier-tick: var(--text-dim);
     --frontier-dim-label: var(--text-dim); --frontier-grid: var(--border);
-    margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 8px; overflow: auto;
+    margin-top: 0.8rem; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: auto;
   }
   .frontier-svg svg { display: block; }
   /* Cross-linking is presentation only: group ids and arithmetic remain the
      frontier API's. The DOM styles are applied after the server SVG arrives. */
   .frontier-svg .frontier-group.pe-linked-active { opacity: 1 !important; }
   .frontier-svg .frontier-group.pe-linked-muted { opacity: .18 !important; }
+  /* Pending groups have no coordinates. Their complete membership remains in
+     the review queue and data table; omitting them from the plot legend keeps
+     the graph about observed data rather than turning it into a backlog dump. */
+  .frontier-svg .frontier-group.pending { display:none; }
   .job-group { scroll-margin-top: 1rem; }
   .job-group.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
   .job-group > h2 { font-size: 0.86rem; margin: 1.25rem 0 0.35rem; color: var(--text-dim); }
@@ -185,13 +188,86 @@
      line-length; the "…" / "⌃" marker toggles the rest. */
   .clip-toggle { color: var(--accent); cursor: pointer; user-select: none; font-weight: 700; padding: 0 0.1rem; }
   .clip-toggle:hover { text-decoration: underline; }
+
+  /* Overview-first application shell. Detail remains complete, but only the
+     selected primary view is mounted so an evidence corpus is not a 100k-pixel
+     catalog of simultaneously expanded records. */
+  .app-nav { display: flex; gap: 1.1rem; border-bottom: 1px solid var(--border); margin-bottom: 1.35rem; }
+  .nav-tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 0.75rem 0.1rem 0.62rem; color: var(--text-dim); }
+  .nav-tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 650; }
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:1rem; margin:0 0 1rem; }
+  .page-head h2 { margin:0; font-size:1.35rem; letter-spacing:-0.025em; }
+  .page-head p { margin:.2rem 0 0; max-width:68rem; }
+  .surface { background:var(--panel); border-top:1px solid var(--border); border-bottom:1px solid var(--border); padding:1rem 0; margin:0 0 1.25rem; }
+  .overview-stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border-top:1px solid var(--border); border-bottom:1px solid var(--border); margin-bottom:1.25rem; }
+  .stat { padding:.75rem 1rem; border-right:1px solid var(--border); }
+  .stat:last-child { border-right:0; }
+  .stat strong { display:block; font-size:1.25rem; font-weight:620; font-variant-numeric:tabular-nums; }
+  .stat span { color:var(--text-dim); font-size:.72rem; }
+  .panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
+  .panel-head h2 { margin:0; font-size:1rem; }
+  .panel-actions { display:flex; gap:.4rem; flex-wrap:wrap; justify-content:flex-end; }
+  .config-panel, .data-panel, .backlog-panel, .help-panel { border-top:1px solid var(--border); padding-top:.45rem; margin-top:.65rem; }
+  .config-panel > summary, .data-panel > summary, .backlog-panel > summary, .help-panel > summary { font-weight:600; }
+  .configuration-summary { color:var(--text-dim); font: .74rem var(--mono); overflow-wrap:anywhere; }
+  .toolbar { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.8rem; padding:.55rem 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+  .toolbar .spacer { flex:1; }
+  .filter-panel { flex:1 1 100%; border-top:1px solid var(--border); padding-top:.45rem; }
+  .filter-panel .filter-row { max-width:52rem; }
+  .job-group { border:0; box-shadow:none; }
+  .job-group.active { border:0; box-shadow:none; }
+  .job-group > h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.055em; margin:1.25rem 0 .35rem; color:var(--text-dim); }
+  .investigation-layout { display:grid; grid-template-columns:minmax(20rem,28rem) minmax(0,1fr); gap:1.5rem; align-items:start; }
+  .investigation-list-pane, .investigation-detail-pane { min-width:0; }
+  .job-list { border-top:1px solid var(--border); }
+  .job-row { display:grid; grid-template-columns:5.2rem minmax(0,1fr); gap:.65rem; align-items:start; width:100%; padding:.7rem .35rem; border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; text-align:left; color:var(--text); }
+  .job-row:hover, .job-row.active { background:var(--accent-soft); color:var(--text); }
+  .job-row .primary { min-width:0; }
+  .job-row .primary strong { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .job-row .row-meta { display:block; margin-top:.16rem; color:var(--text-dim); font-size:.72rem; overflow-wrap:anywhere; }
+  .job-row .row-review { color:var(--text-dim); }
+  .job-row .row-review.pending { color:var(--amber); }
+  .job-detail { background:var(--panel); border-top:1px solid var(--border); border-bottom:1px solid var(--border); padding:1rem; }
+  .investigation-detail-pane .detail-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .investigation-detail-pane .detail-summary > :last-child { grid-column:1 / -1; }
+  .investigation-detail-pane .source-compare { grid-template-columns:1fr; }
+  .detail-title { display:flex; align-items:flex-start; gap:.7rem; flex-wrap:wrap; }
+  .detail-title h2 { margin:0; font-size:1.25rem; letter-spacing:-.02em; }
+  .detail-actions { margin-left:auto; display:flex; gap:.4rem; }
+  .detail-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border-top:1px solid var(--border); border-bottom:1px solid var(--border); margin:.9rem 0; }
+  .summary-item { padding:.65rem .75rem; border-right:1px solid var(--border); min-width:0; }
+  .summary-item:last-child { border-right:0; }
+  .summary-item .label { display:block; color:var(--text-dim); font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; }
+  .summary-item .value { display:block; margin-top:.16rem; font-size:.8rem; overflow-wrap:anywhere; }
+  .detail-section { border-top:1px solid var(--border); padding:.75rem 0; }
+  .raw-json { max-height:36rem; overflow:auto; white-space:pre; font:.72rem/1.45 var(--mono); background:var(--panel-2); padding:.7rem; border:1px solid var(--border); }
+  .scenario-layout { display:grid; grid-template-columns:minmax(16rem,22rem) minmax(0,1fr); gap:1.5rem; }
+  .scenario-list { border-top:1px solid var(--border); }
+  .scenario-row { width:100%; display:block; text-align:left; border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; padding:.7rem .25rem; }
+  .scenario-row.active { background:var(--accent-soft); }
+  .scenario-row strong { display:block; }
+  @media (max-width: 900px) {
+    .overview-stats, .detail-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .stat, .summary-item { border-bottom:1px solid var(--border); }
+    .investigation-layout, .scenario-layout { grid-template-columns:1fr; }
+    .investigation-detail-pane { scroll-margin-top:1rem; }
+    .job-row { grid-template-columns:5.2rem minmax(0,1fr); }
+  }
   @media (max-width: 600px) {
-    .wrap { padding-left: 0.7rem; padding-right: 0.7rem; }
-    .axis-grid { grid-template-columns: 1fr; }
-    .axis-grid > * { max-width: 100%; }
-    .attribute-row { grid-template-columns: minmax(0, 1fr) auto; }
-    .attribute-row > :nth-child(2) { grid-column: 1; }
-    header .auto { margin-left: 0; }
+    .wrap { padding-left:.8rem; padding-right:.8rem; }
+    header { align-items:flex-start; padding:.7rem 0; }
+    header .sub { display:none; }
+    header .auto { margin-left:auto; }
+    header .auto label, header .auto .share-label { display:none; }
+    .app-nav { overflow-x:auto; }
+    .page-head { align-items:flex-start; flex-direction:column; }
+    .overview-stats, .detail-summary { grid-template-columns:1fr 1fr; }
+    .overview-stats > :last-child, .detail-summary > :last-child { grid-column:1 / -1; }
+    .axis-grid { grid-template-columns:1fr; }
+    .axis-grid > * { max-width:100%; }
+    .attribute-row { grid-template-columns:minmax(0,1fr) auto; }
+    .attribute-row > :nth-child(2) { grid-column:1; }
+    .job-row { grid-template-columns:4.7rem minmax(0,1fr); gap:.5rem; }
   }
 </style>
 <script>
@@ -442,7 +518,7 @@ function ConversationPanel({ scenario, progress, trace, failure, budget }) {
     </details>` : null}
     ${failure ? html`<div class="note" style="margin:0.35rem 0"><b>${failure.stage}:</b> <${ClipText} text=${failure.error} /></div>` : null}
     <${ExecutionSummary} execution=${(trace && trace.execution) || (progress && progress.execution)} budget=${budget} />
-    <details open>
+    <details>
       <summary>conversation · ${turns.length} PUT turn(s) · ${toolCallCount} tool call(s)</summary>
       <${Chat} s=${evidence} />
     </details>
@@ -478,7 +554,7 @@ function ResultLine({ j }) {
   return html`<div style="margin-top:0.5rem">
     <span class="badge ${r.failure ? 'failed' : 'job-done'}">${r.failure ? 'failed' : r.trace ? 'trace captured (inspect stop reason)' : 'finished (inspect stop reason)'}</span>
     <span class="meta"> ${r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
-    ${(r.usage || progress?.usage) ? html`<div style="margin-top:0.2rem">${roleLine('put', (r.usage || progress?.usage).put, 'put')}${roleLine('sim', (r.usage || progress?.usage).sim, 'sim')}</div>` : null}
+    ${(r.usage || j.progress?.usage) ? html`<div style="margin-top:0.2rem">${roleLine('put', (r.usage || j.progress?.usage).put, 'put')}${roleLine('sim', (r.usage || j.progress?.usage).sim, 'sim')}</div>` : null}
   </div>`;
 }
 
@@ -499,13 +575,27 @@ const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null]
 const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
 const jobAttributes = j => (j && j.attributes) || {};
 const displayName = j => jobAttributes(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
+const shortModel = value => value ? String(value).split('::').pop().split('/').pop() : '—';
+const terminalExecution = j => j?.result?.trace?.execution || j?.progress?.execution || null;
+const reviewLabel = j => j?.assessment ? 'assessed' : Object.keys(j?.grades || {}).length ? 'graded' : 'needs review';
+const evidenceCounts = j => {
+  const trace = j?.result?.trace, turns = trace?.turns || j?.progress?.turns || [];
+  return { turns: turns.length, tools: trace ? trace.tool_calls : turns.reduce((n, t) => n + (t.tool_exchanges || []).length, 0) };
+};
+const jobUsage = j => j?.result?.usage || j?.progress?.usage || null;
 // This key deliberately mirrors the frontier request: selected attribute values
 // in order, with absent values kept distinct as null. The server remains the
 // authority for group ids, labels, cohorts, arithmetic, and dominance.
 const attributeValue = (attributes, key) => Object.prototype.hasOwnProperty.call(attributes || {}, key) ? attributes[key] : null;
 const groupKeyFor = (groupBy, attributes) => JSON.stringify(groupBy.map(k => attributeValue(attributes, k)));
+const fallbackGroupValue = (key, value) => {
+  if (value == null) return 'null';
+  if (key === 'put_model' || key === 'sim_model') return shortModel(value);
+  if (key.endsWith('_hash')) return `${key.slice(0, -5).replaceAll('_','-')}-${String(value).slice(0,8)}`;
+  return String(value);
+};
 const fallbackGroupLabel = (groupBy, attributes) => groupBy.length
-  ? groupBy.map(k => attributeValue(attributes, k) ?? 'null').join('/')
+  ? groupBy.map(k => fallbackGroupValue(k, attributeValue(attributes, k))).join('/')
   : 'all investigations';
 
 // Preserve local drafts through live polling; save only keys changed against
@@ -702,7 +792,7 @@ function AttributesPanel({ j, token, onPatched, jobUi }) {
 // The frontier panel compares every job, grouped by attribute values; the server
 // owns cohort construction and dominance so no client-side candidate filter
 // can silently change the comparison.
-function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, setDirs, activeGroupId, onActiveGroup, onGroupActivate, onPlotChange }) {
+function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, setDirs, activeGroupId, onActiveGroup, onGroupActivate, onOpenJob, onPlotChange }) {
   const allJobs = jobs || [];
   const [plot, setPlot] = useState(null);
   const [err, setErr] = useState(null);
@@ -820,12 +910,26 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, 
   useEffect(() => {
     const host = svgRef.current;
     if (!host) return;
+    const svg = host.querySelector('svg');
+    // The standalone SVG deliberately carries a printable text backlog. The
+    // dashboard has a richer review queue and data table for the same evidence,
+    // so crop the embedded plot at that section rather than duplicating pages
+    // of pending records below the graph. The API SVG itself is unchanged.
+    if (svg) {
+      const marker = [...svg.children].find(el => el.tagName === 'text' && (el.textContent || '').startsWith('pending / preliminary backlog'));
+      const cutoff = marker && Number(marker.getAttribute('y'));
+      if (Number.isFinite(cutoff)) {
+        const height = Math.max(1, cutoff - 12), viewBox = (svg.getAttribute('viewBox') || '').trim().split(/\s+/);
+        const children = [...svg.children], markerIndex = children.indexOf(marker);
+        children.slice(markerIndex).forEach(node => node.remove());
+        svg.setAttribute('height', String(height));
+        if (viewBox.length === 4) { viewBox[3] = String(height); svg.setAttribute('viewBox', viewBox.join(' ')); }
+      }
+    }
     host.querySelectorAll('[data-group-id]').forEach(el => {
       const match = el.getAttribute('data-group-id') === activeGroupId;
       el.classList.toggle('pe-linked-active', !!activeGroupId && match);
       el.classList.toggle('pe-linked-muted', !!activeGroupId && !match);
-      // Inline opacity wins over the SVG's embedded hover styles, allowing a
-      // job card hover to link marker and legend together as well.
       el.style.opacity = activeGroupId ? (match ? '1' : '.18') : '';
     });
   }, [plot && plot.svg, activeGroupId]);
@@ -859,11 +963,14 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, 
     : 'all investigations';
   const backlog = (plot && plot.points || []).flatMap(point => (point.excluded || []).map(e => ({ point, ...e })));
 
-  return html`<div class="card">
-    <h2>📈 Live grouped Pareto <span class="meta" style="font-weight:400">— every investigation is a candidate</span></h2>
-    <div class="meta" style="margin:0.4rem 0">Matching attribute values become one point. Every coordinate is a mean over the same completed, fully graded investigations. Preliminary points are faded with a dashed ring; groups with no usable members stay pending without coordinates. All excluded members remain in the backlog. Delete unwanted investigations to remove them from the comparison. Group by simulator/backend provenance too (for example an available simulator mode attribute) when comparing Lua backend tests.</div>
-    <div style="margin:0.45rem 0">
-      <div class="meta">group by attributes <span style="opacity:0.7">(empty = one group; missing values are grouped as null)</span></div>
+  return html`<section class="surface frontier-panel">
+    <div class="panel-head"><div><h2>Grouped Pareto frontier</h2><div class="configuration-summary">${groupBy.length ? groupBy.join(' / ') : 'one group'} · ${names.map(n => `${n} ${dirOf(n) === 'higher' ? '↑' : '↓'}`).join(' · ')}</div></div>
+      <div class="panel-actions">${backlog.length ? html`<button class="toggle pending" onClick=${() => { const panel = document.getElementById('frontier-backlog'); if (panel) { panel.open = true; panel.scrollIntoView({behavior:'smooth',block:'start'}); } }}>${backlog.length} need attention</button>` : null}</div>
+    </div>
+    <details class="help-panel"><summary>How grouping, cohorts, and preliminary points work</summary><div class="meta" style="margin:.45rem 0">Every investigation remains a candidate. Matching attribute values form one point; every coordinate is a mean over the same completed investigations with every requested value. Preliminary points have excluded members; pending groups have no usable common cohort. Group by simulator/backend provenance when it affects comparability.</div></details>
+    <details class="config-panel"><summary>Configure comparison</summary>
+    <div style="margin:0.65rem 0">
+      <div class="meta">group by attributes <span style="opacity:0.7">(empty = one group; missing values become null)</span></div>
       ${groupBy.map((key, i) => html`<div class="grow" key=${i} style="margin:0.2rem 0">
         <select aria-label=${`grouping attribute ${i + 1}`} value=${key} onChange=${e => setGroupBy(groupBy.map((k, x) => x === i ? e.target.value : k))}>
           ${groupOptionsFor(i).map(k => html`<option value=${k} key=${k}>${k}</option>`)}
@@ -878,10 +985,11 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, 
         <button class="toggle" onClick=${() => setAxes(axes.concat(['']))} title="dominance supports N axes; SVG is two-axis only">+ axis</button>
       </div>
     </div>
-    <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'SVG shows two axes; the table and dominance calculation support any number.' : `${names.length} axes — N-dimensional dominance; SVG is available at exactly two axes.`}</div>
+    <div class="meta" style="margin:0.45rem 0;opacity:0.75">${names.length === 2 ? 'The plot shows two axes; the data table and dominance calculation support any number.' : `${names.length} axes — N-dimensional dominance; the plot is available at exactly two axes.`}</div>
+    </details>
     ${err ? html`<div class="frontier-err">${err.map((p, i) => html`<div key=${i}><span class="reason">${p.reason}</span><div class="meta">${p.detail}</div></div>`)}</div>` : null}
     ${plot && plot.svg ? html`<div ref=${bindSvg} class="frontier-svg" dangerouslySetInnerHTML=${{ __html: plot.svg }}></div>` : null}
-    ${plot ? html`<table class="ptable"><thead><tr><th>group</th>${names.map(n => html`<th key=${n} class="mono">${n}</th>`)}<th>rank</th><th>counts</th></tr></thead>
+    ${plot ? html`<details class="data-panel"><summary>Data table · ${plot.points.length} group${plot.points.length === 1 ? '' : 's'}</summary><table class="ptable"><thead><tr><th>group</th>${names.map(n => html`<th key=${n} class="mono">${n}</th>`)}<th>rank</th><th>counts</th></tr></thead>
       <tbody>${plot.points.map(p => { const c = counts(p); return html`<tr key=${p.id}
         onMouseEnter=${() => onActiveGroup(p.id)} onMouseLeave=${() => onActiveGroup(null)}
         onFocusIn=${() => onActiveGroup(p.id)} onFocusOut=${e => { if (!e.currentTarget.contains(e.relatedTarget)) onActiveGroup(null); }}
@@ -895,13 +1003,13 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, 
         ${names.map(n => html`<td key=${n} class="mono">${p.values ? fmtAxisVal(p.values[n]) : 'pending — not plotted'}</td>`)}
         <td>${p.on_frontier === null ? html`<span class="pending">pending</span>` : p.on_frontier ? html`<span class="nd">frontier${p.preliminary ? ' · preliminary' : ''}</span>` : html`<span class="dom">dominated${p.preliminary ? ' · preliminary' : ''}</span>`}<div class="meta mono">${(p.dominated_by || []).join(', ') || '—'}</div></td>
         <td><div class="group-counts"><span class="group-count">included ${((p.included || []).length)}</span>${['running','awaiting_grades','failed','unavailable'].filter(s => c[s]).map(s => html`<span class=${`group-count ${s === 'running' || s === 'awaiting_grades' ? 'pending' : 'unavailable'}`} key=${s}>${s.replace('_',' ')} ${c[s] || 0}</span>`)}</div>
-          <details><summary>members ${((p.investigations || []).length)}</summary><div class="mono meta">${(p.investigations || []).map(id => html`<div key=${id}><a href=${`#job-${id}`}>${id}</a></div>`)}</div></details></td>
-      </tr>`; })}</tbody></table>` : null}
-    ${backlog.length ? html`<details open style="margin-top:0.55rem"><summary class="pending">backlog — ${backlog.length} investigation${backlog.length === 1 ? '' : 's'} needs attention</summary>
+          <details><summary>members ${((p.investigations || []).length)}</summary><div class="mono meta">${(p.investigations || []).map(id => html`<div key=${id}><a href=${`#job-${id}`} onClick=${e => { e.preventDefault(); onOpenJob(id); }}>${id}</a></div>`)}</div></details></td>
+      </tr>`; })}</tbody></table></details>` : null}
+    ${backlog.length ? html`<details id="frontier-backlog" class="backlog-panel"><summary class="pending">Review queue · ${backlog.length} investigation${backlog.length === 1 ? '' : 's'} needs attention</summary>
       <div class="meta" style="margin:0.35rem 0">These exact members are not in the common complete cohort yet. Grade the linked job when grades are missing; running, failed, and unavailable jobs remain distinct evidence.</div>
-      ${backlog.map(e => html`<div class="step" key=${`${e.point.id}-${e.investigation}`}><a href=${`#job-${e.investigation}`} class="mono">${e.investigation}</a> · <b class=${e.status === 'awaiting_grades' || e.status === 'running' ? 'pending' : 'unavailable'}>${e.status.replace('_', ' ')}</b>${e.missing_grades && e.missing_grades.length ? html` · missing grades: <span class="mono">${e.missing_grades.join(', ')}</span>` : null}${e.missing_axes && e.missing_axes.length ? html` · missing axes: <span class="mono">${e.missing_axes.join(', ')}</span>` : null}<div class="meta">group: ${e.point.label}</div></div>`) }
+      ${backlog.map(e => html`<div class="step" key=${`${e.point.id}-${e.investigation}`}><a href=${`#job-${e.investigation}`} onClick=${event => { event.preventDefault(); onOpenJob(e.investigation); }} class="mono">${e.investigation}</a> · <b class=${e.status === 'awaiting_grades' || e.status === 'running' ? 'pending' : 'unavailable'}>${e.status.replace('_', ' ')}</b>${e.missing_grades && e.missing_grades.length ? html` · missing grades: <span class="mono">${e.missing_grades.join(', ')}</span>` : null}${e.missing_axes && e.missing_axes.length ? html` · missing axes: <span class="mono">${e.missing_axes.join(', ')}</span>` : null}<div class="meta">group: ${e.point.label}</div></div>`) }
     </details>` : null}
-  </div>`;
+  </section>`;
 }
 
 function jobUiState(uiCache, id) {
@@ -939,16 +1047,41 @@ function ControlsPanel({ controls }) {
 }
 function EvidenceDownload({ id, token }) {
   const [msg, setMsg] = useState('');
-  const download = async () => {
-    setMsg('fetching…');
+  const [raw, setRaw] = useState(null);
+  const load = async () => {
+    if (raw != null) return raw;
+    setMsg('fetching evidence…');
     try {
       const r = await fetch(`${API(id)}/evidence`, { headers: authHeaders(token) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const body = await r.json(); setRaw(body); setMsg(''); return body;
+    } catch (e) { setMsg(`evidence failed: ${e.message || e}`); return null; }
+  };
+  const download = async () => {
+    const body = await load(); if (body == null) return;
+    const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = `investigation-${id}-evidence.json`; a.click(); URL.revokeObjectURL(url); setMsg('downloaded');
+  };
+  return html`<div>
+    <div class="grow" style="margin:.35rem 0"><button onClick=${download}>download evidence JSON</button><span class="meta">authenticated; no token is put in the link</span>${msg ? html`<span class="meta">${msg}</span>` : null}</div>
+    <details onToggle=${e => { if (e.currentTarget.open) load(); }}><summary>raw evidence JSON · complete API representation</summary>
+      ${raw == null ? html`<div class="meta">${msg || 'loading…'}</div>` : html`<pre class="raw-json">${pretty(raw)}</pre>`}
+    </details>
+  </div>`;
+}
+function ScenarioWorkspaceDownload({ id, token }) {
+  const [msg, setMsg] = useState('');
+  const download = async () => {
+    setMsg('fetching…');
+    try {
+      const r = await fetch(`/api/scenarios/${encodeURIComponent(id)}/workspace`, { headers: authHeaders(token) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const blob = await r.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
-      a.href = url; a.download = `investigation-${id}-evidence.json`; a.click(); URL.revokeObjectURL(url); setMsg('downloaded');
+      a.href = url; a.download = `scenario-${id}-workspace.zip`; a.click(); URL.revokeObjectURL(url); setMsg('downloaded');
     } catch (e) { setMsg(`download failed: ${e.message || e}`); }
   };
-  return html`<div class="grow" style="margin:.35rem 0"><button onClick=${download}>download full evidence JSON</button><span class="meta">authenticated download; no token is put in the link</span>${msg ? html`<span class="meta">${msg}</span>` : null}</div>`;
+  return html`<span><button class="toggle" onClick=${download}>export workspace</button>${msg ? html`<span class="meta" style="margin-left:.35rem">${msg}</span>` : null}</span>`;
 }
 function currentLuaSource(job) {
   const list = job?.result?.trace?.implementations || job?.progress?.implementations || [];
@@ -973,9 +1106,9 @@ function SourceComparison({ j, jobs }) {
   </details>`;
 }
 
-function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache }) {
+function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack }) {
   const jobUi = jobUiState(uiCache, j.id);
-  const cardRef = usePreservedDetails(jobUi);
+  const detailRef = usePreservedDetails(jobUi);
   const attributes = jobAttributes(j);
   const putModel = attributes.put_model || j.put_model;
   const simModel = attributes.sim_model || j.sim_model;
@@ -983,41 +1116,65 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache }) {
   const simThinking = attributes.sim_thinking || j.sim_thinking_level;
   const trace = j.result && j.result.trace;
   const failure = j.result && j.result.failure;
-  return html`
-    <div ref=${cardRef} id=${`job-${j.id}`} class=${`card${leaving ? ' leaving' : ''}`} key=${j.id}>
-      <h2>
-        <span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span>
-        ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
-        <span class="display-name" title="custom attribute label, or prompt-under-test id when no label is set">${displayName(j)}</span>
-        <span class="mono meta">${(j.id || '').slice(0,8)}</span>
-        <span class="meta">${'· started ' + relTime(j.started_at)}${j.finished_at ? ` · finished ${relTime(j.finished_at)}` : ''}</span>
-        <span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-          ${putModel ? html`<span class="uchip put" title="system attribute put_model">${putModel}</span>` : null}
-          ${putThinking ? html`<span class="uchip put" title="system attribute put_thinking">think ${putThinking}</span>` : null}
-          ${simModel ? html`<span class="uchip sim" title="system attribute sim_model">${simModel}</span>` : null}
-          ${simThinking ? html`<span class="uchip sim" title="system attribute sim_thinking">think ${simThinking}</span>` : null}
-          ${j.scenario_id ? html`<span class="uchip ws" title=${`pinned scenario definition. Revision ${j.scenario_revision} (${(j.scenario_definition_hash || '').slice(0, 12)}). A correction elsewhere is a different revision; re-run only the traces you want re-run.`}>scenario ${j.scenario_id.slice(0, 8)} · r${j.scenario_revision}${attributes.scenario_revision && attributes.scenario_revision !== String(j.scenario_revision) ? ' (attr mismatch)' : ''}</span>` : null}
-          ${j.workspace_files ? html`<span class="uchip ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the scenario's uploaded archive; per-run. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
-          <button class="del" title="delete this investigation (irreversible — removes the job, traces, grades, and attributes from server memory)" onClick=${() => onDelete(j.id)}>✕</button>
-        </span>
-      </h2>
-      <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
+  const execution = terminalExecution(j);
+  const counts = evidenceCounts(j);
+  const usage = jobUsage(j);
+  const totalCost = (usage?.put?.cost_usd || 0) + (usage?.sim?.cost_usd || 0);
+  return html`<div ref=${detailRef} id=${`job-${j.id}`} class=${`job-detail${leaving ? ' leaving' : ''}`} key=${j.id}>
+    <div class="detail-title">
+      <button class="toggle" onClick=${onBack}>close detail</button>
+      <div><div class="meta mono">${j.id}</div><h2>${displayName(j)}</h2></div>
+      <div class="detail-actions">
+        <button class="del" title="delete this investigation (irreversible)" onClick=${() => onDelete(j.id)}>delete</button>
+      </div>
+    </div>
+    <div class="detail-summary">
+      <div class="summary-item"><span class="label">execution</span><span class="value"><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span> ${execution?.stop_reason ? execution.stop_reason.replaceAll('_',' ') : j.phase ? phaseLabel(j.phase) : ''}</span></div>
+      <div class="summary-item"><span class="label">review</span><span class=${`value ${reviewLabel(j) === 'needs review' ? 'pending' : ''}`}>${reviewLabel(j)}${Object.keys(j.grades || {}).length ? ` · ${Object.keys(j.grades).length} grade${Object.keys(j.grades).length === 1 ? '' : 's'}` : ''}</span></div>
+      <div class="summary-item"><span class="label">PUT</span><span class="value" title=${putModel || ''}>${shortModel(putModel)}${putThinking ? ` · ${putThinking}` : ''}</span></div>
+      <div class="summary-item"><span class="label">scenario</span><span class="value mono">${j.scenario_id ? `${j.scenario_id.slice(0,8)} · r${j.scenario_revision}` : '—'}</span></div>
+      <div class="summary-item"><span class="label">evidence</span><span class="value">${counts.turns} turn${counts.turns===1?'':'s'} · ${counts.tools} tool call${counts.tools===1?'':'s'}${totalCost ? fmtUsd(totalCost) : ''}</span></div>
+    </div>
+    <div class="meta" style="margin:.5rem 0 1rem">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span>(no reason supplied; the caller remains the judge)</span>`}</div>
+
+    <section class="detail-section"><div class="panel-head"><h2>Caller review</h2><span class="meta">Assessment and grades are caller-owned, never a harness verdict.</span></div>
+      <${AssessmentPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
+      <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
+    </section>
+    <section class="detail-section"><div class="panel-head"><h2>Execution evidence</h2><span class="meta">Done means trace captured; inspect the stop reason and delivered output.</span></div>
+      <${ResultLine} j=${j} />
+      <${ConversationPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} failure=${failure} budget=${j.budget} />
+      <${EvidenceDownload} id=${j.id} token=${token} />
+    </section>
+    <section class="detail-section"><div class="panel-head"><h2>Configuration and provenance</h2><span class="meta">Complete inputs, controls, attributes, and implementation evidence.</span></div>
       <${PutPanel} put=${j.put} />
       <${ControlsPanel} controls=${j.conversation_controls} />
       <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
-      <${AssessmentPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
-      <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
-      <${ResultLine} j=${j} />
-      <${EvidenceDownload} id=${j.id} token=${token} />
       <${SourceComparison} j=${j} jobs=${jobs} />
-      <${ConversationPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} failure=${failure} budget=${j.budget} />
-    </div>`;
+    </section>
+    <section class="detail-section"><details><summary>raw investigation JSON · complete job API representation</summary><pre class="raw-json">${pretty(j)}</pre></details></section>
+  </div>`;
 }
 
 // The browser groups the cards using the exact attribute-vector request sent to
 // /api/frontier. It does no cohort filtering: every job remains visible, so a
 // pending or failed group is never hidden merely because it has no coordinate.
-function GroupedJobCards({ jobs, comparisonJobs, groupBy, points, activeGroupId, onActiveGroup, onGroupActivate, token, onDelete, onPatched, leaving, uiCache }) {
+function JobRow({ j, onOpen, selected }) {
+  const attributes = jobAttributes(j), execution = terminalExecution(j), usage = jobUsage(j), counts = evidenceCounts(j);
+  const putModel = attributes.put_model || j.put_model;
+  const cost = (usage?.put?.cost_usd || 0) + (usage?.sim?.cost_usd || 0);
+  return html`<button id=${`job-row-${j.id}`} class=${`job-row${selected ? ' active' : ''}`} aria-current=${selected ? 'true' : null} onClick=${() => onOpen(j.id)}>
+    <span><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span><span class="meta" style="display:block;margin-top:.2rem">${execution?.stop_reason ? execution.stop_reason.replaceAll('_',' ') : j.phase ? phaseLabel(j.phase) : ''}</span></span>
+    <span class="primary" title=${j.reason || ''}>
+      <strong>${displayName(j)}</strong>
+      <span class="row-meta mono">${j.id.slice(0,8)} · ${j.finished_at ? `finished ${relTime(j.finished_at)}` : `started ${relTime(j.started_at)}`}</span>
+      <span class="row-meta">${shortModel(putModel)}${attributes.put_thinking ? ` · ${attributes.put_thinking}` : ''} · <span class="mono">${j.scenario_id ? `${j.scenario_id.slice(0,8)} r${j.scenario_revision}` : 'no scenario'}</span></span>
+      <span class=${`row-meta row-review ${reviewLabel(j) === 'needs review' ? 'pending' : ''}`}>${reviewLabel(j)} · ${cost ? `~$${cost < .01 ? cost.toFixed(4) : cost.toFixed(2)}` : `${counts.turns} turn${counts.turns===1?'':'s'} · ${counts.tools} call${counts.tools===1?'':'s'}`}</span>
+    </span>
+  </button>`;
+}
+
+function GroupedJobCards({ jobs, groupBy, points, activeGroupId, onActiveGroup, onOpen, selectedJobId }) {
   const pointByKey = new Map((points || []).map(p => [groupKeyFor(groupBy, p.attributes), p]));
   const groups = new Map();
   (jobs || []).forEach(j => {
@@ -1025,21 +1182,17 @@ function GroupedJobCards({ jobs, comparisonJobs, groupBy, points, activeGroupId,
     if (!groups.has(key)) groups.set(key, { key, attributes: jobAttributes(j), jobs: [] });
     groups.get(key).jobs.push(j);
   });
-  return html`${[...groups.values()].map(g => {
-    const point = pointByKey.get(g.key);
-    const pointId = point && point.id;
-    const active = pointId && pointId === activeGroupId;
-    const enter = () => { if (pointId) onActiveGroup(pointId); };
-    const leave = () => { if (pointId) onActiveGroup(null); };
-    return html`<section key=${g.key} class=${`job-group${active ? ' active' : ''}`}
-      id=${pointId ? `frontier-group-${pointId}` : null} data-job-group-id=${pointId || null}
-      onMouseEnter=${enter} onMouseLeave=${leave}
-      onFocusIn=${enter} onFocusOut=${e => { if (!e.currentTarget.contains(e.relatedTarget)) leave(); }}>
-      <h2><span class="mono">${point ? point.label : fallbackGroupLabel(groupBy, g.attributes)}</span>
-        <span class="meta">· ${g.jobs.length} investigation${g.jobs.length === 1 ? '' : 's'}${point && point.values == null ? ' · pending' : ''}</span></h2>
-      ${g.jobs.map(j => html`<${JobCard} key=${j.id} j=${j} jobs=${comparisonJobs || jobs} token=${token} onDelete=${onDelete} onPatched=${onPatched} leaving=${leaving === j.id} uiCache=${uiCache} />`)}
-    </section>`;
-  })}`;
+  return html`<div class="job-list">
+    ${[...groups.values()].map(g => {
+      const point = pointByKey.get(g.key), pointId = point && point.id, active = pointId && pointId === activeGroupId;
+      const enter = () => { if (pointId) onActiveGroup(pointId); }, leave = () => { if (pointId) onActiveGroup(null); };
+      return html`<section key=${g.key} class=${`job-group${active ? ' active' : ''}`} id=${pointId ? `frontier-group-${pointId}` : null} data-job-group-id=${pointId || null}
+        onMouseEnter=${enter} onMouseLeave=${leave} onFocusIn=${enter} onFocusOut=${e => { if (!e.currentTarget.contains(e.relatedTarget)) leave(); }}>
+        <h2><span class="mono">${point ? point.label : fallbackGroupLabel(groupBy, g.attributes)}</span><span class="meta"> · ${g.jobs.length}${point && point.values == null ? ' · pending' : ''}</span></h2>
+        ${g.jobs.map(j => html`<${JobRow} key=${j.id} j=${j} onOpen=${onOpen} selected=${selectedJobId === j.id} />`)}
+      </section>`;
+    })}
+  </div>`;
 }
 
 const DEFAULT_GROUP_BY = ['put_model', 'put_thinking', 'prompt_hash'];
@@ -1153,31 +1306,33 @@ function ScenarioPanel({ token }) {
     <div class="meta">${tool.description}</div>
     ${tool.lua_source ? html`<${SourceCode} source=${tool.lua_source} />` : null}
   </div>`);
-  return html`<div class="card">
-    <h2>scenarios <span class="meta" style="font-weight:400">— reusable worlds; investigations reference an id and pin a revision</span></h2>
-    <div class="meta">Register with <span class="mono">POST /api/scenarios</span> (multipart: <span class="mono">request</span> JSON + optional <span class="mono">workspace</span> .zip), test with probes below, then run investigations with <span class="mono">scenario_id</span>. Editable only while unreferenced; fork to change a pinned world.</div>
+  return html`<section>
+    <div class="page-head"><div><h2>Scenarios</h2><p class="meta">Reusable worlds, tool contracts, simulator settings, and workspace seeds. Investigations pin an exact revision.</p></div><button class="toggle" onClick=${load}>refresh</button></div>
     ${msg ? html`<div class="note" style="margin:.4rem 0">${msg}</div>` : null}
-    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
-      <select aria-label="scenario" value=${selected || ''} onChange=${e => setSelected(e.target.value || null)}>
-        <option value="">— select a scenario —</option>
-        ${(list || []).map(s => html`<option value=${s.id}>${s.label ? `${s.label} · ` : ''}${s.id.slice(0, 8)} r${s.revision}${s.editable ? ' · editable' : ` · pinned by ${s.investigations}`}</option>`)}
-      </select>
-      <button class="toggle" onClick=${load}>refresh</button>
-      ${detail ? html`<button class="toggle" onClick=${forkSelected}>fork current revision</button>` : null}
-    </div>
-    ${list && !list.length ? html`<div class="empty">No scenarios yet. Register one with <span class="mono">POST /api/scenarios</span>.</div>` : null}
-    ${detail ? html`<div>
+    <div class="scenario-layout">
+      <aside><div class="scenario-list">
+        ${(list || []).map(s => html`<button class=${`scenario-row${selected === s.id ? ' active' : ''}`} onClick=${() => setSelected(s.id)}>
+          <strong>${s.label || s.id.slice(0, 8)}</strong><span class="meta mono">${s.id.slice(0,8)} · r${s.revision} · ${s.editable ? 'editable' : `pinned by ${s.investigations}`}</span>
+        </button>`)}
+      </div>
+      ${list && !list.length ? html`<div class="empty">No scenarios yet.</div>` : null}
+      <div class="meta" style="margin-top:.7rem">Register with <span class="mono">POST /api/scenarios</span> using request JSON and an optional workspace zip. The API specification documents the complete authoring contract.</div>
+      <details><summary>raw scenario list JSON</summary><pre class="raw-json">${pretty(list || [])}</pre></details></aside>
+      <div>${detail ? html`<div class="surface" style="padding:1rem">
       <div class="meta"><b class="mono">${detail.id}</b> · revision ${detail.revision} · ${detail.editable ? 'editable' : html`pinned by ${detail.investigation_ids.length} investigation(s)`} · ${detail.workspace_files} workspace file(s) · ${detail.tools || ''}${detail.definition.tools.length} tool(s), ${detail.definition.tools.filter(x => x.lua_source).length} implemented</div>
       <div class="meta mono">definition ${detail.definition_hash.slice(0, 12)} · workspace ${detail.workspace_hash.slice(0, 12)}</div>
       ${detail.correction ? html`<div class="note">corrects <span class="mono">${detail.correction.scenario_id.slice(0, 8)}</span> r${detail.correction.revision}: ${detail.correction.reason}</div>` : null}
-      <details><summary>world specification</summary><pre class="step">${detail.definition.world}</pre></details>
-      ${scenarioToolRows(detail.definition)}
+      <div class="panel-actions" style="margin:.5rem 0"><button class="toggle" onClick=${forkSelected}>fork current revision</button><${ScenarioWorkspaceDownload} id=${detail.id} token=${token} /></div>
+      <details><summary>world specification</summary><div class="body" style="white-space:pre-wrap;padding:.45rem 0">${detail.definition.world}</div></details>
+      <details><summary>input domain and protagonist</summary><div class="meta"><b>user message</b></div><div style="white-space:pre-wrap">${detail.definition.user_message || '—'}</div><div class="meta" style="margin-top:.5rem"><b>input domain</b></div><pre class="raw-json">${pretty(detail.definition.input_domain || {})}</pre>${detail.definition.simulator_notes ? html`<div class="meta" style="margin-top:.5rem"><b>simulator notes:</b> ${detail.definition.simulator_notes}</div>` : null}</details>
+      <details><summary>tool contracts · ${detail.definition.tools.length}</summary>${scenarioToolRows(detail.definition)}</details>
+      <details><summary>simulation controls</summary><pre class="raw-json">${pretty(detail.definition.simulation || {})}</pre></details>
       <div class="meta" style="margin-top:.5rem">Simulator: <span class="mono">${detail.definition.simulation?.sim_model || 'server default'}</span> · thinking ${detail.definition.simulation?.sim_thinking_level || 'provider default'}</div>
       <h3 style="margin:.8rem 0 .2rem">simulation probes</h3>
       <div class="meta">Each submission runs its calls in order in one session and starts from a fresh snapshot; the PUT is never involved.</div>
       <textarea aria-label="probe tool calls" class="mono" style="width:100%;min-height:5rem;background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.4rem" value=${calls} onInput=${e => setCalls(e.target.value)}></textarea>
       <div style="margin-top:.35rem"><button disabled=${busy || !selected} onClick=${submitProbe}>run probe</button></div>
-      ${probes.map((probe, probeIndex) => html`<details class="lua-program" key=${probe.id} open=${probe.status !== 'done' || probeIndex === 0}>
+      ${probes.map((probe, probeIndex) => html`<details class="lua-program" key=${probe.id} open=${probe.status !== 'done'}>
         <summary>probe <span class="mono">${probe.id.slice(0, 8)}</span> · ${probe.status}${probe.stop_reason ? ` · ${probe.stop_reason}` : ''} · r${probe.scenario_revision} · ${(probe.calls || []).length} call(s)${probe.usage ? ` · ${fmtUsage(probe.usage)}` : ''}</summary>
         ${probe.error ? html`<div class="note">${probe.error}</div>` : null}
         ${probe.reason ? html`<div class="meta">reason: ${probe.reason}</div>` : null}
@@ -1189,8 +1344,11 @@ function ScenarioPanel({ token }) {
           ${call.lua_execution && call.lua_execution.discarded_workspace_ops && call.lua_execution.discarded_workspace_ops.length ? html`<${WsOps} ops=${call.lua_execution.discarded_workspace_ops} rolledBack=${true} label="discarded Lua writes" />` : null}
         </div>`)}
       </details>`)}
-    </div>` : null}
-  </div>`;
+      <details class="detail-section"><summary>raw scenario JSON · complete scenario API representation</summary><pre class="raw-json">${pretty(detail)}</pre></details>
+      <details><summary>raw probe list JSON</summary><pre class="raw-json">${pretty(probes)}</pre></details>
+    </div>` : html`<div class="empty">Select a scenario to inspect its complete definition, lifecycle, probes, and raw API representation.</div>`}</div>
+    </div>
+  </section>`;
 }
 
 function BrowsingFilters({ jobs, filters, setFilters }) {
@@ -1200,11 +1358,11 @@ function BrowsingFilters({ jobs, filters, setFilters }) {
     const next = { ...filters }; delete next[oldKey]; if (key) next[key] = value; setFilters(next);
   };
   const add = () => { const key = keys.find(k => !Object.prototype.hasOwnProperty.call(filters, k)); if (key) setFilters({ ...filters, [key]: '' }); };
-  return html`<div class="card"><h2>card browsing filters <span class="meta" style="font-weight:400">— cards only; all jobs remain frontier candidates</span></h2>
-    <div class="meta">Exact AND matches against caller/system attributes. These filters never alter full-job grouping or frontier math.</div>
+  return html`<details class="filter-panel" open=${entries.length > 0}><summary>Filters${entries.length ? ` · ${entries.length} active` : ''}</summary>
+    <div class="meta">Exact AND matches against caller/system attributes; investigation list only; all jobs remain frontier candidates.</div>
     ${entries.map(([key, value]) => html`<div class="filter-row" key=${key}><select aria-label="filter attribute" value=${key} onChange=${e => set(key, e.target.value, value)}>${[...new Set([key, ...keys])].map(k => html`<option value=${k}>${k}</option>`)}</select><input aria-label="filter value" type="text" value=${value} onInput=${e => set(key, key, e.target.value)} /><button class="del" title="remove filter" onClick=${() => { const n = { ...filters }; delete n[key]; setFilters(n); }}>✕</button></div>`)}
     <button class="toggle" disabled=${!keys.some(k => !Object.prototype.hasOwnProperty.call(filters, k))} onClick=${add}>+ attribute filter</button>
-  </div>`;
+  </details>`;
 }
 
 function App() {
@@ -1216,6 +1374,9 @@ function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authError, setAuthError] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
+  const initialJobId = location.hash.startsWith('#job-') ? location.hash.slice(5) : null;
+  const [activeView, setActiveView] = useState(initialJobId ? 'investigations' : 'overview');
+  const [selectedJobId, setSelectedJobId] = useState(initialJobId);
   const [groupBy, setGroupByState] = useState(shared.groupBy);
   const [axes, setAxes] = useState(() => shared.axes.map(a => a.name));
   const [dirs, setDirs] = useState(() => Object.fromEntries(shared.axes.map(a => [a.name, a.better])));
@@ -1255,8 +1416,13 @@ function App() {
     urlReady.current = true;
   }, [JSON.stringify(groupBy), JSON.stringify(axes), JSON.stringify(dirs), JSON.stringify(filters)]);
   useEffect(() => {
-    const restore = () => { const next = readSharedState(); restoringUrl.current = true; setGroupByState(next.groupBy); setAxes(next.axes.map(a => a.name)); setDirs(Object.fromEntries(next.axes.map(a => [a.name, a.better]))); setFilters(next.attributes); setUrlWarning(next.warning); setFrontierPoints([]); setActiveGroupId(null); };
-    addEventListener('popstate', restore); return () => removeEventListener('popstate', restore);
+    const restore = () => {
+      const next = readSharedState(); restoringUrl.current = true; setGroupByState(next.groupBy); setAxes(next.axes.map(a => a.name)); setDirs(Object.fromEntries(next.axes.map(a => [a.name, a.better]))); setFilters(next.attributes); setUrlWarning(next.warning); setFrontierPoints([]); setActiveGroupId(null);
+      const id = location.hash.startsWith('#job-') ? location.hash.slice(5) : null;
+      setSelectedJobId(id); if (id) setActiveView('investigations');
+    };
+    addEventListener('popstate', restore); addEventListener('hashchange', restore);
+    return () => { removeEventListener('popstate', restore); removeEventListener('hashchange', restore); };
   }, []);
 
   useEffect(() => {
@@ -1337,6 +1503,7 @@ function App() {
       ok = true;
     } catch (e) { console.error(e); alert('delete failed: network error'); return; }
     if (!ok) return;
+    if (selectedJobId === id) closeJob();
     // A detail-list poll begun before DELETE may still resolve. Remember the
     // tombstone until a later list no longer contains it, so it cannot revive.
     deletedIds.current.add(id);
@@ -1361,67 +1528,89 @@ function App() {
     setFrontierPoints([]); setActiveGroupId(null);
   };
   const activateGroup = id => {
-    setActiveGroupId(id);
-    requestAnimationFrame(() => {
-      const group = [...document.querySelectorAll('[data-job-group-id]')]
-        .find(el => el.getAttribute('data-job-group-id') === id);
+    setActiveGroupId(id); setSelectedJobId(null); setActiveView('investigations');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const group = [...document.querySelectorAll('[data-job-group-id]')].find(el => el.getAttribute('data-job-group-id') === id);
       if (group) group.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    }));
   };
-
-  const expandAll = () => {
-    const all = [...document.querySelectorAll('#root details')];
-    const anyClosed = all.some(d => !d.hasAttribute('open'));
-    all.forEach(d => { if (anyClosed) d.setAttribute('open', ''); else d.removeAttribute('open'); });
+  const openJob = id => {
+    setSelectedJobId(id); setActiveView('investigations');
+    const url = safeShareUrl(); url.hash = `job-${id}`; history.pushState(null, '', url.pathname + url.search + url.hash);
+    if (matchMedia('(max-width: 900px)').matches) requestAnimationFrame(() => document.querySelector('.investigation-detail-pane')?.scrollIntoView({ behavior:'smooth', block:'start' }));
+  };
+  const closeJob = () => {
+    setSelectedJobId(null);
+    if (location.hash.startsWith('#job-')) { const url = safeShareUrl(); url.hash = ''; history.pushState(null, '', url.pathname + url.search); }
+  };
+  const showView = view => {
+    setActiveView(view);
+    if (view !== 'investigations' && selectedJobId) closeJob(); else scrollTo({ top: 0, behavior: 'smooth' });
   };
   const copyShareLink = async () => {
     try { await copySource(safeShareUrl().href); setShareMsg('share link copied (no token included)'); }
     catch { setShareMsg('could not copy share link'); }
   };
   const shownJobs = jobs === null ? null : jobs.filter(j => cardMatchesAttributes(j, filters));
+  const selectedJob = jobs && jobs.find(j => j.id === selectedJobId);
+  const attentionIds = new Set(frontierPoints.flatMap(p => (p.excluded || []).map(e => e.investigation)));
+  const frontierCount = frontierPoints.filter(p => p.on_frontier === true).length;
+  const requiredGrades = axes.filter(name => !reservedDir(name));
+  const comparisonReady = jobs ? jobs.filter(j => j.status === 'done' && requiredGrades.every(name => Number.isFinite(j.grades?.[name]))).length : 0;
 
   return html`
     <header>
-      <h1>prompt-explore <span class="mono" style="font-size:0.72rem;color:var(--text-dim)">v__VERSION__</span></h1>
-      <span class="sub">job overview</span>
+      <h1>prompt-explore <span class="mono" style="font-size:.68rem;color:var(--text-dim)">v__VERSION__</span></h1>
+      <span class="sub">behavior evidence</span>
       <span class="auto">
         <label class="meta"><input type="checkbox" checked=${auto} onClick=${() => setAuto(!auto)} /> auto-refresh</label>
-        <button class="toggle" onClick=${expandAll}>expand all logs</button>
-        <button class="toggle" onClick=${copyShareLink}>copy share link</button>
-        <button class="toggle" onClick=${() => setTheme(theme === 'light' ? 'dark' : 'light')}
-          title=${`switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>${theme === 'light' ? 'dark mode' : 'light mode'}</button>
+        <button class="toggle" onClick=${copyShareLink}><span class="share-label">copy </span>share link</button>
+        <button class="toggle" onClick=${() => setTheme(theme === 'light' ? 'dark' : 'light')} title=${`switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>${theme === 'light' ? 'dark' : 'light'}</button>
         ${token ? html`<button class="toggle" onClick=${clearToken} title="forget the stored API token">clear token</button>` : null}
       </span>
     </header>
+    <nav class="app-nav" aria-label="Primary">
+      ${[['overview','Overview'],['investigations',`Investigations${jobs ? ` ${jobs.length}` : ''}`],['scenarios','Scenarios']].map(([id,label]) => html`<button class=${`nav-tab${activeView === id ? ' active' : ''}`} aria-current=${activeView === id ? 'page' : null} onClick=${() => showView(id)}>${label}</button>`)}
+    </nav>
     ${authRequired ? html`
       <div class="card" style="border-color:var(--accent)">
-        <h2>🔒 API token required</h2>
-        <div class="meta" style="margin:0.4rem 0">This server requires an <span class="mono">Authorization: Bearer</span> token (set via <span class="mono">PROMPT_EXPLORE_API_TOKEN</span>). Enter it to view and submit jobs. It is stored only in this browser's localStorage.</div>
-        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-          <input type="password" value=${draft} onInput=${e => setDraft(e.target.value)} placeholder="API token" style="background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.3rem 0.6rem;font-family:var(--mono);flex:1;min-width:16em" />
-          <button onClick=${saveToken}>save</button>
-        </div>
-        ${authError ? html`<div class="note" style="margin-top:0.4rem">That token was rejected — check it and try again.</div>` : null}
+        <h2>API token required</h2>
+        <div class="meta" style="margin:.4rem 0">Enter the server's bearer token. It is stored only in this browser's localStorage.</div>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap"><input type="password" value=${draft} onInput=${e => setDraft(e.target.value)} placeholder="API token" style="flex:1;min-width:16em" /><button onClick=${saveToken}>save</button></div>
+        ${authError ? html`<div class="note" style="margin-top:.4rem">That token was rejected — check it and try again.</div>` : null}
       </div>` : null}
-    ${urlWarning ? html`<div class="frontier-err"><b>Invalid shared URL state</b><div class="meta">${urlWarning}. Defaults were used; fix the query JSON or use the controls below.</div></div>` : null}
-    ${shareMsg ? html`<div class="meta">${shareMsg}</div>` : null}
-    ${authRequired ? null : jobs === null ? null : html`<${FrontierPanel}
-      jobs=${jobs} token=${token} groupBy=${groupBy} setGroupBy=${setGroupBy} axes=${axes} setAxes=${setAxes} dirs=${dirs} setDirs=${setDirs}
-      activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId}
-      onGroupActivate=${activateGroup} onPlotChange=${setFrontierPoints} />`}
-    ${authRequired ? null : html`<${ScenarioPanel} token=${token} />`}
-    ${authRequired || jobs === null ? null : html`<${BrowsingFilters} jobs=${jobs} filters=${filters} setFilters=${setFilters} />`}
-    <div id="jobs">
-      ${authRequired ? null
-       : jobs === null ? html`<div class="empty">loading…</div>`
-       : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : shownJobs.length === 0 ? html`<div class="empty">No cards match these filters. The frontier above still includes every job.</div>`
-       : html`<${GroupedJobCards} jobs=${shownJobs} comparisonJobs=${jobs} groupBy=${groupBy} points=${frontierPoints}
-          activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId} onGroupActivate=${activateGroup}
-          token=${token} onDelete=${removeJob} onPatched=${applyPatch} leaving=${leaving} uiCache=${jobUiCache} />`}
-    </div>
-    <footer class="meta" style="margin-top:2rem;text-align:center">
-      API spec: <a class="mono" href="/openapi.json">/openapi.json</a> · models: <a class="mono" href="/api/models">/api/models</a>
+    ${urlWarning ? html`<div class="frontier-err"><b>Invalid shared URL state</b><div class="meta">${urlWarning}. Defaults were used.</div></div>` : null}
+    ${shareMsg ? html`<div class="meta" style="margin-bottom:.5rem">${shareMsg}</div>` : null}
+
+    ${authRequired ? null : jobs === null ? html`<div class="empty">loading…</div>` : activeView === 'overview' ? html`<main>
+      <div class="page-head"><div><h2>Overview</h2><p class="meta">Comparison first. Open the review queue or an investigation when you need the complete evidence.</p></div></div>
+      <div class="overview-stats">
+        <div class="stat"><strong>${jobs.length}</strong><span>investigations</span></div>
+        <div class="stat"><strong>${jobs.filter(j => j.status === 'done').length}</strong><span>completed traces</span></div>
+        <div class="stat"><strong>${comparisonReady}</strong><span>have selected grades</span></div>
+        <div class="stat"><strong class=${attentionIds.size ? 'pending' : ''}>${attentionIds.size}</strong><span>need attention for this comparison</span></div>
+        <div class="stat"><strong>${frontierCount}</strong><span>frontier groups</span></div>
+      </div>
+      <${FrontierPanel} jobs=${jobs} token=${token} groupBy=${groupBy} setGroupBy=${setGroupBy} axes=${axes} setAxes=${setAxes} dirs=${dirs} setDirs=${setDirs}
+        activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId} onGroupActivate=${activateGroup} onOpenJob=${openJob} onPlotChange=${setFrontierPoints} />
+    </main>` : activeView === 'investigations' ? html`<main id="jobs">
+      <div class="page-head"><div><h2>Investigations</h2><p class="meta">Select an investigation to inspect its complete evidence alongside the campaign list.</p></div></div>
+      <div class="investigation-layout">
+        <aside class="investigation-list-pane">
+          <div class="toolbar"><span class="meta">${shownJobs.length} shown · ${jobs.length} total</span><span class="spacer"></span><${BrowsingFilters} jobs=${jobs} filters=${filters} setFilters=${setFilters} /></div>
+          ${jobs.length === 0 ? html`<div class="empty">No investigations. Start one via <span class="mono">POST /api/investigations</span>.</div>`
+          : shownJobs.length === 0 ? html`<div class="empty">No investigations match these filters. The frontier still considers every investigation.</div>`
+          : html`<${GroupedJobCards} jobs=${shownJobs} groupBy=${groupBy} points=${frontierPoints} activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId} onOpen=${openJob} selectedJobId=${selectedJobId} />`}
+        </aside>
+        <div class="investigation-detail-pane">
+          ${selectedJob ? html`<${JobCard} j=${selectedJob} jobs=${jobs} token=${token} onDelete=${removeJob} onPatched=${applyPatch} leaving=${leaving === selectedJob.id} uiCache=${jobUiCache} onBack=${closeJob} />`
+          : html`<div class="empty">Select an investigation to inspect its outcome, caller review, conversation, provenance, and raw API representations.</div>`}
+        </div>
+      </div>
+    </main>` : html`<main><${ScenarioPanel} token=${token} /></main>`}
+
+    <footer class="meta" style="margin-top:2rem;text-align:center;border-top:1px solid var(--border);padding-top:1rem">
+      Complete API manual: <a class="mono" href="/openapi.json">/openapi.json</a> · Lua reference: <a class="mono" href="/docs/lua">/docs/lua</a> · models: <a class="mono" href="/api/models">/api/models</a>
     </footer>`;
 }
 
