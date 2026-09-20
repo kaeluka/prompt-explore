@@ -37,6 +37,10 @@ pub struct ScenarioRuntime {
     /// environment is part of the test case), so they travel with the runtime
     /// instead of being re-supplied per investigation.
     pub simulator: SimulatorOptions,
+    /// The scenario's declared simulator settings, kept alongside the resolved
+    /// options so a reader (and the job view) can report exactly what was asked
+    /// for: model, thinking level, and every override.
+    pub settings: crate::model::scenario::SimulationSettings,
 }
 
 impl ScenarioRuntime {
@@ -53,6 +57,7 @@ impl ScenarioRuntime {
             implementations,
             workspace_seed,
             simulator,
+            settings: Default::default(),
         }
     }
 
@@ -73,6 +78,7 @@ impl ScenarioRuntime {
             implementations,
             workspace_seed,
             simulator,
+            settings: definition.simulation.clone(),
         }
     }
 

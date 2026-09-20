@@ -37,18 +37,19 @@ use prompt_explore::frontier::{
 };
 use prompt_explore::generate::{Investigator, LlmRole};
 use prompt_explore::llm::{
-    ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTracker, catalog_pricing_map,
-    cost_usd, list_all_map,
+    ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTotals, UsageTracker,
+    catalog_pricing_map, cost_usd, list_all_map,
 };
 use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
 use prompt_explore::model::output::RunFailure;
+use prompt_explore::model::scenario::ToolImplementation;
 use prompt_explore::model::simulation::{
-    RunExecution, RunPhase, RunProgress, Scenario, SimulationProgram, TraceTurn,
+    RunExecution, RunPhase, RunProgress, Scenario, TraceTurn,
 };
-use prompt_explore::simulate::lua::LuaOptions;
+use prompt_explore::model::lua::LuaOptions;
+use prompt_explore::scenario::{ScenarioStore, runtime_for};
 use prompt_explore::simulate::{
-    DEFAULT_MAX_WORKSPACE_TURNS, RunnerOptions, Workspace, WorkspaceToolLimits,
-    unpack_zip_with_limits,
+    RunnerOptions, SimulatorOptions, Workspace, WorkspaceToolLimits,
 };
 use serde_json::Value;
 use subtle::ConstantTimeEq;
@@ -56,6 +57,7 @@ use utoipa::Modify;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 mod evidence;
+mod scenarios;
 
 const MODEL: &str = "glm-5.2";
 /// Preserve the investigation route's previous JSON-body allowance while also
@@ -88,6 +90,12 @@ fn investigation_body_limit() -> usize {
 struct AppState {
     client: Option<Arc<ProviderClient>>,
     jobs: Mutex<HashMap<String, Job>>,
+    /// Reusable scenario definitions with their lifecycle rules (edit while
+    /// unreferenced, pinned by investigations, fork/cascade to change).
+    scenarios: Mutex<ScenarioStore>,
+    /// Simulation probes, keyed by probe id. Probes never pin a scenario and
+    /// never become frontier candidates.
+    probes: Mutex<HashMap<String, scenarios::ProbeRecord>>,
     /// The effective default provider (PROMPT_EXPLORE_PROVIDER), surfaced
     /// by GET /api/models so callers know what a bare model name resolves to.
     default_provider: String,
@@ -121,8 +129,14 @@ struct Job {
     /// The prompt under test.
     put: PromptUnderTest,
     /// The input scenario (narrative, world_state, simulator_notes), so the
-    /// ground truth is visible while the run unfolds.
+    /// ground truth is visible while the run unfolds. This is the narrative
+    /// SNAPSHOT the reference pinned, not a live lookup.
     scenario: Scenario,
+    /// The reusable scenario this run pinned, and the exact revision/hash it
+    /// read. A simulation fix elsewhere never changes what this trace ran.
+    scenario_id: String,
+    scenario_revision: u64,
+    scenario_definition_hash: String,
     /// The resolved model name running the prompt under test (the `put_model`
     /// from the request, or the server default). Stored so the dashboard
     /// can show which model produced the traces — set at job creation,
@@ -171,6 +185,20 @@ enum JobStatus {
 #[derive(Deserialize, Clone, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct InvestigateRequest {
+    /// The scenario to run, BY REFERENCE. The referenced definition's tool
+    /// contracts become this run's tool surface; the prompt under test supplies
+    /// only its template and design goals.
+    scenario_id: String,
+    /// Optional guard against editing races: refuse to run unless the scenario
+    /// is still at this revision. The referenced scenario is pinned by this
+    /// submission, so it cannot be edited afterwards either.
+    #[serde(default)]
+    scenario_revision: Option<u64>,
+    /// Optional explicit bindings for the scenario's declared inputs (replay a
+    /// specific sample instead of drawing a new one). Supply every declared key
+    /// or omit entirely.
+    #[serde(default)]
+    resolved_inputs: Option<HashMap<String, Value>>,
     investigation: Investigation,
     put: PromptUnderTest,
     /// Model for the prompt under test. Omit to use the server default
@@ -189,25 +217,10 @@ struct InvestigateRequest {
     /// attributing an outcome solely to the prompt/model.
     #[serde(default)]
     put_model: Option<String>,
-    /// Model for the tool SIMULATOR only (the LLM that roleplays the
-    /// environment). Omit to use the server default independently of
-    /// `put_model`; setting `put_model` never changes the simulator.
-    ///
-    /// The simulator is the test ENVIRONMENT, not the thing under test.
-    /// Two consequences:
-    /// 1. When tuning which model works well for your prompt, keep
-    ///    `sim_model` STABLE across runs (vary `put_model`, not this). You
-    ///    are comparing candidate PUTs. Stable settings reduce confounding, but
-    ///    every run still simulates afresh and may generate different Lua code.
-    ///    Inspect actual responses/revisions before attributing differences to PUT.
-    /// 2. The simulator must be POWERFUL ENOUGH to render a believable
-    ///    environment — a weak simulator produces inconsistent or
-    ///    unbelievable tool responses, which corrupts every trace
-    ///    regardless of how good the PUT is. There is a quality floor
-    ///    below which results stop being meaningful, even if it's
-    ///    cheaper. Pick a strong model here and leave it set.
+    /// Migration only: the simulator's model now lives on the scenario.
+    /// Supplying it is a 400 with that guidance, never a silent override.
     #[serde(default)]
-    sim_model: Option<String>,
+    sim_model: Option<Value>,
     /// Thinking/reasoning level for the PUT runner ONLY (the agent
     /// under test): `none` | `minimal` | `low` | `medium` | `high` |
     /// `xhigh` | `max`. Omit to keep the provider's default (which is
@@ -216,30 +229,26 @@ struct InvestigateRequest {
     /// measured behavior, and without this you can neither vary it
     /// (trade thoroughness for cost at `low`/`none`) nor tell two runs
     /// apart. The resolved value comes back on the job view as
-    /// `put_thinking_level`. Independent of `sim_thinking_level`:
-    /// setting one never changes the other.
+    /// `put_thinking_level`. The SIMULATOR's level is the scenario's
+    /// (`simulation.sim_thinking_level`), never inherited from this.
     #[serde(default)]
     put_thinking_level: Option<ThinkingLevel>,
-    /// Thinking/reasoning level for the tool SIMULATOR only. Same
-    /// vocabulary as `put_thinking_level`; omit for the provider
-    /// default. Lower effort can reduce simulation cost, but can also degrade
-    /// rendering or generated Lua semantics. Compare actual responses/source
-    /// before claiming a quality-preserving speedup; low/none is not guaranteed
-    /// sufficient even on a strong model. Falls back INDEPENDENTLY of
-    /// `put_thinking_level`: omitting this while setting the PUT's
-    /// level leaves the simulator at its default, NOT at the PUT's
-    /// level.
+    /// Migration only: the simulator's thinking level now lives on the
+    /// scenario (`simulation.sim_thinking_level`).
     #[serde(default)]
-    sim_thinking_level: Option<ThinkingLevel>,
-    /// Per-investigation overrides for LLM conversation controls. Omit a
-    /// field to use its documented server default. These controls are recorded
-    /// resolved on the job view so traces remain reproducible.
+    sim_thinking_level: Option<Value>,
+    /// Per-investigation PUT conversation controls. Omit a field to use its
+    /// documented default. Simulator settings belong to the scenario.
     #[serde(default)]
     conversation_controls: ConversationControls,
-    /// The required test case to run: one world specification, input domain,
-    /// and protagonist. A job represents exactly one scenario; `scenarios` is
-    /// not a compatibility alias and is rejected as an unknown field.
-    scenario: Scenario,
+    /// Migration only: the inline scenario field this API no longer accepts.
+    /// Present so supplying it produces an actionable error instead of an
+    /// opaque unknown-field message.
+    #[serde(default)]
+    scenario: Option<Value>,
+    /// Migration only: the old array form. Rejected with the same guidance.
+    #[serde(default)]
+    scenarios: Option<Value>,
     /// Caller-owned campaign attributes. This field is literally `attributes`;
     /// there is no `tags` alias and unknown fields are rejected. Keys use
     /// `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.
@@ -265,20 +274,6 @@ struct InvestigateRequest {
 /// and 1 MiB constructed output per workspace tool call.
 #[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 struct ConversationControls {
-    /// Experimental hybrid simulation: omit/null to keep today's LLM-only path;
-    /// {} enables it with bounded defaults. Per trace, the simulator prepares
-    /// .prompt-explore/tools.lua in its private workspace, initially a valid
-    /// fallback-only module. It may specialize only selected inputs or tools.
-    /// Missing handlers and PleaseSimulateException delegate to the LLM.
-    /// Crashes/limits also delegate, with a distinct error record; staged Lua
-    /// writes are rolled back before fallback. Computed replies enter the SAME
-    /// simulator conversation without another LLM call. No random/time/host IO.
-    /// Inspect simulation_program beside resolved_inputs on result.trace and
-    /// live progress, and each tool_exchanges[].lua_execution for exact revision,
-    /// computed/fallback/error outcome and discarded operations. Generated code
-    /// is unverified simulation evidence, not ground truth or a verdict.
-    #[serde(default)]
-    lua_simulation: Option<LuaOptions>,
     /// PUT sampling temperature; omit for the documented default.
     #[serde(default)]
     #[schema(minimum = 0)]
@@ -287,77 +282,88 @@ struct ConversationControls {
     #[serde(default)]
     #[schema(minimum = 1)]
     put_max_tokens: Option<u32>,
-    /// Simulator sampling temperature; omit for the documented default.
+    /// Migration only: simulator sampling temperature now lives on the
+    /// scenario definition (`simulation.temperature`). Supplying it here is a
+    /// 400 with that guidance, never a silent override.
     #[serde(default)]
-    #[schema(minimum = 0)]
-    sim_temperature: Option<f32>,
-    /// Maximum output tokens per simulator completion; omit for the documented default.
+    sim_temperature: Option<Value>,
+    /// Migration only: simulator output limit (`simulation.max_tokens`).
     #[serde(default)]
-    #[schema(minimum = 1)]
-    sim_max_tokens: Option<u32>,
-    /// Total attempts per simulator JSON reply, including the initial reply
-    /// (default 20). Empty replies, invalid JSON, and schema mismatches are
-    /// retried in the same conversation with repair feedback. This is separate
-    /// from process-level HTTP/transport retries, not a provider retry setting.
+    sim_max_tokens: Option<Value>,
+    /// Migration only: simulator repair budget
+    /// (`simulation.max_repair_attempts`).
     #[serde(default)]
-    #[schema(minimum = 1)]
-    sim_max_repair_attempts: Option<usize>,
-    /// Workspace tool calls per simulator response before a final-answer nudge.
+    sim_max_repair_attempts: Option<Value>,
+    /// Migration only: simulator workspace turns
+    /// (`simulation.max_workspace_turns`).
     #[serde(default)]
-    max_workspace_turns: Option<usize>,
-    /// Lines one simulator workspace `read` may return.
+    max_workspace_turns: Option<Value>,
+    /// Migration only: workspace read bound (`simulation.workspace.max_read_lines`).
     #[serde(default)]
-    #[schema(minimum = 1)]
-    workspace_max_read_lines: Option<usize>,
-    /// Matches one simulator workspace `grep` may return.
+    workspace_max_read_lines: Option<Value>,
+    /// Migration only: workspace grep bound (`simulation.workspace.max_grep_matches`).
     #[serde(default)]
-    #[schema(minimum = 1)]
-    workspace_max_grep_matches: Option<usize>,
-    /// Characters retained from each simulator workspace grep-result line.
+    workspace_max_grep_matches: Option<Value>,
+    /// Migration only: grep line length (`simulation.workspace.max_line_len`).
     #[serde(default)]
-    #[schema(minimum = 1)]
-    workspace_max_line_len: Option<usize>,
-    /// Byte budget used while constructing one simulator workspace tool result.
-    /// This prevents a huge single-line file or directory from being copied in
-    /// full before downstream token/Lua limits can reject it.
+    workspace_max_line_len: Option<Value>,
+    /// Migration only: workspace output budget
+    /// (`simulation.workspace.max_output_bytes`).
     #[serde(default)]
-    #[schema(minimum = 1, maximum = 4194304)]
-    workspace_max_output_bytes: Option<usize>,
+    workspace_max_output_bytes: Option<Value>,
 }
 
-/// Actual controls after request and server defaults have been resolved.
+/// Actual controls after request and server defaults have been resolved. The
+/// PUT's controls come from the investigation; the simulator's come from the
+/// referenced scenario.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 struct ResolvedConversationControls {
-    /// Null means disabled; otherwise the actual Lua sandbox limits used.
-    lua_simulation: Option<LuaOptions>,
     put_temperature: Option<f32>,
     put_max_tokens: Option<u32>,
+    /// The simulator settings this run used, resolved from the scenario.
+    simulator: ResolvedSimulatorSettings,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+struct ResolvedSimulatorSettings {
     sim_temperature: Option<f32>,
     sim_max_tokens: Option<u32>,
     sim_max_repair_attempts: usize,
     max_workspace_turns: usize,
+    /// Lua sandbox limits, present exactly when the scenario supplies
+    /// implementations (there is no enable switch: code supplied is code run).
+    lua: Option<LuaOptions>,
     workspace_max_read_lines: usize,
     workspace_max_grep_matches: usize,
     workspace_max_line_len: usize,
     workspace_max_output_bytes: usize,
 }
 
-impl Default for ResolvedConversationControls {
+impl Default for ResolvedSimulatorSettings {
     fn default() -> Self {
-        let runner = RunnerOptions::default();
+        let simulator = SimulatorOptions::default();
         let workspace = WorkspaceToolLimits::default();
         Self {
-            put_temperature: runner.put_temperature,
-            put_max_tokens: runner.put_max_tokens,
-            sim_temperature: runner.simulator.temperature,
-            sim_max_tokens: runner.simulator.max_tokens,
-            lua_simulation: runner.simulator.lua_simulation,
-            sim_max_repair_attempts: runner.simulator.max_repair_attempts,
-            max_workspace_turns: runner.simulator.max_workspace_turns,
+            sim_temperature: simulator.temperature,
+            sim_max_tokens: simulator.max_tokens,
+            sim_max_repair_attempts: simulator.max_repair_attempts,
+            max_workspace_turns: simulator.max_workspace_turns,
+            lua: simulator.lua_simulation,
             workspace_max_read_lines: workspace.max_read_lines,
             workspace_max_grep_matches: workspace.max_grep_matches,
             workspace_max_line_len: workspace.max_line_len,
             workspace_max_output_bytes: workspace.max_output_bytes,
+        }
+    }
+}
+
+impl Default for ResolvedConversationControls {
+    fn default() -> Self {
+        let runner = RunnerOptions::default();
+        Self {
+            put_temperature: runner.put_temperature,
+            put_max_tokens: runner.put_max_tokens,
+            simulator: ResolvedSimulatorSettings::default(),
         }
     }
 }
@@ -399,11 +405,11 @@ struct TraceView {
     /// exact input that produced this trace, for reproduction.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     resolved_inputs: HashMap<String, Value>,
-    /// Generated program source/revisions and setup evidence (experimental).
-    /// Present when conversation_controls.lua_simulation is enabled and this
-    /// PUT has tools; revision indices match tool_exchanges[].lua_execution.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    simulation_program: Option<SimulationProgram>,
+    /// The scenario's caller-supplied Lua implementations, with the source
+    /// hash each tool_exchanges[].lua_execution refers to. Empty when every
+    /// response was rendered by the simulator LLM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    implementations: Vec<ToolImplementation>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -483,6 +489,12 @@ struct JobView {
     /// in-memory filesystem the SIMULATOR consults via read/write/list_dir/
     /// grep — it is NOT the PUT's tools. See the endpoint description.
     workspace_files: usize,
+    /// The reusable scenario this investigation pinned, with the exact revision
+    /// and content hash it ran. A correction elsewhere never changes this trace;
+    /// read the scenario to see whether a newer revision exists.
+    scenario_id: String,
+    scenario_revision: u64,
+    scenario_definition_hash: String,
     /// Caller-graded axes on this investigation (PATCHed via
     /// PATCH /api/investigations/{id}). Free-form names, caller-chosen
     /// scales (0..1, 1..5, anything); the harness stores them and never
@@ -565,144 +577,141 @@ struct InvestigationPatchView {
     info(
         title = "prompt-explore API",
         version = env!("CARGO_PKG_VERSION"),
-        description = "Property-based testing for agent behavior. You AUTHOR one scenario \
-                       (a test case: a world, an input domain, and a protagonist — see the \
-                       Scenario schema) and submit it with a prompt under test (PUT) and an \
-                       optional free-form `reason` justifying the run. A job runs that one scenario: the simulator \
-                       picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in \
-                       it. The harness then surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, \
-                       and full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict. \
-                       The `reason` justifies the run — what it aims to accomplish, what \
-                       changed compared to previous runs, what a reader should know (there \
-                       is no strict standard) — and is surfaced with the result to guide \
-                       reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; \
-                       the deliverable is the conversation trace, and the caller reads it and \
-                       decides what (if anything) to fix. The API is job-based: POST returns \
-                       a job id immediately; poll GET /api/investigations/{id} for status, then read \
-                       GET /api/investigations/{id}/evidence for the complete nonduplicated conversation.
+        description = "Property-based testing for agent behavior. You author a reusable \
+                       SCENARIO once (a test case: a world narrative, an input domain, a \
+                       protagonist, the tool surface, and optional Lua implementations of those \
+                       tools), develop and TEST its simulation with direct tool-call probes, \
+                       and then run many investigations against it. Each investigation = one \
+                       scenario revision + one prompt under test (PUT) + one conversation. The \
+                       harness surfaces COMPLETE EVIDENCE — the world, input domain, resolved \
+                       inputs, and the full trace of model turns — or explicit failure evidence. \
+                       THE CALLER IS THE JUDGE: there is no in-harness verdict, and the optional \
+                       `reason` is advisory framing for whoever reads the traces.
 
  \
-                       WORKED OPTIMIZATION LOOP (the caller does every judgment):
+                       WORKED LOOP (the caller does every judgment):
  \
-                       1. GET /api/models lists catalogs, NOT generation readiness or credit balance. \
-                       Before a large fanout, run one small investigation with both chosen roles. \
-                       A quota/balance failure needs provider/operator action, not a prompt edit. \
-                       Keep the simulator configuration stable when comparing PUT prompts/models, \
-                       but expect each run to simulate afresh; identical settings do NOT pin responses.
+                       1. POST /api/scenarios registers the world: `world`, `input_domain`, \
+                       `user_message`, `simulator_notes`, `tools[]` (name/description/parameters/ \
+                       side_effect, plus optional `lua_source`), and `simulation` settings (the \
+                       simulator model, thinking level, limits, and Lua sandbox limits). Supply \
+                       the initial workspace once, as the optional `workspace` .zip part of a \
+                       multipart body (part `request` = the JSON, part `workspace` = the archive). \
+                       The response `id` + `revision` are what you reference afterwards.
  \
-                       2. POST one scenario per investigation; record campaign/variant attributes. \
-                       For code tools, specify root paths, literal versus regex search, and response \
-                       shape in their descriptions/world. Do not assume host workspace grep implements \
-                       the same semantics as your invented tool. Include difficult negative controls.
+                       2. Develop the simulation BEFORE spending investigations. POST \
+                       /api/scenarios/{id}/simulations with an ordered `tool_calls` list; poll \
+                       GET /api/scenarios/{id}/simulations/{probe_id}. Each call is rendered \
+                       through the SAME engine an investigation uses (same argument validation, \
+                       same Lua sandbox and rollback, same LLM delegation), so what you test is \
+                       what runs. Read every call's `response`, `lua_execution` (computed vs \
+                       delegated vs errored, with `source_hash`) and `workspace_ops`. Calls in one \
+                       submission run in sequence in one session, so write/read consistency is \
+                       testable; each submission starts from a fresh snapshot. A probe never \
+                       invokes the PUT and never becomes a frontier candidate. You need no local \
+                       Lua toolchain: the server parses, sandboxes, and executes the source.
  \
-                       3. Poll, then GET /api/investigations/{id}/evidence. Read execution.stop_reason, \
-                       budget and timing first: done means a trace was recorded, not necessarily a final \
-                       answer. Read turns in order, including EVERY tool_exchanges[].call AND response. \
-                       The response is the PUT observation; workspace_ops is only supporting provenance. \
-                       lua_execution=computed means code executed, NOT that the response is faithful. \
-                       A final correct answer can hide invalid root listings, false-empty searches or \
-                       invented files. Inspect generated revisions too; rerunning regenerates code. \
-                       Do not grade fidelity from outcome counts or final answers alone. Preserve \
-                       simulation limitations in your assessment; withhold unsupported grades.
+                       3. Iterate: PATCH /api/scenarios/{id} with the complete new definition plus \
+                       the `expected_revision` you read (a stale value is refused). Editing is \
+                       allowed exactly while NO investigation references the scenario; you need \
+                       no separate publish step — submitting an investigation pins it.
  \
-                       4. Record the judgment in the product, not only local prose: PATCH the id with \
-                       grades and assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better; one inspected case, not a precision estimate\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. \
-                       Adapt the score and references to what actually happened; the example is NOT \
-                       a grading algorithm. Use assessment alone when no numeric grade is justified. \
-                       Grades are caller-owned; the harness validates only shape and reference bounds. \
-                       When a new assessment invalidates earlier scores, clear those stale grades in \
-                       the SAME PATCH (for example grades:{grounded:null,quality:null}) or replace them \
-                       with justified values. An assessment warning alone does not remove old scores \
-                       from the frontier; never plot a discredited grade as if it were current evidence.
+                       4. Check inputs too. A probe may pass `resolved_inputs` to pin the inputs \
+                       for one test; omit it to sample them. Every run reports what it actually \
+                       used in `resolved_inputs`.
  \
-                       5. POST /api/frontier with explicit grouping for the variables you compare. \
-                       Backend example: {\"group_by\":[\"campaign\",\"variant\",\"simulation_backend\",\"step_budget\",\"token_budget\"],\"axes\":[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]}. \
-                       All stored jobs remain candidates. A listing/card filter never limits frontier \
-                       candidacy; unrelated/null groups and excluded members remain explicit. Defaults \
-                       group by PUT settings/prompt, so they MERGE different simulator backends unless \
-                       you add the backend key. The caller owns corpus comparability and grade scales.
+                       5. POST /api/investigations with `scenario_id` (plus optional \
+                       `scenario_revision` as a staleness guard and optional `resolved_inputs`), \
+                       `put` (template, design goals), the PUT's model/thinking level, and the \
+                       investigation's budget/reason/attributes. The tool surface comes from the \
+                       scenario: `put.tools` is rejected here rather than silently ignored. \
+                       Submission pins the scenario immediately and atomically.
  \
-                       6. Hand off a shareable dashboard URL using URL-encoded JSON query values \
-                       group_by (array of attribute names), axes (array of name/better objects), and \
-                       attributes (exact string matches for CARDS ONLY). Example before URL encoding: \
-                       /?group_by=[\"campaign\",\"variant\",\"simulation_backend\"]&axes=[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]&attributes={\"campaign\":\"trial\"}. \
-                       Never put bearer tokens in the URL. Archive evidence/requests for durability: \
-                       jobs and caller annotations are in memory and lost on restart.
-
+                       6. Poll GET /api/investigations/{id}, then read \
+                       GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget \
+                       and timing first: done means a trace was recorded, not necessarily a final \
+                       answer. Read turns in order, including EVERY tool_exchanges[].call AND \
+                       response. The response is the PUT observation; workspace_ops is only \
+                       supporting provenance. lua_execution=computed means code executed, NOT \
+                       that the response is faithful. A final correct answer can hide invalid \
+                       root listings, false-empty searches, or invented files.
+ \
+                       7. Record the judgment in the product: PATCH the id with grades and \
+                       assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. \
+                       Clear stale grades in the SAME PATCH when an assessment invalidates them \
+                       (grades:{\"quality\":null}). Grades are caller-owned; the harness stores them \
+                       and never interprets them.
+ \
+                       8. Fixing a simulation after traces exist: the scenario is pinned, so \
+                       POST /api/scenarios/{id}/fork (optionally with a `correction` note naming \
+                       the predecessor). The fork is editable and shares the initial workspace \
+                       without re-uploading it. Every investigation reports scenario_id, \
+                       scenario_revision and scenario_definition_hash, so you can tell exactly \
+                       which traces ran the old definition and re-run only those.
+ \
+                       9. POST /api/frontier with explicit grouping for the variables you compare \
+                       (attributes include scenario_id/scenario_revision/scenario_hash, \
+                       simulation_backend, step_budget and token_budget). All stored jobs remain \
+                       candidates; a card filter never limits candidacy. The caller owns corpus \
+                       comparability and grade scales. Share state via URL-encoded query values \
+                       (group_by, axes, attributes) — never a bearer token.
+ \
+                       Archiving: scenarios, investigations, grades and probes are all in \
+                       memory and lost on restart. GET /api/scenarios/{id}/workspace exports the \
+                       initial workspace inventory; a hash alone is not a reproducible workspace.
  \
                        DESIGN INTENT — why it works this way:
  \
-                       • Scenarios are world SPECIFICATIONS, not instantiated data. A \
-                       narrative pins what exists (inventory; facts, including NEGATIVE \
-                       facts; completeness assertions; rendering rules) and the simulator \
-                       lazily renders concrete tool responses from it. Materializing a full \
-                       environment requires a closed world (enumerable, bounded, copyable); \
-                       open worlds — web search, email, a payment network — can never be \
-                       materialized, so a narrative (prose) is the only mechanism that \
-                       generalizes. This is why a scenario is a spec, not a fixture.
+                       • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative \
+                       pins what exists (inventory; facts, including NEGATIVE facts; completeness \
+                       assertions; rendering rules) and the simulator lazily renders concrete \
+                       tool responses from it. Materializing a full environment requires a closed \
+                       world (enumerable, bounded, copyable); open worlds — web search, email, a \
+                       payment network — can never be materialized, so a narrative is the only \
+                       mechanism that generalizes. The optional workspace .zip is the container \
+                       form of a closed world: upload it once with the scenario to hand the \
+                       simulator authoritative bytes.
  \
-                       • Tool responses are SIMULATED from the narrative. By default every \
-                       response is rendered by the LLM. Experimental opt-in \
-                       conversation_controls.lua_simulation={} lets that same simulator \
-                       specialize optional Lua tool implementations before the PUT loop and \
-                       during later fallbacks. This accelerates computations, NOT a cache or \
-                       a semantic correctness guarantee. Unimplemented inputs delegate through \
-                       PleaseSimulateException; runtime errors delegate with explicit error \
-                       evidence and rolled-back Lua writes. The generated source and revision \
-                       history are visible in simulation_program, beside resolved_inputs, on \
-                       both progress and result.trace. Each exchange records lua_execution when \
-                       tried. All computed/LLM responses enter the same simulator conversation. \
-                       Progress reports its phase: resolving_inputs, preparing_tools, or put_loop. \
-                       Lua has only bounded workspace \
-                       capabilities, no host IO, randomness, or clock. The caller judges code \
-                       and traces against the narrative; example_responses remain realism \
-                       hints, NOT pinned outputs.
+                       • Tool responses are SIMULATED from the narrative. By default the \
+                       simulator LLM renders every response. A tool with `lua_source` is tried \
+                       in the sandbox FIRST: a computed reply costs no model call, \
+                       `PleaseSimulateException(\"reason\")` delegates that one input, and a \
+                       runtime error delegates too while keeping distinct error evidence and \
+                       discarding its staged workspace writes. Code supplied is code run — there \
+                       is no enable switch, and the harness never authors, repairs or rewrites \
+                       the source. Code that executed is NOT proof it is faithful: read the \
+                       responses against the world.
  \
                        • The answer to simulation unreliability is TRANSPARENCY, not \
-                       enforcement. Every tool response is in the trace and the caller sees \
-                       the same narrative, so a response that contradicts the stated facts is \
-                       VISIBLE for the caller to read. Divergence is SURFACED, not silently \
-                       fixed.
+                       enforcement: every response is in the trace, the same narrative is \
+                       visible, and a response that contradicts the stated facts is visible for \
+                       the caller to catch. When simulation quality is insufficient, sharpen the \
+                       narrative, fix the implementation, or use a stronger simulator model \
+                       (which is set on the SCENARIO, because the environment is part of the \
+                       test case).
  \
-                       • Because tool responses are LLM-simulated, an investigation MAY \
-                       contain unrealistic or WRONG results — responses that contradict the \
-                       narrative, invent facts, or drift across calls. The harness does NOT \
-                       vet them (there is no judge). It is the CALLER'S responsibility to \
-                       read the traces and double-check the simulated tool responses \
-                       thoroughly. When simulation quality is insufficient, iterate with two \
-                       levers and re-run the same scenarios: (a) sharpen the scenario \
-                       NARRATIVE — tighter facts and negative facts; (b) use a stronger \
-                       SIM_MODEL — it must be powerful enough to simulate believably.
+                       • Reports clearly separate what was deterministic (validation, state \
+                       patches, workspace bytes, usage, timing) from what was semantic (model \
+                       output, rendered tool responses). The caller judges the semantic part.
  \
-                       THE SIMULATION WORKSPACE (optional, closed-world materialization). \
-                       POST /api/investigations also accepts `multipart/form-data` with an \
-                       optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY \
-                       (never on disk) that seeds an in-memory filesystem the tool SIMULATOR \
-                       consults. Narratives remain the only mechanism that generalizes (open \
-                       worlds can't be materialized), but a zip IS a closed world — so when \
-                       you have one (a repo slice, a corpus of articles, a mailbox export) you \
-                       can hand it over so the simulator can consult authoritative bytes. \
-                       This does NOT guarantee its returned reads/greps/listings are faithful; \
-                       inspect the actual responses even when workspace operations succeeded. The simulator accesses the \
-                       workspace with four tools — read, write, list_dir, grep — and it is \
-                       named the \"simulation workspace\" in its own prompt, so your scenario \
-                       `world` can address it by that name and instruct it (e.g. \"use the \
-                       write tool to record any generated source code\"). The workspace is \
-                       EPHEMERAL and per-trace (every scenario run gets a fresh copy; the \
-                       agent under test never sees it — only tool responses). WHEN the \
-                       simulator uses it is the world narrative's policy, not the harness's: \
-                       state what the zip contains, where things live, and its completeness \
-                       stance (closed: \"these are ALL the files; anything else is not \
-                       found\"; partial: \"these are SOME files; simulate the rest\"). Each \
-                       tool exchange records the simulator's workspace operations \
-                       (`workspace_ops`) so you can judge whether an answer was grounded in \
-                       the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB \
-                       decompressed (overridable via
-                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);
-                       zip-slip entries and files in the reserved .prompt-explore namespace \
-                       are rejected. That namespace holds private program-authoring artifacts; \
-                       Lua application workspace capabilities cannot list/read/grep/write it.
-
+                       • Phases: progress.phase is resolving_inputs or put_loop. There is no \
+                       preparation phase; nothing is compiled or generated during a run.
+ \
+                       THE SIMULATION WORKSPACE (optional, closed-world materialization). The \
+                       optional `workspace` .zip is decompressed ENTIRELY IN MEMORY (never on \
+                       disk) and seeds an in-memory filesystem the tool SIMULATOR consults. The \
+                       simulator accesses it with four tools — read, write, list_dir, grep. The \
+                       workspace is EPHEMERAL and per-run (every run gets a fresh copy of the \
+                       scenario's seed; the agent under test never sees it — only tool \
+                       responses). WHEN the simulator uses it is the world narrative's policy: \
+                       state what the archive contains, where things live, and its completeness \
+                       stance (closed: \"these are ALL the files\"; partial: \"these are SOME \
+                       files; simulate the rest\"). Each tool exchange records the simulator's \
+                       workspace operations (`workspace_ops`) so you can judge whether an \
+                       answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB \
+                       compressed, ≤ 500 MB decompressed (overridable via \
+                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT); zip-slip \
+                       entries and files in the reserved .prompt-explore namespace are rejected. \
  \
                        AUTHENTICATION. The server is open by default. When \
                        PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* \
@@ -711,7 +720,27 @@ struct InvestigationPatchView {
                        web UI prompts for the token and stores it in localStorage."
     ),
     modifiers(&SecurityAddon),
-    paths(index, list_investigations, create_investigation, get_investigation, evidence::get_evidence, patch_investigation, delete_investigation, frontier, list_models)
+    paths(
+        index,
+        list_investigations,
+        create_investigation,
+        get_investigation,
+        evidence::get_evidence,
+        patch_investigation,
+        delete_investigation,
+        scenarios::list_scenarios,
+        scenarios::create_scenario,
+        scenarios::get_scenario,
+        scenarios::patch_scenario,
+        scenarios::fork_scenario,
+        scenarios::delete_scenario,
+        scenarios::get_scenario_workspace,
+        scenarios::create_probe,
+        scenarios::list_probes,
+        scenarios::get_probe,
+        frontier,
+        list_models
+    )
 )]
 struct ApiDoc;
 
@@ -852,6 +881,36 @@ fn build_app(state: Arc<AppState>) -> Router {
             "/api/investigations/{id}/evidence",
             get(evidence::get_evidence),
         )
+        .route(
+            "/api/scenarios",
+            get(scenarios::list_scenarios)
+                .post(scenarios::create_scenario)
+                .route_layer(DefaultBodyLimit::max(investigation_body_limit())),
+        )
+        .route(
+            "/api/scenarios/{id}",
+            get(scenarios::get_scenario)
+                .patch(scenarios::patch_scenario)
+                .delete(scenarios::delete_scenario)
+                .route_layer(DefaultBodyLimit::max(investigation_body_limit())),
+        )
+        .route(
+            "/api/scenarios/{id}/fork",
+            post(scenarios::fork_scenario)
+                .route_layer(DefaultBodyLimit::max(investigation_body_limit())),
+        )
+        .route(
+            "/api/scenarios/{id}/workspace",
+            get(scenarios::get_scenario_workspace),
+        )
+        .route(
+            "/api/scenarios/{id}/simulations",
+            get(scenarios::list_probes).post(scenarios::create_probe),
+        )
+        .route(
+            "/api/scenarios/{id}/simulations/{probe_id}",
+            get(scenarios::get_probe),
+        )
         .route("/api/frontier", post(frontier))
         .route("/api/models", get(list_models))
         .route("/api/openapi.json", get(openapi_json))
@@ -900,7 +959,7 @@ fn fabricate_done_job(
         final_world_state: HashMap::new(),
         tool_calls: 0,
         resolved_inputs: HashMap::new(),
-        simulation_program: None,
+        implementations: Vec::new(),
     };
     let usage = UsageByRole {
         put: prompt_explore::llm::UsageTotals {
@@ -943,6 +1002,9 @@ fn fabricate_done_job(
             },
             grades: BTreeMap::new(),
             scenario,
+            scenario_id: "scn-demo".into(),
+            scenario_revision: 1,
+            scenario_definition_hash: "demo".into(),
             put_model: "zai_coding::glm-5.2".into(),
             sim_model: "zai_coding::glm-5.2".into(),
             put_thinking_level: None,
@@ -1023,6 +1085,8 @@ async fn main() {
     let state = Arc::new(AppState {
         client: Some(Arc::new(client)),
         jobs: Mutex::new(HashMap::new()),
+        scenarios: Mutex::new(ScenarioStore::new()),
+        probes: Mutex::new(HashMap::new()),
         default_provider: provider.clone(),
         models_client: prompt_explore::llm::GenaiClient::builder()
             .build()
@@ -1338,59 +1402,38 @@ async fn index() -> impl axum::response::IntoResponse {
     )
 )]
 async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    let content_type = req
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    let (investigate_req, workspace_seed) = if content_type.starts_with("multipart/") {
-        match parse_multipart_request(req, &state).await {
-            Ok(v) => v,
-            Err(msg) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": msg })),
-                )
-                    .into_response();
-            }
+    let limit = 16 * 1024 * 1024;
+    let bytes = match to_bytes(req.into_body(), limit).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": format!("could not read request body: {error}") })),
+            )
+                .into_response();
         }
-    } else {
-        // application/json (the default): the body is the JSON, no workspace.
-        let limit = 16 * 1024 * 1024;
-        let bytes = match to_bytes(req.into_body(), limit).await {
-            Ok(b) => b,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(
-                        serde_json::json!({ "error": format!("could not read request body: {e}") }),
-                    ),
-                )
-                    .into_response();
-            }
-        };
-        let r: InvestigateRequest = match serde_json::from_slice(&bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": format!("body is not valid InvestigateRequest JSON: {e}")
-                    })),
-                )
-                    .into_response();
-            }
-        };
-        (r, Workspace::empty())
+    };
+    let investigate_req: InvestigateRequest = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "body is not valid InvestigateRequest JSON: {error}. An investigation now \
+                         names its world: send {{\"scenario_id\": \"<id from POST /api/scenarios>\", \
+                         \"put\": {{\"id\", \"template\", \"design_goals\"}}, \"investigation\": \
+                         {{\"budget\": ...}}}}; the tool surface comes from the scenario"
+                    )
+                })),
+            )
+                .into_response();
+        }
     };
 
-    // Fail fast when the adapter would silently ignore a thinking level.
-    // Per-model keyword validation remains with the provider during the run.
-    // Bare names resolve through the
-    // server's default provider, exactly as they will at call time.
-    if let Some(err) = thinking_level_problem(&investigate_req, &state.default_provider)
+    // Fail fast on migrations and on a thinking level the adapter would ignore.
+    if let Some(err) = migrated_request_field(&investigate_req)
+        .or_else(|| thinking_level_problem(&investigate_req, &state.default_provider))
         .or_else(|| conversation_controls_problem(&investigate_req.conversation_controls))
         .or_else(|| validate_post_attributes(&investigate_req.attributes).err())
     {
@@ -1401,25 +1444,77 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
             .into_response();
     }
 
-    let id = spawn_investigation(state.clone(), investigate_req, workspace_seed);
+    // Resolve the scenario and pin it in ONE critical section: an accepted
+    // investigation must never race an edit, and a rejected one must not lock
+    // the scenario. The job record and the reference are inserted under the
+    // same store lock (deletion takes the same locks in the same order), so a
+    // concurrent delete either sees the reference and refuses, or wins before
+    // this submission reads the record at all.
+    let mut store = state.scenarios.lock().unwrap();
+    let (runtime, scenario_snapshot, scenario_revision, scenario_definition_hash) = {
+        let Some(record) = store.get(&investigate_req.scenario_id) else {
+            return scenarios::store_error_response(prompt_explore::scenario::StoreError::NotFound(
+                investigate_req.scenario_id.clone(),
+            ));
+        };
+        if let Some(expected) = investigate_req.scenario_revision {
+            if expected != record.revision {
+                return scenarios::store_error_response(
+                    prompt_explore::scenario::StoreError::StaleRevision {
+                        id: investigate_req.scenario_id.clone(),
+                        expected,
+                        current: record.revision,
+                    },
+                );
+            }
+        }
+        let workspace_limits = scenario_workspace_limits(&record.definition.simulation);
+        let runtime = runtime_for(
+            record,
+            record.workspace.clone().with_tool_limits(workspace_limits),
+        );
+        (
+            runtime,
+            record.definition.scenario(),
+            record.revision,
+            record.definition_hash.clone(),
+        )
+    };
+
+    // The prompt under test supplies its template and design goals; the tool
+    // surface is the scenario's.
+    let mut put = investigate_req.put.clone();
+    put.tools = runtime.tools.clone();
+
+    let id = spawn_investigation(
+        state.clone(),
+        &investigate_req,
+        put,
+        scenario_snapshot,
+        scenario_revision,
+        scenario_definition_hash,
+        runtime,
+        Some(&mut store),
+    );
+    drop(store);
     let attributes = state.jobs.lock().unwrap()[&id].attributes.clone();
     (StatusCode::ACCEPTED, Json(JobCreated { id, attributes })).into_response()
 }
 
-/// Validate the request's thinking levels against the models they will
-/// run on: `None` when both are fine, or a caller-readable error
-/// string. Independent per role — the PUT's model is checked for
-/// `put_thinking_level`, the simulator's (which may be a different
-/// provider) for `sim_thinking_level`.
+/// Resolve the PUT's model (the only model this request owns; the simulator's
+/// is the scenario's).
 fn resolved_models(req: &InvestigateRequest) -> (String, String) {
     (
         req.put_model.clone().unwrap_or_else(|| MODEL.into()),
-        req.sim_model.clone().unwrap_or_else(|| MODEL.into()),
+        MODEL.into(),
     )
 }
 
+/// Fail fast when the adapter would silently ignore a thinking level. Only the
+/// PUT's level is request-owned here; the scenario's simulator level is checked
+/// when the probe or run resolves it.
 fn thinking_level_problem(req: &InvestigateRequest, default_provider: &str) -> Option<String> {
-    let (put_model, sim_model) = resolved_models(req);
+    let (put_model, _) = resolved_models(req);
     let mut problems = Vec::new();
     if let Some(level) = req.put_thinking_level {
         let qualified = prompt_explore::llm::qualify_model(&put_model, default_provider);
@@ -1429,183 +1524,161 @@ fn thinking_level_problem(req: &InvestigateRequest, default_provider: &str) -> O
             ));
         }
     }
-    if let Some(level) = req.sim_thinking_level {
-        let qualified = prompt_explore::llm::qualify_model(&sim_model, default_provider);
-        if let Err(e) = prompt_explore::llm::thinking_level_supported(&qualified) {
-            problems.push(format!(
-                "sim_thinking_level {level:?} on '{sim_model}': {e}"
-            ));
-        }
-    }
     (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 fn conversation_controls_problem(controls: &ConversationControls) -> Option<String> {
-    if let Some(lua) = &controls.lua_simulation {
-        if let Err(error) = lua.validate() {
-            return Some(format!("conversation_controls.lua_simulation: {error}"));
-        }
-    }
     let mut problems = Vec::new();
-    for (name, value) in [
-        ("put_temperature", controls.put_temperature),
-        ("sim_temperature", controls.sim_temperature),
-    ] {
-        if value.is_some_and(|v| !v.is_finite() || v < 0.0) {
-            problems.push(format!(
-                "conversation_controls.{name} must be finite and non-negative"
-            ));
-        }
-    }
-    for (name, value) in [
-        ("put_max_tokens", controls.put_max_tokens.map(u64::from)),
-        ("sim_max_tokens", controls.sim_max_tokens.map(u64::from)),
+    for (name, supplied, guidance) in [
+        (
+            "sim_temperature",
+            controls.sim_temperature.is_some(),
+            "simulation.temperature",
+        ),
+        (
+            "sim_max_tokens",
+            controls.sim_max_tokens.is_some(),
+            "simulation.max_tokens",
+        ),
         (
             "sim_max_repair_attempts",
-            controls.sim_max_repair_attempts.map(|v| v as u64),
+            controls.sim_max_repair_attempts.is_some(),
+            "simulation.max_repair_attempts",
+        ),
+        (
+            "max_workspace_turns",
+            controls.max_workspace_turns.is_some(),
+            "simulation.max_workspace_turns",
         ),
         (
             "workspace_max_read_lines",
-            controls.workspace_max_read_lines.map(|v| v as u64),
+            controls.workspace_max_read_lines.is_some(),
+            "simulation.workspace.max_read_lines",
         ),
         (
             "workspace_max_grep_matches",
-            controls.workspace_max_grep_matches.map(|v| v as u64),
+            controls.workspace_max_grep_matches.is_some(),
+            "simulation.workspace.max_grep_matches",
         ),
         (
             "workspace_max_line_len",
-            controls.workspace_max_line_len.map(|v| v as u64),
+            controls.workspace_max_line_len.is_some(),
+            "simulation.workspace.max_line_len",
         ),
         (
             "workspace_max_output_bytes",
-            controls.workspace_max_output_bytes.map(|v| v as u64),
+            controls.workspace_max_output_bytes.is_some(),
+            "simulation.workspace.max_output_bytes",
         ),
     ] {
-        if value == Some(0) {
+        if supplied {
             problems.push(format!(
-                "conversation_controls.{name} must be greater than zero"
+                "conversation_controls.{name} is simulator-owned and no longer accepted here: \
+                 the environment is part of the scenario, so set it at \
+                 {guidance} on the scenario definition (PATCH /api/scenarios/{{id}}, or \
+                 POST /api/scenarios/{{id}}/fork to change a pinned one)"
             ));
         }
     }
     if controls
-        .workspace_max_output_bytes
-        .is_some_and(|value| value > prompt_explore::simulate::workspace::MAX_OUTPUT_BYTES)
+        .put_temperature
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
     {
-        problems.push(format!(
-            "conversation_controls.workspace_max_output_bytes must not exceed {}",
-            prompt_explore::simulate::workspace::MAX_OUTPUT_BYTES
-        ));
+        problems.push(
+            "conversation_controls.put_temperature must be finite and non-negative".into(),
+        );
+    }
+    if controls.put_max_tokens == Some(0) {
+        problems.push("conversation_controls.put_max_tokens must be greater than zero".into());
     }
     (!problems.is_empty()).then(|| problems.join("; "))
 }
 
-/// Parse a `multipart/form-data` body: a required `request` part (the
-/// `InvestigateRequest` JSON) and an optional `workspace` part (a .zip
-/// that seeds the simulation workspace). Returns an error string on any
-/// failure (reported to the caller as HTTP 400).
-async fn parse_multipart_request(
-    req: Request,
-    state: &Arc<AppState>,
-) -> Result<(InvestigateRequest, Workspace), String> {
-    let mut multipart = Multipart::from_request(req, state)
-        .await
-        .map_err(|e| format!("could not begin multipart parsing: {e}"))?;
-    let mut request: Option<InvestigateRequest> = None;
-    let mut workspace = Workspace::empty();
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| format!("could not read multipart field: {e}"))?
-    {
-        let name = field.name().unwrap_or("").to_string();
-        match name.as_str() {
-            "request" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| format!("could not read 'request' part: {e}"))?;
-                let r: InvestigateRequest = serde_json::from_slice(&bytes).map_err(|e| {
-                    format!("the 'request' part is not valid InvestigateRequest JSON: {e}")
-                })?;
-                request = Some(r);
-            }
-            "workspace" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| format!("could not read 'workspace' part: {e}"))?;
-                let compressed_limit = workspace_compressed_limit();
-                let decompressed_limit = workspace_decompressed_limit();
-                // unpack_zip_with_limits enforces the compressed/decompressed
-                // caps and zip-slip rejection; nothing is written to disk.
-                workspace = unpack_zip_with_limits(&bytes, compressed_limit, decompressed_limit)
-                    .map_err(|e| e.to_string())?;
-            }
-            other => {
-                eprintln!("ignoring unknown multipart part '{other}'");
-            }
-        }
+/// Migration guidance for request fields that moved to the scenario.
+fn migrated_request_field(req: &InvestigateRequest) -> Option<String> {
+    let mut problems = Vec::new();
+    if req.scenario.is_some() || req.scenarios.is_some() {
+        problems.push(
+            "`scenario`/`scenarios` are no longer accepted inline: register the world once \
+             with POST /api/scenarios (which is also where the initial workspace, the tool \
+             surface and any Lua implementations belong), then submit investigations with \
+             `scenario_id`"
+                .to_string(),
+        );
     }
-    let request = request.ok_or_else(|| {
-        "multipart body is missing the required 'request' part \
-         (the InvestigateRequest JSON)"
-            .to_string()
-    })?;
-    Ok((request, workspace))
+    if req.sim_model.is_some() {
+        problems.push(
+            "`sim_model` moved to the scenario: set simulation.sim_model on the scenario \
+             (PATCH /api/scenarios/{id}, or fork a pinned one). The simulator is the test \
+             environment, so its model is part of the test case"
+                .to_string(),
+        );
+    }
+    if req.sim_thinking_level.is_some() {
+        problems.push(
+            "`sim_thinking_level` moved to the scenario: set \
+             simulation.sim_thinking_level on the scenario"
+                .to_string(),
+        );
+    }
+    if !req.put.tools.is_empty() {
+        problems.push(
+            "`put.tools` is no longer authored per investigation: the tool surface belongs to \
+             the scenario (definition.tools). Remove `tools` from the PUT here; the referenced \
+             scenario's contracts are used"
+                .to_string(),
+        );
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 /// Create a job for `req`, spawn its run, and return the job id.
 /// `workspace_seed` seeds the simulator's in-memory workspace for every
 /// trace (cloned per trace; the seed is shared by Arc).
+/// Resolve the PUT's own controls (investigation-owned) and the simulator's
+/// (scenario-owned, already resolved into the runtime).
 fn resolved_conversation_controls(
     controls: &ConversationControls,
-) -> (
-    RunnerOptions,
-    WorkspaceToolLimits,
-    ResolvedConversationControls,
-) {
+    runtime: &prompt_explore::simulate::ScenarioRuntime,
+    workspace: &WorkspaceToolLimits,
+) -> (RunnerOptions, ResolvedConversationControls) {
     let mut runner = RunnerOptions::default();
-    let mut workspace = WorkspaceToolLimits::default();
     runner.put_temperature = controls.put_temperature.or(runner.put_temperature);
     runner.put_max_tokens = controls.put_max_tokens.or(runner.put_max_tokens);
-    runner.simulator.lua_simulation = controls.lua_simulation.clone();
-    runner.simulator.temperature = controls.sim_temperature.or(runner.simulator.temperature);
-    runner.simulator.max_tokens = controls.sim_max_tokens.or(runner.simulator.max_tokens);
-    runner.simulator.max_repair_attempts = controls
-        .sim_max_repair_attempts
-        .unwrap_or(runner.simulator.max_repair_attempts);
-    runner.simulator.max_workspace_turns = controls.max_workspace_turns.unwrap_or_else(|| {
-        std::env::var("PROMPT_EXPLORE_MAX_WORKSPACE_TURNS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_MAX_WORKSPACE_TURNS)
-    });
-    workspace.max_read_lines = controls
-        .workspace_max_read_lines
-        .unwrap_or(workspace.max_read_lines);
-    workspace.max_grep_matches = controls
-        .workspace_max_grep_matches
-        .unwrap_or(workspace.max_grep_matches);
-    workspace.max_line_len = controls
-        .workspace_max_line_len
-        .unwrap_or(workspace.max_line_len);
-    workspace.max_output_bytes = controls
-        .workspace_max_output_bytes
-        .unwrap_or(workspace.max_output_bytes);
     let resolved = ResolvedConversationControls {
         put_temperature: runner.put_temperature,
         put_max_tokens: runner.put_max_tokens,
-        sim_temperature: runner.simulator.temperature,
-        sim_max_tokens: runner.simulator.max_tokens,
-        lua_simulation: runner.simulator.lua_simulation.clone(),
-        sim_max_repair_attempts: runner.simulator.max_repair_attempts,
-        max_workspace_turns: runner.simulator.max_workspace_turns,
-        workspace_max_read_lines: workspace.max_read_lines,
-        workspace_max_grep_matches: workspace.max_grep_matches,
-        workspace_max_line_len: workspace.max_line_len,
-        workspace_max_output_bytes: workspace.max_output_bytes,
+        simulator: ResolvedSimulatorSettings {
+            sim_temperature: runtime.simulator.temperature,
+            sim_max_tokens: runtime.simulator.max_tokens,
+            sim_max_repair_attempts: runtime.simulator.max_repair_attempts,
+            max_workspace_turns: runtime.simulator.max_workspace_turns,
+            lua: runtime.simulator.lua_simulation.clone(),
+            workspace_max_read_lines: workspace.max_read_lines,
+            workspace_max_grep_matches: workspace.max_grep_matches,
+            workspace_max_line_len: workspace.max_line_len,
+            workspace_max_output_bytes: workspace.max_output_bytes,
+        },
     };
-    (runner, workspace, resolved)
+    (runner, resolved)
+}
+
+/// Workspace bounds for a scenario: its explicit limits, otherwise the
+/// documented defaults (or the `PROMPT_EXPLORE_MAX_WORKSPACE_TURNS`-style env
+/// override where one exists).
+fn scenario_workspace_limits(
+    settings: &prompt_explore::model::scenario::SimulationSettings,
+) -> prompt_explore::simulate::WorkspaceToolLimits {
+    let defaults = WorkspaceToolLimits::default();
+    let limits = &settings.workspace;
+    WorkspaceToolLimits {
+        max_read_lines: limits.max_read_lines.unwrap_or(defaults.max_read_lines),
+        max_grep_matches: limits.max_grep_matches.unwrap_or(defaults.max_grep_matches),
+        max_line_len: limits.max_line_len.unwrap_or(defaults.max_line_len),
+        max_output_bytes: limits
+            .max_output_bytes
+            .unwrap_or(defaults.max_output_bytes),
+    }
 }
 
 fn epoch_millis() -> u64 {
@@ -1615,10 +1688,16 @@ fn epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_investigation(
     state: Arc<AppState>,
-    req: InvestigateRequest,
-    workspace_seed: Workspace,
+    req: &InvestigateRequest,
+    put: PromptUnderTest,
+    scenario: Scenario,
+    scenario_revision: u64,
+    scenario_definition_hash: String,
+    runtime: prompt_explore::simulate::ScenarioRuntime,
+    mut store: Option<&mut ScenarioStore>,
 ) -> String {
     let id = Uuid::new_v4().to_string();
     let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
@@ -1626,37 +1705,51 @@ fn spawn_investigation(
     // Resolve the model names now (defaults applied) so they can be
     // surfaced on the job immediately — visible while the run is still
     // in flight, not only after it finishes.
-    let (put_model_requested, sim_model_requested) = resolved_models(&req);
-    // Persist and record the provider-qualified names actually passed to the
-    // client. Bare request names are therefore comparable with explicit ones.
+    let (put_model_requested, _) = resolved_models(req);
     let put_model =
         prompt_explore::llm::qualify_model(&put_model_requested, &state.default_provider);
-    let sim_model =
-        prompt_explore::llm::qualify_model(&sim_model_requested, &state.default_provider);
-    // Model names and thinking levels resolve INDEPENDENTLY per role: the
-    // simulator never inherits the PUT's omitted provider-default setting.
+    // The simulator's model is the SCENARIO's, resolved independently of the
+    // PUT's: the environment is part of the test case.
+    let sim_model = prompt_explore::llm::qualify_model(
+        runtime
+            .settings
+            .sim_model
+            .clone()
+            .unwrap_or_else(|| MODEL.to_string())
+            .as_str(),
+        &state.default_provider,
+    );
     let put_thinking_level = req.put_thinking_level;
-    let sim_thinking_level = req.sim_thinking_level;
-    let (runner_options, workspace_limits, conversation_controls) =
-        resolved_conversation_controls(&req.conversation_controls);
-    let workspace_seed = workspace_seed.with_tool_limits(workspace_limits);
-    let workspace_files = workspace_seed.file_count();
-    // The core workspace canonicalizes sorted seed paths and bytes. Empty
-    // (including no upload) has a stable digest rather than a missing attribute.
-    let workspace_hash = attributes::workspace_hash(&workspace_seed);
+    let sim_thinking_level = runtime.settings.sim_thinking_level;
+    let workspace_limits = scenario_workspace_limits(&runtime.settings);
+    let (runner_options, conversation_controls) = resolved_conversation_controls(
+        &req.conversation_controls,
+        &runtime,
+        &workspace_limits,
+    );
+    let workspace_files = runtime.workspace_seed.file_count();
+    let workspace_hash = attributes::workspace_hash(&runtime.workspace_seed);
     let attributes = attributes::with_execution_attributes(
         system_attributes(
             &put_model,
             &sim_model,
             put_thinking_level,
             sim_thinking_level,
-            &req.put,
+            &put,
             &workspace_hash,
             req.attributes.clone(),
         ),
-        conversation_controls.lua_simulation.is_some(),
+        runtime.lua_enabled(),
         &req.investigation.budget,
     );
+    let mut attributes = attributes;
+    attributes.insert("scenario_id".into(), req.scenario_id.clone());
+    attributes.insert("scenario_revision".into(), scenario_revision.to_string());
+    attributes.insert(
+        "scenario_hash".into(),
+        scenario_definition_hash.clone(),
+    );
+
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
@@ -1668,8 +1761,11 @@ fn spawn_investigation(
             budget: req.investigation.budget.clone(),
             assessment: None,
             reason: req.investigation.reason.clone(),
-            put: req.put.clone(),
-            scenario: req.scenario.clone(),
+            put: put.clone(),
+            scenario: scenario.clone(),
+            scenario_id: req.scenario_id.clone(),
+            scenario_revision,
+            scenario_definition_hash: scenario_definition_hash.clone(),
             put_model: put_model.clone(),
             sim_model: sim_model.clone(),
             put_thinking_level,
@@ -1680,17 +1776,52 @@ fn spawn_investigation(
             attributes,
         },
     );
+    // Pin the scenario in the SAME critical section as the job insert.
+    if let Some(store) = store.as_mut() {
+        if let Err(error) = store.attach_investigation(&req.scenario_id, &id) {
+            // The scenario disappeared between the lookup and here, which the
+            // store lock makes impossible; fail loudly rather than run an
+            // unpinned investigation.
+            eprintln!("could not pin scenario {} for investigation {id}: {error}", req.scenario_id);
+        }
+    }
 
     let state2 = state.clone();
     let id2 = id.clone();
+    let resolved_inputs = req.resolved_inputs.clone();
+    let investigation = req.investigation.clone();
     tokio::spawn(async move {
-        let inner = state2.client.as_ref().unwrap().clone();
+        // A server without provider credentials still accepts the submission
+        // (there is no readiness probe and no invented verdict), then reports
+        // the failure on the job instead of leaving it running forever.
+        let Some(inner) = state2.client.clone() else {
+            let mut jobs = state2.jobs.lock().unwrap();
+            if let Some(job) = jobs.get_mut(&id2) {
+                job.finished_at = Some(epoch_millis());
+                job.status = JobStatus::Failed;
+                job.result = Some(InvestigateResponse {
+                    trace: None,
+                    failure: Some(RunFailure {
+                        stage: "provider".into(),
+                        error: "no LLM client is configured on this server (no provider API \
+                                key): the run never started. Configure a provider, or develop the \
+                                simulation with POST /api/scenarios/{id}/simulations first"
+                            .into(),
+                    }),
+                    usage: UsageByRole {
+                        put: UsageTotals::default(),
+                        sim: UsageTotals::default(),
+                    },
+                });
+            }
+            drop(jobs);
+            state2.scenarios.lock().unwrap().finish_investigation(&id2);
+            return;
+        };
         // One tracker per role so usage is attributable to the PUT
         // model vs. the simulator model separately.
         let put_tracker = Arc::new(UsageTracker::new(inner.clone()));
         let sim_tracker = Arc::new(UsageTracker::new(inner));
-        // Keep the model names for cost attribution below; `sim_model`
-        // is moved into the runner role.
         let put_model_cost = put_model.clone();
         let sim_model_cost = sim_model.clone();
         let investigator = Investigator {
@@ -1704,15 +1835,15 @@ fn spawn_investigation(
                 model: sim_model,
                 thinking_level: sim_thinking_level,
             },
-            workspace_seed,
             runner_options,
         };
 
         let outcome = investigator
             .investigate(
-                &req.investigation,
-                &req.put,
-                &req.scenario,
+                &investigation,
+                &put,
+                &runtime,
+                resolved_inputs.as_ref(),
                 Some(progress.clone()),
             )
             .await;
@@ -1724,7 +1855,7 @@ fn spawn_investigation(
             final_world_state: trace.final_world_state.clone(),
             tool_calls: trace.tool_call_count(),
             resolved_inputs: trace.resolved_inputs.clone(),
-            simulation_program: trace.simulation_program.clone(),
+            implementations: trace.implementations.clone(),
         });
 
         // Attach estimated USD cost where the model catalog prices the
@@ -1769,6 +1900,15 @@ fn spawn_investigation(
                 usage,
             });
         }
+        drop(jobs);
+        // A finished investigation still pins the scenario it ran; only the
+        // "running" flag changes, so deletion stops being blocked by liveness
+        // while the reference (and thus the lock) remains.
+        state2
+            .scenarios
+            .lock()
+            .unwrap()
+            .finish_investigation(&id2);
     });
 
     id
@@ -1908,6 +2048,9 @@ async fn get_investigation(
         sim_thinking_level: job.sim_thinking_level,
         conversation_controls: job.conversation_controls.clone(),
         workspace_files: job.workspace_files,
+        scenario_id: job.scenario_id.clone(),
+        scenario_revision: job.scenario_revision,
+        scenario_definition_hash: job.scenario_definition_hash.clone(),
         grades: job.grades.clone(),
         attributes: job.attributes.clone(),
         put: job.put.clone(),
@@ -2109,6 +2252,14 @@ async fn delete_investigation(
             .into_response(),
         Some(_) => {
             jobs.remove(&id);
+            drop(jobs);
+            // Forgetting the investigation unlocks the scenario it pinned as
+            // soon as it held the last reference.
+            state
+                .scenarios
+                .lock()
+                .unwrap()
+                .detach_investigation(&id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({ "deleted": id })),
@@ -2295,6 +2446,7 @@ mod tests {
     use crate::INDEX_HTML;
     use axum::http::Request as HttpRequest;
     use prompt_explore::model::Budget;
+    use prompt_explore::simulate::unpack_zip_with_limits;
     use std::io::Write;
     use tower::ServiceExt; // oneshot against the REAL router
 
@@ -2304,6 +2456,8 @@ mod tests {
         Arc::new(AppState {
             client: None,
             jobs: Mutex::new(HashMap::new()),
+            scenarios: Mutex::new(ScenarioStore::new()),
+            probes: Mutex::new(HashMap::new()),
             default_provider: "zai".into(),
             models_client: prompt_explore::llm::GenaiClient::builder().build().unwrap(),
             models_cache: Mutex::new(None),
@@ -2364,12 +2518,20 @@ mod tests {
         )
     }
 
-    async fn create_multipart(app: &Router, archive: Vec<u8>) -> serde_json::Value {
+    /// Register a scenario through the real HTTP route, with an optional
+    /// workspace archive as the multipart `workspace` part.
+    async fn create_scenario_multipart(app: &Router, archive: Vec<u8>) -> serde_json::Value {
         let boundary = "workspace-attribute-test";
         let request = serde_json::json!({
-            "investigation": {"budget": {"max_steps_per_trace": 1}},
-            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenario": {"world": "Fixture world."}
+            "scenario": {
+                "world": "Fixture world.",
+                "tools": [{
+                    "name": "lookup",
+                    "description": "Look something up.",
+                    "parameters": {"type": "object"},
+                    "side_effect": "read"
+                }]
+            }
         })
         .to_string();
         let mut body = Vec::new();
@@ -2381,7 +2543,7 @@ mod tests {
         let response = app
             .clone()
             .oneshot(
-                HttpRequest::post("/api/investigations")
+                HttpRequest::post("/api/scenarios")
                     .header(
                         "content-type",
                         format!("multipart/form-data; boundary={boundary}"),
@@ -2397,11 +2559,34 @@ mod tests {
             .unwrap();
         assert_eq!(
             status,
-            StatusCode::ACCEPTED,
+            StatusCode::CREATED,
             "{}",
             String::from_utf8_lossy(&bytes)
         );
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Register a minimal scenario directly, for tests about investigations.
+    fn register_scenario(state: &Arc<AppState>) -> String {
+        state
+            .scenarios
+            .lock()
+            .unwrap()
+            .create(
+                definition_with_tools(vec![scenario_tool("lookup", None)]),
+                Workspace::empty(),
+                None,
+                1,
+            )
+            .unwrap()
+    }
+
+    fn investigation_body(state: &Arc<AppState>) -> serde_json::Value {
+        serde_json::json!({
+            "scenario_id": register_scenario(state),
+            "investigation": {"budget": {"max_steps_per_trace": 1}},
+            "put": {"id": "x", "template": "t", "design_goals": "g"}
+        })
     }
 
     async fn post_frontier(app: &Router, query: &str, body: &str) -> (StatusCode, String, String) {
@@ -2492,7 +2677,8 @@ mod tests {
             },
             response: serde_json::json!({"error":"invalid path"}),
             lua_execution: Some(prompt_explore::model::simulation::LuaExecutionRecord {
-                program_revision: 1,
+                tool: "list_files".into(),
+                source_hash: "fixture-hash".into(),
                 outcome: prompt_explore::model::simulation::LuaOutcome::Computed,
                 detail: None,
                 discarded_workspace_ops: vec![],
@@ -2819,19 +3005,15 @@ mod tests {
         let reordered = zip_bytes(&[("dir/b.txt", b"beta"), ("a.txt", b"alpha")], late);
         let changed = zip_bytes(&[("a.txt", b"ALPHA"), ("dir/b.txt", b"beta")], late);
         let app = build_app(test_state());
-        // Job creation computes/copies attributes before launching its future, so
-        // the 202 response is already reproducible even while work is live.
-        let first = create_multipart(&app, first).await;
-        let reordered = create_multipart(&app, reordered).await;
-        let changed = create_multipart(&app, changed).await;
-        assert_eq!(
-            first["attributes"]["workspace_hash"],
-            reordered["attributes"]["workspace_hash"]
-        );
-        assert_ne!(
-            first["attributes"]["workspace_hash"],
-            changed["attributes"]["workspace_hash"]
-        );
+        // Registration computes the hash, so the identity is reproducible from
+        // the response alone.
+        let first = create_scenario_multipart(&app, first).await;
+        let reordered = create_scenario_multipart(&app, reordered).await;
+        let changed = create_scenario_multipart(&app, changed).await;
+        assert_eq!(first["workspace_hash"], reordered["workspace_hash"]);
+        assert_ne!(first["workspace_hash"], changed["workspace_hash"]);
+        // Each registration is its own scenario with its own revision.
+        assert_eq!(first["revision"], 1);
     }
 
     #[test]
@@ -3003,114 +3185,150 @@ mod tests {
     }
 
     #[test]
-    fn lua_controls_are_opt_in_resolved_and_positive() {
-        let off: ConversationControls = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(
-            resolved_conversation_controls(&off)
-                .0
-                .simulator
-                .lua_simulation
-                .is_none()
-        );
-        let on: ConversationControls = serde_json::from_value(
-            serde_json::json!({"lua_simulation":{"max_instructions":12345}}),
-        )
-        .unwrap();
-        let (runner, _, resolved) = resolved_conversation_controls(&on);
-        assert_eq!(
-            runner.simulator.lua_simulation.unwrap().max_instructions,
-            12345
+    fn simulator_settings_resolve_from_the_scenario_and_reject_old_controls() {
+        // Lua runs exactly when the scenario supplies an implementation, and
+        // the settings carry only its limits. There is no enable switch.
+        let definition = definition_with_tools(vec![scenario_tool("lookup", Some("return function() return {response=1} end"))]);
+        let runtime = prompt_explore::simulate::ScenarioRuntime::from_definition(
+            &definition,
+            Workspace::empty(),
         );
         assert_eq!(
-            serde_json::to_value(resolved).unwrap()["lua_simulation"]["max_instructions"],
+            runtime.simulator.lua_simulation.unwrap().max_instructions,
+            prompt_explore::model::lua::LuaOptions::default().max_instructions
+        );
+        let llm_only = definition_with_tools(vec![scenario_tool("lookup", None)]);
+        assert!(
+            prompt_explore::simulate::ScenarioRuntime::from_definition(
+                &llm_only,
+                Workspace::empty()
+            )
+            .simulator
+            .lua_simulation
+            .is_none()
+        );
+
+        // A scenario's Lua limits are honored, and remain validated.
+        let mut limited = definition_with_tools(vec![scenario_tool("lookup", Some("return function() return {response=1} end"))]);
+        limited.simulation.lua = Some(prompt_explore::model::lua::LuaOptions {
+            max_instructions: 12345,
+            ..Default::default()
+        });
+        let runtime = prompt_explore::simulate::ScenarioRuntime::from_definition(
+            &limited,
+            Workspace::empty(),
+        );
+        assert_eq!(
+            runtime.simulator.lua_simulation.unwrap().max_instructions,
             12345
         );
-        assert!(conversation_controls_problem(&on).is_none());
-        let bad: ConversationControls =
-            serde_json::from_value(serde_json::json!({"lua_simulation":{"max_memory_bytes":0}}))
-                .unwrap();
-        assert!(
-            conversation_controls_problem(&bad)
-                .unwrap()
-                .contains("max_memory_bytes")
-        );
-        let unbounded: ConversationControls =
-            serde_json::from_value(serde_json::json!({"lua_simulation":{"max_duration_ms":10001}}))
-                .unwrap();
-        let error = conversation_controls_problem(&unbounded).unwrap();
+        let mut unbounded = limited.clone();
+        unbounded.simulation.lua = Some(prompt_explore::model::lua::LuaOptions {
+            max_duration_ms: 10_001,
+            ..Default::default()
+        });
+        let error = unbounded.validate().unwrap_err();
         assert!(error.contains("max_duration_ms"), "{error}");
         assert!(error.contains("must not exceed"), "{error}");
+
+        // The investigation's controls no longer accept simulator knobs; the
+        // error says where they went instead of silently overriding.
+        let migrated: ConversationControls = serde_json::from_value(
+            serde_json::json!({"sim_max_repair_attempts": 3, "max_workspace_turns": 5}),
+        )
+        .unwrap();
+        let problem = conversation_controls_problem(&migrated).unwrap();
+        assert!(problem.contains("sim_max_repair_attempts"), "{problem}");
+        assert!(problem.contains("simulation.max_repair_attempts"), "{problem}");
+        assert!(problem.contains("POST /api/scenarios/{id}/fork"), "{problem}");
     }
 
     #[test]
     fn default_repair_budget_is_resolved_and_reported() {
-        let controls: ConversationControls = serde_json::from_value(serde_json::json!({})).unwrap();
-        let (runner, _, resolved) = resolved_conversation_controls(&controls);
-        assert_eq!(runner.simulator.max_repair_attempts, 20);
+        let definition = definition_with_tools(vec![scenario_tool("lookup", None)]);
+        let runtime = prompt_explore::simulate::ScenarioRuntime::from_definition(
+            &definition,
+            Workspace::empty(),
+        );
+        assert_eq!(runtime.simulator.max_repair_attempts, 20);
+        let controls = ConversationControls::default();
+        let (_, resolved) = resolved_conversation_controls(
+            &controls,
+            &runtime,
+            &prompt_explore::simulate::WorkspaceToolLimits::default(),
+        );
         assert_eq!(
-            serde_json::to_value(resolved).unwrap()["sim_max_repair_attempts"],
+            serde_json::to_value(resolved).unwrap()["simulator"]["sim_max_repair_attempts"],
             20
         );
     }
 
     #[test]
-    fn conversation_controls_override_runner_and_workspace_defaults() {
+    fn put_controls_override_runner_defaults_and_invalid_values_are_refused() {
+        let definition = definition_with_tools(vec![scenario_tool("lookup", None)]);
+        let runtime = prompt_explore::simulate::ScenarioRuntime::from_definition(
+            &definition,
+            Workspace::empty(),
+        );
         let controls = ConversationControls {
-            lua_simulation: None,
             put_temperature: Some(0.2),
             put_max_tokens: Some(111),
-            sim_temperature: Some(0.3),
-            sim_max_tokens: Some(222),
-            sim_max_repair_attempts: Some(4),
-            max_workspace_turns: Some(5),
-            workspace_max_read_lines: Some(6),
-            workspace_max_grep_matches: Some(7),
-            workspace_max_line_len: Some(8),
-            workspace_max_output_bytes: Some(9),
+            ..ConversationControls::default()
         };
-        let (runner, workspace, resolved) = resolved_conversation_controls(&controls);
+        let (runner, resolved) = resolved_conversation_controls(
+            &controls,
+            &runtime,
+            &prompt_explore::simulate::WorkspaceToolLimits::default(),
+        );
         assert_eq!(runner.put_temperature, Some(0.2));
         assert_eq!(runner.put_max_tokens, Some(111));
-        assert_eq!(runner.simulator.temperature, Some(0.3));
-        assert_eq!(runner.simulator.max_tokens, Some(222));
-        assert_eq!(runner.simulator.max_repair_attempts, 4);
-        assert_eq!(runner.simulator.max_workspace_turns, 5);
-        assert_eq!(workspace.max_read_lines, 6);
-        assert_eq!(workspace.max_grep_matches, 7);
-        assert_eq!(workspace.max_line_len, 8);
-        assert_eq!(workspace.max_output_bytes, 9);
-        assert_eq!(resolved.workspace_max_line_len, 8);
-        assert_eq!(resolved.workspace_max_output_bytes, 9);
+        assert_eq!(resolved.put_temperature, Some(0.2));
+        assert_eq!(resolved.put_max_tokens, Some(111));
         assert!(conversation_controls_problem(&controls).is_none());
 
         let invalid = ConversationControls {
             put_max_tokens: Some(0),
-            sim_max_repair_attempts: Some(0),
+            put_temperature: Some(-1.0),
             ..ConversationControls::default()
         };
         let problem = conversation_controls_problem(&invalid).unwrap();
-        assert!(problem.contains("put_max_tokens"));
-        assert!(problem.contains("sim_max_repair_attempts"));
+        assert!(problem.contains("put_max_tokens"), "{problem}");
+        assert!(problem.contains("put_temperature"), "{problem}");
+    }
 
-        let too_large = ConversationControls {
-            workspace_max_output_bytes: Some(
-                prompt_explore::simulate::workspace::MAX_OUTPUT_BYTES + 1,
-            ),
-            ..ConversationControls::default()
-        };
-        assert!(
-            conversation_controls_problem(&too_large)
-                .unwrap()
-                .contains("workspace_max_output_bytes")
-        );
+    fn scenario_tool(
+        name: &str,
+        lua_source: Option<&str>,
+    ) -> prompt_explore::model::scenario::ScenarioTool {
+        prompt_explore::model::scenario::ScenarioTool {
+            name: name.into(),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({"type": "object"}),
+            side_effect: prompt_explore::model::SideEffect::Read,
+            example_responses: vec![],
+            lua_source: lua_source.map(str::to_owned),
+        }
+    }
+
+    fn definition_with_tools(
+        tools: Vec<prompt_explore::model::scenario::ScenarioTool>,
+    ) -> prompt_explore::model::scenario::ScenarioDefinition {
+        prompt_explore::model::scenario::ScenarioDefinition {
+            world: "Fixture world.".into(),
+            input_domain: HashMap::new(),
+            user_message: None,
+            simulator_notes: String::new(),
+            tools,
+            simulation: Default::default(),
+        }
     }
 
     #[test]
     fn thinking_level_problem_checks_each_role_independently() {
         let req = |model: &str,
-                   sim_model: Option<&str>,
+                   _sim_model: Option<&str>,
                    put_level: Option<ThinkingLevel>,
-                   sim_level: Option<ThinkingLevel>| {
+                   _sim_level: Option<ThinkingLevel>| {
             InvestigateRequest {
                 investigation: Investigation {
                     reason: None,
@@ -3120,17 +3338,16 @@ mod tests {
                     },
                 },
                 put: put("x"),
+                scenario_id: "scn-fixture".into(),
+                scenario_revision: None,
+                resolved_inputs: None,
                 put_model: Some(model.into()),
-                sim_model: sim_model.map(Into::into),
                 put_thinking_level: put_level,
-                sim_thinking_level: sim_level,
                 conversation_controls: ConversationControls::default(),
-                scenario: Scenario {
-                    world: "Fixture world.".into(),
-                    input_domain: HashMap::new(),
-                    user_message: None,
-                    simulator_notes: String::new(),
-                },
+                scenario: None,
+                scenarios: None,
+                sim_model: None,
+                sim_thinking_level: None,
                 attributes: BTreeMap::new(),
             }
         };
@@ -3195,15 +3412,15 @@ mod tests {
         // PUT fine on open_router, sim rejected on bedrock meta.*.
         let err = thinking_level_problem(
             &req(
-                "open_router::openai/gpt-5.6-luna",
-                Some("bedrock_sigv4::global.meta.llama3-1-70b"),
+                "bedrock_sigv4::global.meta.llama3-1-70b",
+                None,
                 Some(ThinkingLevel::Low),
-                Some(ThinkingLevel::Low),
+                None,
             ),
             "zai",
         )
-        .expect("sim on unsupported bedrock model must be rejected");
-        assert!(err.contains("sim_thinking_level"), "{err}");
+        .expect("a thinking level on a model without one must be rejected");
+        assert!(err.contains("put_thinking_level"), "{err}");
         // Bedrock anthropic profile ids are supported (genai maps them
         // to a thinking budget).
         assert!(
@@ -3238,20 +3455,23 @@ mod tests {
     fn unknown_thinking_level_word_is_a_parse_error() {
         // The vocabulary fails fast at deserialization, before any
         // provider logic runs.
-        let bad = r#"{"investigation": {"budget": {"max_steps_per_trace": 2}}, "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []}, "scenario": {"world": "Fixture world."}, "put_thinking_level": "ultra"}"#;
+        let bad = r#"{"scenario_id": "scn-x", "investigation": {"budget": {"max_steps_per_trace": 2}}, "put": {"id": "x", "template": "t", "design_goals": "g"}, "put_thinking_level": "ultra"}"#;
         assert!(serde_json::from_str::<InvestigateRequest>(bad).is_err());
         let good = bad.replace("\"ultra\"", "\"xhigh\"");
         let req: InvestigateRequest = serde_json::from_str(&good).unwrap();
         assert_eq!(req.put_thinking_level, Some(ThinkingLevel::Xhigh));
-        assert_eq!(req.sim_thinking_level, None);
+        // The simulator's thinking level is the scenario's, not the request's.
+        assert!(req.sim_thinking_level.is_none());
     }
 
     #[tokio::test]
     async fn post_requires_one_scenario_and_rejects_legacy_scenarios_as_unknown() {
-        let app = build_app(test_state());
+        let state = test_state();
+        let app = build_app(state);
         let body = serde_json::json!({
+            "scenario_id": "scn-whatever",
             "investigation": {"budget": {"max_steps_per_trace": 1}},
-            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
+            "put": {"id": "x", "template": "t", "design_goals": "g"},
             "scenario": {"world": "Fixture world."},
             "scenarios": [{"world": "legacy world"}]
         });
@@ -3268,24 +3488,18 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .unwrap();
-        assert!(
-            String::from_utf8_lossy(&body).contains("unknown field `scenarios`"),
-            "{}",
-            String::from_utf8_lossy(&body)
-        );
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("POST /api/scenarios"), "{text}");
+        assert!(text.contains("scenario_id"), "{text}");
     }
 
     #[tokio::test]
     async fn create_investigation_rejects_unsupported_thinking_level_with_400() {
         let state = test_state();
-        let app = build_app(state);
-        let body = serde_json::json!({
-            "investigation": {"budget": {"max_steps_per_trace": 2}},
-            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenario": {"world": "Fixture world."},
-            "put_model": "bedrock_sigv4::global.meta.llama3-1-70b",
-            "put_thinking_level": "high"
-        });
+        let app = build_app(state.clone());
+        let mut body = investigation_body(&state);
+        body["put_model"] = serde_json::json!("bedrock_sigv4::global.meta.llama3-1-70b");
+        body["put_thinking_level"] = serde_json::json!("high");
         let res = app
             .clone()
             .oneshot(
@@ -3308,21 +3522,16 @@ mod tests {
 
     #[tokio::test]
     async fn create_investigation_accepts_bedrock_openai_thinking_levels() {
-        let app = build_app(test_state());
+        let state = test_state();
+        let app = build_app(state.clone());
         for model in [
             "bedrock_sigv4::openai.gpt-oss-20b-1:0",
             "bedrock_sigv4::us.openai.gpt-5.6-luna",
             "bedrock_sigv4::global.openai.gpt-6-astra",
         ] {
-            let body = serde_json::json!({
-                "investigation": {"budget": {"max_steps_per_trace": 2}},
-                "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-                "scenario": {"world": "Fixture world."},
-                "put_model": model,
-                "sim_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
-                "put_thinking_level": "high",
-                "sim_thinking_level": "none"
-            });
+            let mut body = investigation_body(&state);
+            body["put_model"] = serde_json::json!(model);
+            body["put_thinking_level"] = serde_json::json!("high");
             let res = app
                 .clone()
                 .oneshot(
@@ -3339,7 +3548,9 @@ mod tests {
                 .unwrap();
             let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(created["attributes"]["put_model"], model);
-            assert_eq!(created["attributes"]["sim_thinking"], "none");
+            // The simulator's settings come from the scenario, not the request.
+            assert_eq!(created["attributes"]["sim_thinking"], "provider_default");
+            assert_eq!(created["attributes"]["scenario_revision"], "1");
             assert_eq!(
                 created["attributes"]["prompt_hash"].as_str().unwrap().len(),
                 64
@@ -3355,10 +3566,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multipart_workspace_larger_than_old_8_mib_route_cap_is_parsed() {
-        // Regression: the endpoint documented a 50 MiB compressed workspace
-        // cap, but an unrelated 8 MiB DefaultBodyLimit rejected larger valid
-        // archives before the zip-specific checks could run.
+    async fn a_workspace_larger_than_8_mib_is_accepted_on_the_scenario_route() {
+        // The scenario route carries the multi-part body limit; the archive is
+        // checked by the zip-specific caps (compressed and decompressed), not
+        // by an unrelated 8 MiB default that would reject valid archives early.
         let mut archive = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
@@ -3371,15 +3582,8 @@ mod tests {
         assert!(archive.len() > 8 * 1024 * 1024);
         assert!(archive.len() < workspace_compressed_limit());
 
-        // An unsupported thinking mapping deliberately makes the handler
-        // return 400 *after* multipart and zip parsing, without spawning an
-        // investigation that would need a live provider client.
         let request = serde_json::json!({
-            "investigation": {"budget": {"max_steps_per_trace": 0}},
-            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenario": {"world": "Fixture world."},
-            "put_model": "bedrock_sigv4::global.meta.llama3-1-70b",
-            "put_thinking_level": "high"
+            "scenario": {"world": "Fixture world.", "tools": []}
         })
         .to_string();
         let boundary = "prompt-explore-large-workspace-test";
@@ -3394,9 +3598,11 @@ mod tests {
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         assert!(body.len() > 8 * 1024 * 1024);
 
-        let res = build_app(test_state())
+        let state = test_state();
+        let app = build_app(state.clone());
+        let res = app
             .oneshot(
-                HttpRequest::post("/api/investigations")
+                HttpRequest::post("/api/scenarios")
                     .header(
                         "content-type",
                         format!("multipart/form-data; boundary={boundary}"),
@@ -3406,14 +3612,369 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let status = res.status();
         let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
             .await
             .unwrap();
         let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let error = response["error"].as_str().unwrap();
-        assert!(error.contains("put_thinking_level"), "{error}");
-        assert!(!error.contains("multipart"), "{error}");
+        assert_eq!(status, StatusCode::CREATED, "{response}");
+        let id = response["id"].as_str().unwrap();
+        let record = state.scenarios.lock().unwrap();
+        assert_eq!(record.get(id).unwrap().workspace.file_count(), 1);
+    }
+
+    async fn json_request(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let code = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 22)
+            .await
+            .unwrap();
+        (
+            code,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Poll a probe until it stops running (probes are asynchronous).
+    async fn await_probe(app: &Router, scenario: &str, probe: &str) -> serde_json::Value {
+        for _ in 0..200 {
+            let (_, view) = json_request(
+                app,
+                "GET",
+                &format!("/api/scenarios/{scenario}/simulations/{probe}"),
+                serde_json::json!({}),
+            )
+            .await;
+            if view["status"] != "running" {
+                return view;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("probe never finished");
+    }
+
+    #[tokio::test]
+    async fn scenario_lifecycle_over_http_edits_locks_forks_and_cascades() {
+        let state = test_state();
+        let app = build_app(state.clone());
+        let body = serde_json::json!({
+            "scenario": {"world": "first world", "tools": [], "input_domain": {}},
+            "label": "trial"
+        });
+        let (code, created) = json_request(&app, "POST", "/api/scenarios", body).await;
+        assert_eq!(code, StatusCode::CREATED, "{created}");
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["revision"], 1);
+
+        // Readable, editable, no dependents yet.
+        let (code, view) = json_request(&app, "GET", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(view["editable"], true);
+        assert_eq!(view["label"], "trial");
+        assert_eq!(view["definition"]["world"], "first world");
+
+        // An edit needs the revision the caller read.
+        let patch = serde_json::json!({
+            "expected_revision": 1,
+            "scenario": {"world": "second world", "tools": [], "input_domain": {}}
+        });
+        let (code, edited) = json_request(&app, "PATCH", &format!("/api/scenarios/{id}"), patch).await;
+        assert_eq!(code, StatusCode::OK, "{edited}");
+        assert_eq!(edited["revision"], 2);
+        assert_ne!(edited["definition_hash"], created["definition_hash"]);
+
+        // The same (now stale) revision is refused rather than silently applied.
+        let stale = serde_json::json!({
+            "expected_revision": 1,
+            "scenario": {"world": "third world", "tools": [], "input_domain": {}}
+        });
+        let (code, error) = json_request(&app, "PATCH", &format!("/api/scenarios/{id}"), stale).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{error}");
+        assert!(error["error"].as_str().unwrap().contains("revision 2"), "{error}");
+
+        // An accepted investigation pins it: the edit is refused with guidance.
+        let investigation_id = "inv-pinning";
+        state
+            .scenarios
+            .lock()
+            .unwrap()
+            .attach_investigation(&id, investigation_id)
+            .unwrap();
+        let (code, view) = json_request(&app, "GET", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(view["editable"], false);
+        assert_eq!(view["investigation_ids"][0], investigation_id);
+        let (code, error) = json_request(
+            &app,
+            "PATCH",
+            &format!("/api/scenarios/{id}"),
+            serde_json::json!({
+                "expected_revision": 2,
+                "scenario": {"world": "blocked", "tools": [], "input_domain": {}}
+            }),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT, "{error}");
+        assert!(error["error"].as_str().unwrap().contains("fork"), "{error}");
+
+        // A running investigation blocks deletion outright, even with cascade:
+        // a run cannot be cancelled, so deleting it would discard live spending.
+        let (code, error) = json_request(
+            &app,
+            "DELETE",
+            &format!("/api/scenarios/{id}?cascade=true"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT, "{error}");
+        assert!(error["error"].as_str().unwrap().contains("running"), "{error}");
+
+        // Once it has stopped, the reference still pins the scenario (the
+        // definition it ran must not change) and a plain delete names the
+        // dependents instead of removing them.
+        state
+            .scenarios
+            .lock()
+            .unwrap()
+            .finish_investigation(investigation_id);
+        let (code, error) = json_request(&app, "DELETE", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{error}");
+        assert!(error["error"].as_str().unwrap().contains("cascade=true"), "{error}");
+
+        // A fork is editable immediately and carries the correction note.
+        let (code, forked) = json_request(
+            &app,
+            "POST",
+            &format!("/api/scenarios/{id}/fork"),
+            serde_json::json!({
+                "correction": {"reason": "grep matched nested paths"},
+                "label": "corrected"
+            }),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CREATED, "{forked}");
+        let fork_id = forked["id"].as_str().unwrap().to_string();
+        let (_, fork_view) = json_request(&app, "GET", &format!("/api/scenarios/{fork_id}"), serde_json::json!({})).await;
+        assert_eq!(fork_view["editable"], true);
+        assert_eq!(fork_view["correction"]["scenario_id"], id);
+        assert_eq!(fork_view["correction"]["revision"], 2);
+        assert_eq!(fork_view["correction"]["reason"], "grep matched nested paths");
+        assert_eq!(fork_view["label"], "corrected");
+
+        // Cascade removes the scenario and reports what depended on it.
+        let (code, deleted) = json_request(
+            &app,
+            "DELETE",
+            &format!("/api/scenarios/{id}?cascade=true"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{deleted}");
+        assert_eq!(deleted["cascade_investigations"][0], investigation_id);
+        let (code, _) = json_request(&app, "GET", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        // The fork survives its predecessor.
+        let (code, _) = json_request(&app, "GET", &format!("/api/scenarios/{fork_id}"), serde_json::json!({})).await;
+        assert_eq!(code, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_fully_lua_probe_runs_without_a_provider_client() {
+        // The flagship workflow: register a world whose tool is implemented in
+        // Lua, then test it over HTTP on a server with NO provider credentials.
+        let state = test_state();
+        assert!(state.client.is_none());
+        let app = build_app(state.clone());
+        let body = serde_json::json!({
+            "scenario": {
+                "world": "One record exists.",
+                "input_domain": {},
+                "user_message": "go",
+                "tools": [{
+                    "name": "lookup",
+                    "description": "Return the record for an id.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"],
+                        "additionalProperties": false
+                    },
+                    "side_effect": "read",
+                    "lua_source": "return function(args, ctx) return {response = {id = args.id, found = true}} end"
+                }]
+            }
+        });
+        let (code, created) = json_request(&app, "POST", "/api/scenarios", body).await;
+        assert_eq!(code, StatusCode::CREATED, "{created}");
+        let id = created["id"].as_str().unwrap().to_string();
+
+        // Bad syntax is refused at registration with the tool named.
+        let broken = serde_json::json!({
+            "scenario": {
+                "world": "w",
+                "tools": [{
+                    "name": "lookup",
+                    "description": "d",
+                    "parameters": {"type": "object"},
+                    "side_effect": "read",
+                    "lua_source": "return function( this is not lua"
+                }]
+            }
+        });
+        let (code, error) = json_request(&app, "POST", "/api/scenarios", broken).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
+        assert!(error["error"].as_str().unwrap().contains("lookup"), "{error}");
+
+        // Run a probe: two calls in one session, plus a schema-invalid one.
+        let (code, submitted) = json_request(
+            &app,
+            "POST",
+            &format!("/api/scenarios/{id}/simulations"),
+            serde_json::json!({
+                "tool_calls": [
+                    {"name": "lookup", "args": {"id": "A-1"}},
+                    {"name": "lookup", "args": {"nope": 1}},
+                    {"name": "lookup", "args": {"id": "A-2"}}
+                ],
+                "reason": "does the handler echo ids?"
+            }),
+        )
+        .await;
+        assert_eq!(code, StatusCode::ACCEPTED, "{submitted}");
+        let probe_id = submitted["id"].as_str().unwrap().to_string();
+        let probe = await_probe(&app, &id, &probe_id).await;
+        assert_eq!(probe["status"], "done", "{probe}");
+        assert_eq!(probe["stop_reason"], "completed");
+        assert_eq!(probe["scenario_revision"], 1);
+        let calls = probe["calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0]["response"]["id"], "A-1");
+        assert_eq!(calls[0]["lua_execution"]["outcome"], "computed");
+        assert_eq!(calls[0]["lua_execution"]["tool"], "lookup");
+        assert_eq!(calls[0]["lua_execution"]["source_hash"].as_str().unwrap().len(), 64);
+        // Schema-invalid arguments are in-band errors, exactly as in a run —
+        // and they never reach the implementation.
+        assert!(
+            calls[1]["response"]
+                .as_str()
+                .unwrap()
+                .contains("invalid arguments"),
+            "{}",
+            calls[1]["response"]
+        );
+        assert!(calls[1]["lua_execution"].is_null());
+        assert_eq!(calls[2]["response"]["id"], "A-2");
+
+        // A stale expected_revision is refused before anything runs.
+        let (code, error) = json_request(
+            &app,
+            "POST",
+            &format!("/api/scenarios/{id}/simulations"),
+            serde_json::json!({
+                "tool_calls": [{"name": "lookup", "args": {"id": "A-3"}}],
+                "expected_revision": 7
+            }),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT, "{error}");
+
+        // An offending tool call count is refused.
+        let (code, error) = json_request(
+            &app,
+            "POST",
+            &format!("/api/scenarios/{id}/simulations"),
+            serde_json::json!({"tool_calls": []}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
+
+        // A delegation with no provider fails the CALL, not the server, and
+        // keeps the completed calls as evidence.
+        let (code, delegated) = json_request(
+            &app,
+            "POST",
+            "/api/scenarios",
+            serde_json::json!({
+                "scenario": {
+                    "world": "w",
+                    "tools": [{
+                        "name": "lookup",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                        "side_effect": "read",
+                        "lua_source": "return function() PleaseSimulateException('needs the model') end"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CREATED);
+        let llm_only = delegated["id"].as_str().unwrap();
+        let (_, probe) = json_request(
+            &app,
+            "POST",
+            &format!("/api/scenarios/{llm_only}/simulations"),
+            serde_json::json!({"tool_calls": [{"name": "lookup", "args": {}}]}),
+        )
+        .await;
+        let probe_id = probe["id"].as_str().unwrap();
+        let probe = await_probe(&app, llm_only, probe_id).await;
+        assert_eq!(probe["status"], "failed");
+        assert_eq!(probe["stop_reason"], "runtime_failure");
+        // The call itself is retained, with the reason it could not be rendered.
+        assert_eq!(probe["calls"].as_array().unwrap().len(), 1);
+        assert!(
+            probe["calls"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("no LLM client"),
+            "{probe}"
+        );
+        assert!(
+            probe["error"].as_str().unwrap().contains("no LLM client"),
+            "{probe}"
+        );
+    }
+
+    #[tokio::test]
+    async fn investigations_require_a_registered_scenario_and_reject_put_tools() {
+        let state = test_state();
+        let app = build_app(state.clone());
+        let body = serde_json::json!({
+            "scenario_id": "scn-does-not-exist",
+            "investigation": {"budget": {"max_steps_per_trace": 1}},
+            "put": {"id": "x", "template": "t", "design_goals": "g"}
+        });
+        let (code, error) = json_request(&app, "POST", "/api/investigations", body).await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "{error}");
+
+        // The tool surface belongs to the scenario.
+        let mut with_tools = investigation_body(&state);
+        with_tools["put"] = serde_json::json!({
+            "id": "x",
+            "template": "t",
+            "design_goals": "g",
+            "tools": [{"name": "nope", "description": "d", "parameters": {}, "side_effect": "read"}]
+        });
+        let (code, error) = json_request(&app, "POST", "/api/investigations", with_tools).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
+        assert!(error["error"].as_str().unwrap().contains("scenario"), "{error}");
     }
 
     #[tokio::test]
@@ -3550,6 +4111,9 @@ mod tests {
                 reason: None,
                 put: put("cancel-bot"),
                 grades: BTreeMap::new(),
+                scenario_id: "scn-fixture".into(),
+                scenario_revision: 1,
+                scenario_definition_hash: "fixture".into(),
                 scenario: Scenario {
                     world: "Fixture world.".into(),
                     input_domain: HashMap::new(),

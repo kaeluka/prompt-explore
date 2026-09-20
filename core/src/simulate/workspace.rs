@@ -148,6 +148,20 @@ impl Workspace {
         self.seed.files.keys().cloned().collect()
     }
 
+    /// Every file currently in the workspace (seed ∪ writes, minus deletes) as
+    /// owned (path, bytes) pairs. Used to export a stored scenario's initial
+    /// workspace: a content hash alone is not a reproducible workspace.
+    pub fn inventory(&self) -> Vec<(String, Vec<u8>)> {
+        let mut files = Vec::new();
+        self.visit_known_paths(|path| {
+            if let Some(bytes) = self.file_bytes(path) {
+                files.push((path.to_string(), bytes.to_vec()));
+            }
+            true
+        });
+        files
+    }
+
     /// Stable SHA-256 identity of the current workspace contents. Paths are
     /// visited in lexical order and every path/content pair is length-delimited,
     /// so zip ordering, timestamps, compression, and other archive metadata
@@ -223,8 +237,8 @@ impl Workspace {
     /// (`{"error": "..."}`) so the simulator can see them and react,
     /// exactly as a real tool framework feeds errors back to an agent.
     /// Execute a native simulator workspace tool call. Native simulator calls
-    /// may access private harness artifacts so they can author and revise the
-    /// Lua program; those artifacts are not application-world inventory.
+    /// may access private harness artifacts; those artifacts are not
+    /// application-world inventory.
     pub fn exec(&mut self, tool: &str, args: &Value) -> Value {
         self.exec_bounded(tool, args, self.limits.max_output_bytes)
     }

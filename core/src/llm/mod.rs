@@ -16,7 +16,7 @@ pub mod types;
 
 pub use client::{LlmClient, LlmError};
 pub use genai::{GenaiClient, ProviderClient, qualify_model, thinking_level_supported};
-pub use mock::MockLlmClient;
+pub use mock::{MockLlmClient, UnavailableClient};
 pub use models::{ModelEntry, ProviderModels, catalog_pricing_map, cost_usd, list_all_map};
 pub use parse::{extract_json, parse_json};
 pub use track::{UsageByRole, UsageTotals, UsageTracker};
