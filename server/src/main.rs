@@ -548,7 +548,11 @@ struct JobSummary {
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct InvestigationPatch {
-    /// Axis name → number to set/overwrite, or null to delete.
+    /// Axis name → number to set/overwrite, or null to delete. For prompt
+    /// optimization, SEND these judgments after reading each run's evidence,
+    /// not just into local files. Use the rubric agreed with the user, include
+    /// assessment explaining the evidence, and confirm the PATCH response.
+    /// Then read POST /api/frontier before the next prompt revision.
     #[serde(default)]
     grades: Option<BTreeMap<String, Option<f64>>>,
     /// Caller-owned attribute name → string to set/overwrite, or null to delete.
@@ -596,35 +600,53 @@ struct InvestigationPatchView {
                        `reason` is advisory framing for whoever reads the traces.
 
  \
-                       GRADING AND THE FRONTIER ARE THE METHOD, NOT A REPORTING NICETY. \
-                       Your job is not to read one trace and feel that the prompt improved. It is to \
-                       run a corpus, judge every run the same way, and compare the runs. That only \
-                       works if the judgment is RECORDED, because memory is not a corpus: the \
-                       spectacular failure is vivid, the three runs that quietly drifted are not, and \
-                       re-reading traces while searching for the conclusion you already expect is how \
-                       confirmation bias gets in. So: (a) `grades` (PATCH /api/investigations/{id}) \
-                       are how a run becomes comparable — they are YOUR judgment stored in the \
-                       product, never a harness verdict, and an UNGRADED run is invisible to the \
-                       frontier and to your user, because there is nothing to compare; (b) POST \
-                       /api/frontier is the table of what you actually compared, across the whole \
-                       corpus at once; (c) reading it is how you report to your user, who can then \
-                       see the comparison themselves instead of trusting your summary.
+                       PROMPT-OPTIMIZATION CHECKPOINT: READ -> PATCH -> COMPARE -> EDIT. \
+                       When helping a developer improve a prompt, finish this checkpoint for the \
+                       current results BEFORE editing the prompt or launching its successor. This \
+                       is the experiment loop, not end-of-session reporting. Recording comparable \
+                       judgments now reduces cherry-picking and lets the user independently inspect \
+                       your comparison in the dashboard. Neither numbers nor a frontier prove quality.
  \
-                       DEFINE THE METRIC(S) WITH YOUR USER BEFORE SPENDING RUNS. Ask what \"better\" \
-                       means — usually more than one thing at once. Prefer axes that can be checked \
-                       against the evidence (for a security audit, `found_all`: share of the planted \
-                       defects the run reported, 0..1; `precision`: 1 minus the share of reported \
-                       paths that are not real) over a vague `quality`. Cost and effort are already \
-                       measured for you (`put_cost_usd`, `steps_per_trace_avg`, `elapsed_ms`). \
-                       Measured axes are harness-computed and cannot be graded; judged axes are \
-                       yours to name, and `assessment.rubric` is where the scale is written down so \
-                       the next run — or the next reader — applies the same standard. Keep the axes \
-                       stable across a corpus: if the metric moves, the comparison dies.
+                       First agree what better means WITH the user: the quality axes, their scales, \
+                       acceptable tradeoffs, and treatment of missing answers. If the user already \
+                       supplied an acceptance rubric, use it; otherwise propose concrete metrics and \
+                       ask for confirmation before calling them agreed. For a security audit, recall \
+                       (true paths reported / known true paths) and precision (true paths reported / \
+                       all reported paths) separate omissions from false accusations. Define the \
+                       empty-report case too. Keep the rubric stable and store it in assessment.rubric; \
+                       use measured put_cost_usd or elapsed_ms alongside quality, not instead of it.
  \
-                       NEVER UPDATE A PROMPT ON IMPRESSION. The order is: run a batch, read the \
-                       traces, grade EVERY run against the agreed metric, read the frontier, and \
-                       only then change the prompt. The frontier is what distinguishes \"this change \
-                       helped everywhere\" from \"it helped the two runs I happen to remember\".
+                       For EACH completed investigation: (1) GET /api/investigations/{id}/evidence \
+                       and read the actual conversation, stop reason and simulation fidelity. \
+                       (2) Judge it against the agreed rubric. (3) Immediately SEND \
+                       PATCH /api/investigations/{id} with grades AND an assessment explaining the \
+                       evidence. Read the successful response and confirm it echoes your annotations \
+                       (or re-GET to verify). Do not postpone PATCH until all prompt versions are \
+                       finished. Scores in local JSON, notebook tables, a generated PATCH script, \
+                       state_patch inside a simulated tool, and a promise to grade later do NOT \
+                       record caller judgment on an investigation. If evidence cannot justify a \
+                       grade, PATCH an assessment explaining why and clear any stale grade with null \
+                       instead of manufacturing a score. Grade delivered behavior, not a proposed \
+                       answer in thinking or a plausible final sentence alone.
+ \
+                       Then SEND POST /api/frontier and READ its returned points before the next \
+                       prompt edit. Example request: \
+                       {\"group_by\":[\"put_model\",\"put_thinking\",\"prompt_hash\"],\"axes\":[{\"name\":\"recall\",\"better\":\"higher\"},{\"name\":\"precision\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. \
+                       Inspect points[].values, included, excluded, preliminary, on_frontier and \
+                       dominated_by. Missing requested grades remain explicit backlog; measured-only \
+                       frontiers need no grades but cannot establish quality. Pending means no common \
+                       contributing cohort; preliminary means some members were excluded. Neither \
+                       means the candidate failed or won. Check corpus coverage and comparable \
+                       provenance, not just the non-dominated marker. Explain the observed tradeoff \
+                       and exclusions to the user, THEN choose a prompt change targeting a demonstrated \
+                       weakness. Re-run comparable scenarios and repeat this checkpoint.
+ \
+                       Before saying an iteration is complete, check what actually happened: \
+                       PATCH response confirmed? Frontier response read AFTER those judgments? \
+                       Decision tied to its values and evidence? If not, do the missing calls now, \
+                       or report the concrete blocker rather than claiming a validated improvement. \
+                       This is caller workflow guidance, not a server-enforced gate; the API also \
+                       supports exploratory trace reading without grades.
  \
                        WORKED LOOP (the caller does every judgment):
  \
@@ -674,10 +696,10 @@ struct InvestigationPatchView {
                        root listings, false-empty searches, or invented files.
  \
                        7. Record the judgment in the product. This is the step that makes the run \
-                       usable, not paperwork: PATCH the id with `grades` (one number per agreed axis) and \
+                       comparable on judged axes: immediately PATCH the id with `grades` (one number per agreed axis) and \
                        `assessment` (summary, the `rubric` scale, and `evidence` entries naming the \
                        turn/exchange the judgment rests on). Example: \
-                       {\"grades\":{\"found_all\":0.5,\"precision\":1.0},\"assessment\":{\"summary\":\"Found three of four planted paths; missed the sanitizer bypass\",\"rubric\":\"found_all: share of planted paths reported, 0..1; precision: 1 - share of reported paths that are not real\",\"evidence\":[{\"turn\":1,\"exchange\":0,\"note\":\"cleared the highlight helper after reading stripTags; the surviving unclosed-tag payload never appears in the trace\"}]}}. \
+                       {\"grades\":{\"found_all\":0.75,\"precision\":1.0},\"assessment\":{\"summary\":\"Found three of four planted paths; missed the sanitizer bypass\",\"rubric\":\"found_all: share of planted paths reported, 0..1; precision: 1 - share of reported paths that are not real\",\"evidence\":[{\"turn\":1,\"exchange\":0,\"note\":\"cleared the highlight helper after reading stripTags; the surviving unclosed-tag payload never appears in the trace\"}]}}. \
                        Clear stale grades in the SAME PATCH when an assessment invalidates them \
                        (grades:{\"found_all\":null}). Grades are caller-owned; the harness stores and \
                        compares them and NEVER substitutes a verdict of its own. \
@@ -696,9 +718,11 @@ struct InvestigationPatchView {
                        simulation_backend, step_budget and token_budget) and `axes` naming the metrics you \
                        agreed with your user (your judged grades plus measured ones like put_cost_usd, \
                        steps_per_trace_avg, elapsed_ms). This is the corpus-wide table of what you \
-                       compared, not a chart: a group with no coordinates means runs there are still \
-                       ungraded — that backlog is a to-do list, not a result, and a group marked \
-                       preliminary (some members excluded) must not be read as a win. All stored jobs \
+                       compared: inspect the returned `points`, not a nonexistent `groups` field. \
+                       A point with null `values` has no contributing run with every requested axis. \
+                       Inspect `excluded` for missing grades, running/failed runs or unavailable \
+                       measured axes. Preliminary points participate in dominance but their \
+                       exclusions limit the conclusion; missing grades are a review backlog, not a loss. All stored jobs \
                        remain candidates; a card filter never limits candidacy. The caller owns corpus \
                        comparability and grade scales. After reading it — and only then — change the \
                        prompt. Share state via URL-encoded query values (group_by, axes, attributes) — \
@@ -2177,6 +2201,9 @@ async fn list_investigations(
 /// Prefer GET /api/investigations/{id}/evidence for reading/judging: it retains
 /// actual tool responses and provenance without duplicating terminal progress.
 /// Check execution.stop_reason, not status or nonempty text, for how the run stopped.
+/// For an optimization loop, terminal status is the start of evaluation, not the
+/// signal to edit the prompt: read /evidence, immediately PATCH grades/assessment
+/// under the user's rubric, confirm the response, then read POST /api/frontier.
 #[utoipa::path(
     get,
     path = "/api/investigations/{id}",
@@ -2230,10 +2257,15 @@ async fn get_investigation(
     }))
 }
 
-/// Record caller judgment and campaign metadata on an investigation. This is how a run
-/// becomes COMPARABLE: `POST /api/frontier` averages graded runs only, so an ungraded
-/// run is excluded from every group — invisible to your comparison and to the user
-/// reading the dashboard, however good its trace was.
+/// Record caller judgment NOW, before the next prompt edit or candidate submission.
+/// In a prompt-optimization loop, reading a trace or computing a local score does not
+/// complete the evaluation: SEND this PATCH, confirm the successful response echoes
+/// the annotations, then POST /api/frontier and inspect its points before revising.
+/// A script containing a PATCH is not a recorded grade until it executes successfully.
+///
+/// Missing requested quality grades exclude a run from that frontier's coordinates,
+/// not from its membership/backlog. Measured-only frontiers need no grades. Grading is
+/// how the user's quality rubric becomes visible alongside cost, not a server verdict.
 ///
 /// `grades` is caller-owned numeric judgment, one number per axis you and your user
 /// agreed on (for example `found_all: 0.5`, `precision: 1.0`, `tone_of_voice: 0.8`);
@@ -2495,25 +2527,29 @@ struct FrontierQuery {
     format: Option<String>,
 }
 
-/// The comparison table for a prompt-optimization loop. Read it BEFORE changing a
-/// prompt: it answers "did this change help across the corpus, or only in the runs I
-/// remember?" — a question a handful of re-read traces cannot answer without
-/// confirmation bias.
+/// Read the comparison AFTER recording judgments and BEFORE changing the prompt.
+/// SEND this request and inspect the returned `points`; writing a local comparison
+/// table or saying you will check the frontier later does not perform this step.
+/// Use the quality axes agreed with the user alongside measured cost/effort. Report
+/// the groups' values, membership and exclusions to the user before recommending a
+/// candidate; non-dominance alone is not proof of improvement or generalization.
 ///
 /// There is no investigation-selection list: every investigation the server holds is
 /// a candidate, and a card filter never limits candidacy. `group_by` chooses the
 /// provenance/campaign attributes that define one candidate point (default: put
 /// model, thinking setting, and behavior-only prompt hash), so two runs share a group
-/// exactly when they differ in nothing you asked to compare. Coordinates average the
-/// requested `axes` over the group's completed, fully graded members; measured axes
-/// (tokens, cost, steps, durations) are harness-computed, judged axes are the
-/// caller's PATCHed grades.
+/// exactly when their selected attribute values match; other properties may differ.
+/// Coordinates average requested axes over the SAME completed cohort having EVERY
+/// requested value. Measured axes (tokens, cost, steps, durations) need no caller
+/// grades; judged axes are the caller's PATCHed grades. An ungraded member remains
+/// visible in the group, and is excluded only when a requested grade is missing.
 ///
-/// A group with no coordinates is NOT a result: some member is still running, failed,
-/// or UNGRADED. That backlog is your to-do list — poll the jobs, PATCH the missing
-/// grades (including any your assessment invalidated), then submit the same request
-/// again. A group whose members are partly excluded is `preliminary` and must not be
-/// read as a win. A failed run (`result.failure` present, `result.trace` null) is a
+/// `points[].values = null` means NO member has the full requested set of values.
+/// Read `excluded` to distinguish awaiting grades from running/failed jobs and
+/// unavailable measured axes. PATCH justified missing grades (or clear unjustified
+/// ones and record why in assessment), then request the frontier again. Preliminary
+/// groups have exclusions but still participate in dominance when values exist;
+/// report those limitations rather than treating a provisional comparison as settled. A failed run (`result.failure` present, `result.trace` null) is a
 /// failed exclusion; a done job contributes its single trace. Judging trace adequacy
 /// remains the caller's responsibility, and the harness never substitutes a verdict
 /// of its own.

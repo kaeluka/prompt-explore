@@ -15,12 +15,15 @@ use super::*;
 /// responses, model/simulator reasoning, workspace operations and Lua source are
 /// all preserved here. No semantic compression or inferred correctness flags.
 ///
-/// Reading this is only half the step. The other half is recording what you
-/// conclude: PATCH the id with `grades` for the axes you and your user agreed on and
-/// an `assessment` naming the rubric and the turn/exchange your judgment rests on.
-/// A trace that was read but not judged cannot be compared with the next prompt
-/// version (POST /api/frontier averages graded runs only), so the next prompt change
-/// becomes a guess.
+/// Next action in a prompt-optimization loop: immediately SEND PATCH
+/// /api/investigations/{id} with your evidence-based `grades` and `assessment`,
+/// using the user's agreed rubric and zero-based turn/exchange references. Confirm
+/// the response echoes the annotations; a local score or a planned PATCH is not a
+/// recorded judgment. If simulation or evidence cannot justify a score, record the
+/// limitation in assessment and leave/clear that grade rather than fabricate one.
+/// Then POST /api/frontier with those quality axes and inspect `points` BEFORE
+/// editing the prompt. A run missing a requested grade remains in the group's
+/// explicit backlog, but cannot contribute coordinates on that comparison.
 #[derive(Serialize, utoipa::ToSchema)]
 pub(super) struct InvestigationEvidence {
     id: String,
