@@ -131,10 +131,18 @@
   .wsops.rolled-back { border-left-style: dashed; }
   .wsop { margin: 0.2rem 0; }
   /* Grades editor + frontier panel */
-  input[type=text], input[type=number], select {
+  input[type=text], input[type=number], select, textarea {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 0.22rem 0.5rem; font-size: 0.8rem; font-family: var(--mono); }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { width: 100%; min-height: 4.5em; resize: vertical; }
+  .evidence-primary { border-left: 3px solid var(--put-border); padding-left: .45rem; }
+  .execution { margin: .4rem 0; padding: .35rem .5rem; border-left: 2px solid var(--border); background: var(--panel-2); font-size: .78rem; }
+  .execution.capped { border-left-color: var(--amber); }
+  .execution.failure { border-left-color: var(--red); }
+  .filter-row { display:grid; grid-template-columns:minmax(10em,1fr) minmax(12em,2fr) auto; gap:.4rem; align-items:center; margin:.25rem 0; }
+  .source-compare { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; margin-top:.35rem; }
+  @media (max-width: 600px) { .source-compare { grid-template-columns:1fr; } .filter-row { grid-template-columns:1fr auto; } .filter-row input { grid-column:1; } }
   .grow { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .grade-row { display: flex; gap: 0.4rem; align-items: center; margin: 0.22rem 0; }
   .grade-row .name { font-family: var(--mono); font-size: 0.78rem; color: var(--text); min-width: 11em; }
@@ -229,7 +237,6 @@ const fmtAxisVal = v => v == null ? '—' : Math.abs(v) >= 1000 ? Math.round(v).
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({
   resolving_inputs: 'resolving input variables',
-  preparing_tools: 'preparing tool simulation',
   put_loop: 'running PUT tool loop',
 })[p] || p;
 
@@ -266,7 +273,7 @@ function LuaExecutionProvenance({ execution }) {
   const detailLabel = outcome === 'fallback' ? 'fallback reason'
     : outcome === 'error' ? 'Lua error' : 'detail';
   return html`<div class="lua-provenance">
-    <span class="uchip sim">Lua revision ${execution.program_revision}</span>
+    <span class="uchip sim">supplied Lua · ${execution.tool} · ${(execution.source_hash || '').slice(0, 8)}</span>
     <span>${outcome}</span>
     ${execution.detail ? html`<span>· ${detailLabel}: ${execution.detail}</span>` : null}
   </div>`;
@@ -281,22 +288,18 @@ function ExchangeView({ exchange, index, total }) {
   const lua = exchange.lua_execution;
   // A Lua runtime error is not a PUT tool error: the returned response below
   // is the LLM fallback, while discarded operations are shown separately.
-  const simRole = lua ? (lua.outcome === 'computed' ? 'SIM · Lua' : 'SIM · LLM') : 'SIM';
-  return html`<div class="exchange">
-    <div class="exchange-head">tool exchange ${index + 1}${total > 1 ? ` of ${total}` : ''}</div>
-    <${Bubble} side="put" role="PUT · tool" tool=${true} body=${`🔧 ${exchange.call.name}(${args})`} />
+  const computed = lua && lua.outcome === 'computed';
+  const simRole = computed ? 'SIM · Lua · executed, fidelity unverified' : (lua ? 'SIM · LLM' : 'SIM');
+  return html`<div class="exchange evidence-primary">
+    <div class="exchange-head">primary exchange evidence · tool call ${index + 1}${total > 1 ? ` of ${total}` : ''}</div>
+    <${Bubble} side="put" role="PUT-visible tool call · exact arguments" tool=${true} body=${`${exchange.call.name}(${args})`} />
+    <${Bubble} side="sim" role=${`${simRole} · PUT-visible response`} tool=${true} body=${response} />
     ${lua ? html`<${LuaExecutionProvenance} execution=${lua} />` : null}
-    ${exchange.workspace_ops && exchange.workspace_ops.length
-      ? html`<${WsOps} ops=${exchange.workspace_ops} />`
-      : null}
-    ${lua && lua.discarded_workspace_ops && lua.discarded_workspace_ops.length
-      ? html`<${WsOps} ops=${lua.discarded_workspace_ops} rolledBack=${true}
-          label="Lua workspace operations (not real world mutations)" />`
-      : null}
-    ${exchange.sim_thinking && exchange.sim_thinking.trim()
-      ? html`<${Thinking} side="sim" role="SIM" text=${exchange.sim_thinking} />`
-      : null}
-    <${Bubble} side="sim" role=${simRole} body=${response} />
+    ${(exchange.workspace_ops && exchange.workspace_ops.length) || (lua && lua.discarded_workspace_ops && lua.discarded_workspace_ops.length) || (exchange.sim_thinking && exchange.sim_thinking.trim()) ? html`<details><summary>secondary simulator provenance</summary>
+      ${exchange.workspace_ops && exchange.workspace_ops.length ? html`<${WsOps} ops=${exchange.workspace_ops} />` : null}
+      ${lua && lua.discarded_workspace_ops && lua.discarded_workspace_ops.length ? html`<${WsOps} ops=${lua.discarded_workspace_ops} rolledBack=${true} label="Lua workspace operations (not real world mutations)" />` : null}
+      ${exchange.sim_thinking && exchange.sim_thinking.trim() ? html`<${Thinking} side="sim" role="SIM" text=${exchange.sim_thinking} />` : null}
+    </details>` : null}
   </div>`;
 }
 
@@ -346,46 +349,29 @@ function SourceCode({ source }) {
   </div>`;
 }
 
-function LuaRevision({ revision, index, current }) {
-  const diagnostic = revision.error == null ? '' : String(revision.error);
-  const content = html`<div class=${current ? 'lua-current' : 'lua-revision'}>
-    <div class="lua-revision-meta"><span class="mono">revision ${index}</span>${current ? ' · current' : ''}</div>
-    ${diagnostic ? html`<div class="lua-diagnostic">not executable: ${diagnostic}</div>` : null}
-    <${SourceCode} source=${revision.source} />
-  </div>`;
-  return current ? content : html`<details class="lua-revision"><summary><span class="mono">revision ${index}</span>${diagnostic ? ' · not executable' : ''}</summary>${content}</details>`;
-}
-
-function SetupEvidence({ program }) {
-  const ops = program.setup_workspace_ops || [];
-  const thinking = program.setup_thinking;
-  if (!ops.length && !(thinking && thinking.trim())) return null;
-  return html`<details style="margin-top:0.45rem">
-    <summary>setup simulator evidence${ops.length ? ` · ${ops.length} workspace op${ops.length===1?'':'s'}` : ''}</summary>
-    ${ops.length ? html`<${WsOps} ops=${ops} label="setup simulator workspace" />` : null}
-    ${thinking && thinking.trim() ? html`<${Thinking} side="sim" role="SIM · setup" text=${thinking} />` : null}
-  </details>`;
-}
-
-function SimulationProgram({ program }) {
-  if (!program) return null;
-  const revisions = Array.isArray(program.revisions) ? program.revisions : [];
-  const current = revisions.length - 1;
+/// The implementations the SCENARIO supplies for this run, as evidence: the
+/// caller authored them, the harness executed them. There are no generated
+/// revisions to display — a fix is a new scenario revision (fork it), and each
+/// exchange names the source hash it ran.
+function Implementations({ implementations }) {
+  const list = Array.isArray(implementations) ? implementations : [];
+  if (!list.length) return null;
   return html`<details class="lua-program">
-    <summary>SIM · Lua · <span class="mono">${program.path || '(unnamed program)'}</span>${current >= 0 ? ` · current revision ${current}` : ' · no revisions recorded'}</summary>
-    ${current >= 0 ? html`<${LuaRevision} revision=${revisions[current]} index=${current} current=${true} />` : null}
-    ${current > 0 ? html`<details style="margin-top:0.5rem"><summary>earlier revisions · ${current}</summary>
-      ${revisions.slice(0, current).map((revision, index) => html`<${LuaRevision} key=${index} revision=${revision} index=${index} current=${false} />`)}
-    </details>` : null}
-    <${SetupEvidence} program=${program} />
+    <summary>SIM · supplied Lua · ${list.length} tool${list.length === 1 ? '' : 's'} implemented</summary>
+    ${list.map((implementation, index) => html`<div class="lua-revision" key=${index}>
+      <div class="lua-revision-meta"><span class="mono">${implementation.tool}</span> · <span class="mono">${(implementation.source_hash || '').slice(0, 8)}</span></div>
+      <${SourceCode} source=${implementation.source} />
+    </div>`)}
   </details>`;
 }
 
 function Chat({ s }) {
   const out = [];
-  // The simulator's setup artifact sits beside resolved inputs, before the
-  // protagonist and even when setup fails before the first PUT turn.
-  if (s.simulation_program) out.push(html`<${SimulationProgram} key="lua" program=${s.simulation_program} />`);
+  // The scenario's supplied implementations sit beside resolved inputs: what
+  // CAN compute, before the protagonist and even when the run fails early.
+  if (s.implementations && s.implementations.length) {
+    out.push(html`<${Implementations} key="lua" implementations=${s.implementations} />`);
+  }
   // Resolved input bindings (sim agent's output) — first, SIM side.
   const ri = s.resolved_inputs;
   if (ri && Object.keys(ri).length) {
@@ -425,7 +411,23 @@ function WsOps({ ops, label = 'simulator workspace', rolledBack = false }) {
 // A job now investigates one authored scenario. Keep its narrative at the job
 // level and render either live progress or the terminal trace in this one
 // conversation, rather than fabricating attempt/scenario identities.
-function ConversationPanel({ scenario, progress, trace, failure }) {
+function ExecutionSummary({ execution, budget }) {
+  if (!execution) return html`<div class="execution meta">execution metadata unavailable for this older job fixture.</div>`;
+  const reason = execution.stop_reason || 'running / not yet terminal';
+  const capped = reason === 'step_budget' || reason === 'token_budget';
+  const failed = reason === 'runtime_failure';
+  const timing = execution.timing || {};
+  const ms = v => Number.isFinite(v) ? `${v.toLocaleString()}ms` : '—';
+  return html`<div class=${`execution${capped ? ' capped' : ''}${failed ? ' failure' : ''}`}>
+    <b>execution:</b> ${reason === 'final_completion' ? 'final completion' : capped ? `capped (${reason}) — done does not mean a final answer` : reason}
+    <span class="mono"> · steps ${execution.steps_used ?? '—'} / ${budget?.max_steps_per_trace ?? '—'} · PUT tokens ${execution.put_tokens_used ?? '—'} / ${budget && budget.max_tokens == null ? 'unlimited' : budget?.max_tokens ?? '—'}</span>
+    <div class="meta">timing: elapsed ${ms(timing.elapsed_ms)} · input resolution ${ms(timing.resolving_inputs_ms)} · PUT loop ${ms(timing.put_loop_ms)}</div>
+    ${execution.budget_cutoff_completion ? html`<details open><summary>completion received at token cutoff — not accepted; tools were NOT executed</summary><pre class="step">${pretty(execution.budget_cutoff_completion)}</pre></details>` : null}
+    ${execution.unrendered_call ? html`<details open><summary>tool request that could not be simulated — it has NO response; its siblings above are real</summary><pre class="step">${pretty(execution.unrendered_call)}</pre></details>` : null}
+  </div>`;
+}
+
+function ConversationPanel({ scenario, progress, trace, failure, budget }) {
   const evidence = trace
     ? { ...trace, user_message: scenario && scenario.user_message }
     : { ...(progress || {}), user_message: (progress && progress.user_message) || (scenario && scenario.user_message) };
@@ -439,6 +441,7 @@ function ConversationPanel({ scenario, progress, trace, failure }) {
       ${scenario.simulator_notes ? html`<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${scenario.simulator_notes}</div>` : null}
     </details>` : null}
     ${failure ? html`<div class="note" style="margin:0.35rem 0"><b>${failure.stage}:</b> <${ClipText} text=${failure.error} /></div>` : null}
+    <${ExecutionSummary} execution=${(trace && trace.execution) || (progress && progress.execution)} budget=${budget} />
     <details open>
       <summary>conversation · ${turns.length} PUT turn(s) · ${toolCallCount} tool call(s)</summary>
       <${Chat} s=${evidence} />
@@ -473,9 +476,9 @@ function PutPanel({ put }) {
 function ResultLine({ j }) {
   const r = j.result; if (!r) return null;
   return html`<div style="margin-top:0.5rem">
-    <span class="badge ${r.failure ? 'failed' : 'completed'}">${r.failure ? 'failed' : r.trace ? 'trace captured' : 'finished'}</span>
+    <span class="badge ${r.failure ? 'failed' : 'job-done'}">${r.failure ? 'failed' : r.trace ? 'trace captured (inspect stop reason)' : 'finished (inspect stop reason)'}</span>
     <span class="meta"> ${r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
-    ${r.usage ? html`<div style="margin-top:0.2rem">${roleLine('put', r.usage.put, 'put')}${roleLine('sim', r.usage.sim, 'sim')}</div>` : null}
+    ${(r.usage || progress?.usage) ? html`<div style="margin-top:0.2rem">${roleLine('put', (r.usage || progress?.usage).put, 'put')}${roleLine('sim', (r.usage || progress?.usage).sim, 'sim')}</div>` : null}
   </div>`;
 }
 
@@ -490,9 +493,10 @@ const RESERVED_AXES = [
   ['sim_cache_read_tokens','higher'], ['sim_cost_usd','lower'],
   ['steps_per_trace_avg','lower'], ['steps_per_trace_min','lower'],
   ['steps_per_trace_max','lower'], ['steps_per_trace_stdev','lower'],
+  ['elapsed_ms','lower'], ['resolving_inputs_ms','lower'], ['put_loop_ms','lower'],
 ];
 const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null])[1];
-const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash']);
+const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
 const jobAttributes = j => (j && j.attributes) || {};
 const displayName = j => jobAttributes(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
 // This key deliberately mirrors the frontier request: selected attribute values
@@ -591,6 +595,57 @@ function GradesPanel({ j, token, onPatched, jobUi }) {
     </details>`;
 }
 
+// Assessments are caller-owned reading notes, never a harness verdict. Store their
+// unsaved text in the same per-job cache used by grades so polling/regrouping does
+// not erase a reader's work.
+function AssessmentPanel({ j, token, onPatched, jobUi }) {
+  const saved = jobUi.drafts.get('assessment');
+  const live = j.assessment || { summary: '', rubric: '', evidence: [] };
+  const initial = { summary: saved?.summary ?? live.summary ?? '', rubric: saved?.rubric ?? live.rubric ?? '', evidence: saved?.evidence ?? pretty(live.evidence || []) };
+  const values = useRef(initial);
+  const [summary, setSummary] = useState(initial.summary);
+  const [rubric, setRubric] = useState(initial.rubric);
+  const [evidence, setEvidence] = useState(initial.evidence);
+  const [msg, setMsg] = useState(null);
+  const dirty = useRef(saved?.dirty || false);
+  const persist = () => jobUi.drafts.set('assessment', { ...values.current, dirty: dirty.current });
+  useEffect(() => () => persist(), []);
+  useEffect(() => {
+    if (!dirty.current) { const next = { summary: live.summary || '', rubric: live.rubric || '', evidence: pretty(live.evidence || []) }; values.current = next; setSummary(next.summary); setRubric(next.rubric); setEvidence(next.evidence); }
+  }, [JSON.stringify(j.assessment)]);
+  const change = (setter, key) => e => { dirty.current = true; const value = e.target.value; values.current = { ...values.current, [key]: value }; setter(value); persist(); };
+  const send = async clear => {
+    let assessment = null;
+    if (!clear) {
+      let parsed;
+      try { parsed = JSON.parse(evidence); } catch (e) { setMsg({ err: `evidence must be JSON: ${e.message}` }); return; }
+      if (!Array.isArray(parsed)) { setMsg({ err: 'evidence must be a JSON array' }); return; }
+      if (parsed.length > 256) { setMsg({ err: 'evidence may contain at most 256 references' }); return; }
+      const utf8 = text => new TextEncoder().encode(String(text == null ? '' : text)).length;
+      const totalText = utf8(summary) + utf8(rubric) + parsed.reduce((n, item) => n + utf8(item && item.note), 0);
+      if (totalText > 65536) { setMsg({ err: 'summary, rubric, and evidence notes must total at most 65,536 UTF-8 bytes' }); return; }
+      assessment = { summary, rubric, evidence: parsed };
+    }
+    setMsg(null);
+    try {
+      const r = await fetch(API(j.id), { method: 'PATCH', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify({ assessment }) });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg({ err: (body.problems || []).map(p => p.detail).join(' · ') || body.error || `HTTP ${r.status}` }); return; }
+      dirty.current = false; jobUi.drafts.delete('assessment');
+      const next = { summary: body.assessment?.summary || '', rubric: body.assessment?.rubric || '', evidence: pretty(body.assessment?.evidence || []) }; values.current = next;
+      setSummary(next.summary); setRubric(next.rubric); setEvidence(next.evidence);
+      onPatched && onPatched(j.id, body); setMsg({ ok: clear ? 'cleared' : 'saved' });
+    } catch (e) { setMsg({ err: `request failed: ${e.message || e}` }); }
+  };
+  return html`<details style="margin-top:0.4rem"><summary class="meta">assessment <span style="opacity:.7">(caller-owned reading notes; no automatic grade)</span></summary>
+    <div class="meta">Saving notes does not change grades. If this assessment overturns an earlier judgment, clear or revise its stale scores before comparing on the frontier.</div>
+    <div style="margin:.4rem 0"><label class="meta">summary<textarea aria-label="assessment summary" value=${summary} onInput=${change(setSummary, 'summary')} /></label>
+    <label class="meta">rubric<textarea aria-label="assessment rubric" value=${rubric} onInput=${change(setRubric, 'rubric')} /></label>
+    <label class="meta">evidence JSON <span class="mono">[{"turn":0,"exchange":null,"note":"…"}]</span><textarea aria-label="assessment evidence JSON" value=${evidence} onInput=${change(setEvidence, 'evidence')} /></label>
+    <div class="grow"><button onClick=${() => send(false)}>save assessment</button><button onClick=${() => send(true)}>clear assessment</button>${msg?.ok ? html`<span class="meta" style="color:var(--green)">✓ ${msg.ok}</span>` : null}${msg?.err ? html`<span class="note">${msg.err}</span>` : null}</div></div>
+  </details>`;
+}
+
 // Attributes describe a variant and are also the grouping dimensions for the live
 // frontier. System attributes are provenance emitted by the server, never editable.
 function AttributesPanel({ j, token, onPatched, jobUi }) {
@@ -647,19 +702,17 @@ function AttributesPanel({ j, token, onPatched, jobUi }) {
 // The frontier panel compares every job, grouped by attribute values; the server
 // owns cohort construction and dominance so no client-side candidate filter
 // can silently change the comparison.
-function FrontierPanel({ jobs, token, groupBy, setGroupBy, activeGroupId, onActiveGroup, onGroupActivate, onPlotChange }) {
+function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, setDirs, activeGroupId, onActiveGroup, onGroupActivate, onPlotChange }) {
   const allJobs = jobs || [];
-  const [axes, setAxes] = useState(['put_output_tokens', '']); // '' = derive at render
-  const [dirs, setDirs] = useState({});
   const [plot, setPlot] = useState(null);
   const [err, setErr] = useState(null);
   const svgRef = useRef(null);
   // System provenance keys always exist on real jobs; include them even before
   // the first job arrives. Caller attributes appear as soon as any investigation
   // carries them. Grouping is deliberately selected, never free-typed.
-  const knownAttributeKeys = [...new Set([...SYSTEM_ATTRIBUTE_KEYS, ...allJobs.flatMap(j => Object.keys(jobAttributes(j)))])].sort();
+  const knownAttributeKeys = [...new Set([...SYSTEM_ATTRIBUTE_KEYS, ...groupBy, ...allJobs.flatMap(j => Object.keys(jobAttributes(j)))])].sort();
   const gradedNames = [...new Set(allJobs.flatMap(j => Object.keys(j.grades || {})))];
-  const options = RESERVED_AXES.map(([n]) => n).concat(gradedNames.filter(n => !reservedDir(n)));
+  const options = [...new Set(RESERVED_AXES.map(([n]) => n).concat(gradedNames.filter(n => !reservedDir(n)), axes.filter(Boolean)))];
   const names = [];
   axes.forEach(a => {
     if (a) { names.push(a); return; }
@@ -677,16 +730,25 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, activeGroupId, onActi
     const result = j.result;
     if (!result) return null;
     return {
-      usage: result.usage || null,
+      // Live spend while a run is in flight (progress.usage), frozen totals once
+      // it finishes (result.usage). Both are the same numbers.
+      usage: result.usage || j.progress?.usage || null,
       // A single-conversation investigation has at most one terminal trace.
       // Its steps are completion boundaries (one per turn) or tool calls.
       steps_per_trace: result.trace ? [(result.trace.turns || [])
         .reduce((steps, turn) => steps + Math.max((turn.tool_exchanges || []).length, 1), 0)] : [],
+      // Timing is a measured frontier input too. Include it in the polling
+      // dependency key so a finished trace's late/frozen execution metadata
+      // refreshes the frontier without serializing full evidence bodies.
+      execution_timing: result.trace?.execution?.timing || null,
     };
   };
   const jobsKey = JSON.stringify(allJobs.map(j => [j.id, j.status, j.attributes, j.grades, measuredSummary(j)]));
   const groupKey = JSON.stringify(groupBy);
   const namesKey = JSON.stringify(names);
+  // Resolve dynamic default axes once, then share the ACTUAL rendered choices.
+  // Persisting an empty placeholder would choose a different grade on reload.
+  useEffect(() => { if (axes.some(a => !a)) setAxes(names); }, [namesKey]);
   const dirsKey = JSON.stringify(names.map(n => dirOf(n)));
   const seq = useRef(0);
   useEffect(() => {
@@ -799,7 +861,7 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, activeGroupId, onActi
 
   return html`<div class="card">
     <h2>📈 Live grouped Pareto <span class="meta" style="font-weight:400">— every investigation is a candidate</span></h2>
-    <div class="meta" style="margin:0.4rem 0">Matching attribute values become one point. Every coordinate is a mean over the same completed, fully graded investigations. Preliminary points are faded with a dashed ring; groups with no usable members stay pending without coordinates. All excluded members remain in the backlog. Delete unwanted investigations to remove them from the comparison.</div>
+    <div class="meta" style="margin:0.4rem 0">Matching attribute values become one point. Every coordinate is a mean over the same completed, fully graded investigations. Preliminary points are faded with a dashed ring; groups with no usable members stay pending without coordinates. All excluded members remain in the backlog. Delete unwanted investigations to remove them from the comparison. Group by simulator/backend provenance too (for example an available simulator mode attribute) when comparing Lua backend tests.</div>
     <div style="margin:0.45rem 0">
       <div class="meta">group by attributes <span style="opacity:0.7">(empty = one group; missing values are grouped as null)</span></div>
       ${groupBy.map((key, i) => html`<div class="grow" key=${i} style="margin:0.2rem 0">
@@ -870,7 +932,48 @@ function usePreservedDetails(jobUi) {
   return root;
 }
 
-function JobCard({ j, token, onDelete, onPatched, leaving, uiCache }) {
+function ControlsPanel({ controls }) {
+  if (!controls) return html`<div class="meta">resolved conversation controls unavailable for this older job fixture.</div>`;
+  const lua = controls.lua_simulation;
+  return html`<details><summary class="meta">model and simulator controls</summary><div class="step">${pretty(controls)}</div><div class="meta">simulator backend: ${lua == null ? 'LLM-only' : 'Lua experimental'}; source/output remain evidence, not a fidelity judgment.</div></details>`;
+}
+function EvidenceDownload({ id, token }) {
+  const [msg, setMsg] = useState('');
+  const download = async () => {
+    setMsg('fetching…');
+    try {
+      const r = await fetch(`${API(id)}/evidence`, { headers: authHeaders(token) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const blob = await r.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = `investigation-${id}-evidence.json`; a.click(); URL.revokeObjectURL(url); setMsg('downloaded');
+    } catch (e) { setMsg(`download failed: ${e.message || e}`); }
+  };
+  return html`<div class="grow" style="margin:.35rem 0"><button onClick=${download}>download full evidence JSON</button><span class="meta">authenticated download; no token is put in the link</span>${msg ? html`<span class="meta">${msg}</span>` : null}</div>`;
+}
+function currentLuaSource(job) {
+  const list = job?.result?.trace?.implementations || job?.progress?.implementations || [];
+  if (!list.length) return { path: null, revision: null, source: null };
+  // Several tools may be implemented; show them together, each labeled.
+  return {
+    path: list.map(i => i.tool).join(', '),
+    revision: list[0].source_hash ? list[0].source_hash.slice(0, 8) : null,
+    source: list.map(i => `-- ${i.tool} (${(i.source_hash || '').slice(0, 8)})\n${i.source}`).join('\n\n'),
+  };
+}
+function SourceComparison({ j, jobs }) {
+  const candidates = (jobs || []).filter(x => x.id !== j.id && currentLuaSource(x).source != null);
+  const [otherId, setOtherId] = useState(() => candidates[0]?.id || '');
+  const selectedId = candidates.some(x => x.id === otherId) ? otherId : candidates[0]?.id || '';
+  const mine = currentLuaSource(j), other = currentLuaSource(candidates.find(x => x.id === selectedId));
+  if (mine.source == null || !candidates.length) return null;
+  return html`<details><summary>compare Lua source with another investigation</summary><div class="meta">Side-by-side source evidence only; it does not judge fidelity or program equivalence.</div>
+    <select aria-label="comparison investigation" value=${selectedId} onChange=${e => setOtherId(e.target.value)}>${candidates.map(x => html`<option value=${x.id}>${displayName(x)} · ${x.id.slice(0,8)}</option>`)}</select>
+    <div class="source-compare"><div><b class="meta">this job · supplied Lua · ${mine.path || '—'} · ${mine.revision || '—'}</b><${SourceCode} source=${mine.source} /></div>
+      <div><b class="meta">other job · supplied Lua · ${other?.path || '—'} · ${other?.revision || '—'}</b><${SourceCode} source=${other?.source || ''} /></div></div>
+  </details>`;
+}
+
+function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache }) {
   const jobUi = jobUiState(uiCache, j.id);
   const cardRef = usePreservedDetails(jobUi);
   const attributes = jobAttributes(j);
@@ -887,29 +990,34 @@ function JobCard({ j, token, onDelete, onPatched, leaving, uiCache }) {
         ${j.status === 'running' && j.phase ? html`<span class="badge phase">${phaseLabel(j.phase)}</span>` : null}
         <span class="display-name" title="custom attribute label, or prompt-under-test id when no label is set">${displayName(j)}</span>
         <span class="mono meta">${(j.id || '').slice(0,8)}</span>
-        <span class="meta">${'· ' + relTime(j.started_at)}</span>
+        <span class="meta">${'· started ' + relTime(j.started_at)}${j.finished_at ? ` · finished ${relTime(j.finished_at)}` : ''}</span>
         <span style="margin-left:auto;display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
           ${putModel ? html`<span class="uchip put" title="system attribute put_model">${putModel}</span>` : null}
           ${putThinking ? html`<span class="uchip put" title="system attribute put_thinking">think ${putThinking}</span>` : null}
           ${simModel ? html`<span class="uchip sim" title="system attribute sim_model">${simModel}</span>` : null}
           ${simThinking ? html`<span class="uchip sim" title="system attribute sim_thinking">think ${simThinking}</span>` : null}
-          ${j.workspace_files ? html`<span class="uchip ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
+          ${j.scenario_id ? html`<span class="uchip ws" title=${`pinned scenario definition. Revision ${j.scenario_revision} (${(j.scenario_definition_hash || '').slice(0, 12)}). A correction elsewhere is a different revision; re-run only the traces you want re-run.`}>scenario ${j.scenario_id.slice(0, 8)} · r${j.scenario_revision}${attributes.scenario_revision && attributes.scenario_revision !== String(j.scenario_revision) ? ' (attr mismatch)' : ''}</span>` : null}
+          ${j.workspace_files ? html`<span class="uchip ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the scenario's uploaded archive; per-run. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
           <button class="del" title="delete this investigation (irreversible — removes the job, traces, grades, and attributes from server memory)" onClick=${() => onDelete(j.id)}>✕</button>
         </span>
       </h2>
       <div class="meta" style="margin:0.4rem 0">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span class="meta" style="opacity:0.7">(no reason — observing behavior; the caller is the judge)</span>`}</div>
       <${PutPanel} put=${j.put} />
+      <${ControlsPanel} controls=${j.conversation_controls} />
       <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
+      <${AssessmentPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
       <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
       <${ResultLine} j=${j} />
-      <${ConversationPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} failure=${failure} />
+      <${EvidenceDownload} id=${j.id} token=${token} />
+      <${SourceComparison} j=${j} jobs=${jobs} />
+      <${ConversationPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} failure=${failure} budget=${j.budget} />
     </div>`;
 }
 
 // The browser groups the cards using the exact attribute-vector request sent to
 // /api/frontier. It does no cohort filtering: every job remains visible, so a
 // pending or failed group is never hidden merely because it has no coordinate.
-function GroupedJobCards({ jobs, groupBy, points, activeGroupId, onActiveGroup, onGroupActivate, token, onDelete, onPatched, leaving, uiCache }) {
+function GroupedJobCards({ jobs, comparisonJobs, groupBy, points, activeGroupId, onActiveGroup, onGroupActivate, token, onDelete, onPatched, leaving, uiCache }) {
   const pointByKey = new Map((points || []).map(p => [groupKeyFor(groupBy, p.attributes), p]));
   const groups = new Map();
   (jobs || []).forEach(j => {
@@ -929,12 +1037,178 @@ function GroupedJobCards({ jobs, groupBy, points, activeGroupId, onActiveGroup, 
       onFocusIn=${enter} onFocusOut=${e => { if (!e.currentTarget.contains(e.relatedTarget)) leave(); }}>
       <h2><span class="mono">${point ? point.label : fallbackGroupLabel(groupBy, g.attributes)}</span>
         <span class="meta">· ${g.jobs.length} investigation${g.jobs.length === 1 ? '' : 's'}${point && point.values == null ? ' · pending' : ''}</span></h2>
-      ${g.jobs.map(j => html`<${JobCard} key=${j.id} j=${j} token=${token} onDelete=${onDelete} onPatched=${onPatched} leaving=${leaving === j.id} uiCache=${uiCache} />`)}
+      ${g.jobs.map(j => html`<${JobCard} key=${j.id} j=${j} jobs=${comparisonJobs || jobs} token=${token} onDelete=${onDelete} onPatched=${onPatched} leaving=${leaving === j.id} uiCache=${uiCache} />`)}
     </section>`;
   })}`;
 }
 
+const DEFAULT_GROUP_BY = ['put_model', 'put_thinking', 'prompt_hash'];
+function readSharedState() {
+  const q = new URL(window.location.href).searchParams, bad = [];
+  const json = (name, fallback, check) => {
+    if (!q.has(name)) return fallback;
+    try { const v = JSON.parse(q.get(name)); if (!check(v)) throw new Error('wrong shape'); return v; }
+    catch { bad.push(`${name} must be valid JSON of the documented shape`); return fallback; }
+  };
+  const validName = name => typeof name === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(name);
+  const groupBy = json('group_by', DEFAULT_GROUP_BY, v => Array.isArray(v) && v.every(validName) && new Set(v).size === v.length);
+  const axes = json('axes', [{ name: 'put_output_tokens', better: 'lower' }, { name: '', better: 'higher' }], v => Array.isArray(v) && v.length > 0 && v.every(x => x && validName(x.name) && (x.better === 'higher' || x.better === 'lower') && (!reservedDir(x.name) || reservedDir(x.name) === x.better)) && new Set(v.map(x => x.name)).size === v.length);
+  const attributes = json('attributes', {}, v => v && !Array.isArray(v) && typeof v === 'object' && Object.keys(v).every(k => validName(k) && typeof v[k] === 'string' && new TextEncoder().encode(v[k]).length <= 1024));
+  return { groupBy, axes, attributes, warning: bad.join('; ') };
+}
+function safeShareUrl() {
+  const url = new URL(window.location.href);
+  for (const key of [...url.searchParams.keys()]) {
+    if (['token', 'api_token', 'authorization'].includes(key.toLowerCase())) url.searchParams.delete(key);
+  }
+  return url;
+}
+function writeSharedState(groupBy, axes, attributes, replace = false) {
+  const url = safeShareUrl();
+  url.searchParams.set('group_by', JSON.stringify(groupBy));
+  url.searchParams.set('axes', JSON.stringify(axes));
+  const keys = Object.keys(attributes);
+  if (keys.length) url.searchParams.set('attributes', JSON.stringify(attributes)); else url.searchParams.delete('attributes');
+  history[replace ? 'replaceState' : 'pushState'](null, '', url.pathname + url.search + url.hash);
+}
+function cardMatchesAttributes(job, filters) {
+  const attrs = jobAttributes(job);
+  return Object.entries(filters).every(([key, value]) => Object.prototype.hasOwnProperty.call(attrs, key) && attrs[key] === value);
+}
+
+/// Scenarios are reusable worlds: register once (narrative, tools with optional
+/// Lua implementations, simulator settings, initial workspace), test with direct
+/// tool-call probes, then reference the id from many investigations. This panel
+/// is a workbench, not a judge: it shows responses, provenance and workspace
+/// operations, and the caller decides whether the simulation is good enough.
+function ScenarioPanel({ token }) {
+  const [list, setList] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [probes, setProbes] = useState([]);
+  const [calls, setCalls] = useState('[{"name": "lookup", "args": {"id": "A-1"}}]');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try {
+      const r = await fetch('/api/scenarios', { headers: authHeaders(token) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const next = await r.json();
+      setList(next);
+      if (selected && !next.some(s => s.id === selected)) setSelected(null);
+    } catch (e) { setMsg(`could not load scenarios: ${e.message || e}`); }
+  };
+  const loadDetail = async id => {
+    try {
+      const [d, p] = await Promise.all([
+        fetch(`/api/scenarios/${encodeURIComponent(id)}`, { headers: authHeaders(token) }),
+        fetch(`/api/scenarios/${encodeURIComponent(id)}/simulations`, { headers: authHeaders(token) }),
+      ]);
+      if (!d.ok) throw new Error(`scenario: HTTP ${d.status}`);
+      setDetail(await d.json());
+      setProbes(p.ok ? await p.json() : []);
+    } catch (e) { setMsg(`could not load scenario ${id}: ${e.message || e}`); }
+  };
+  useEffect(() => { load(); }, [token]);
+  useEffect(() => { if (selected) loadDetail(selected); else { setDetail(null); setProbes([]); } }, [selected, token]);
+  useEffect(() => {
+    if (!selected) return;
+    if (!probes.some(probe => probe.status === 'running')) return;
+    const timer = setTimeout(() => loadDetail(selected), 1200);
+    return () => clearTimeout(timer);
+  }, [selected, JSON.stringify(probes.map(p => [p.id, p.status]))]);
+  const submitProbe = async () => {
+    setMsg('');
+    let parsed;
+    try { parsed = JSON.parse(calls); } catch (e) { setMsg(`tool_calls is not valid JSON: ${e.message}`); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/scenarios/${encodeURIComponent(selected)}/simulations`, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'content-type': 'application/json' },
+        body: JSON.stringify({ tool_calls: parsed }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body && body.error ? body.error : `HTTP ${r.status}`);
+      await loadDetail(selected);
+    } catch (e) { setMsg(`probe failed: ${e.message || e}`); } finally { setBusy(false); }
+  };
+  const forkSelected = async () => {
+    setMsg('');
+    try {
+      const r = await fetch(`/api/scenarios/${encodeURIComponent(selected)}/fork`, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'content-type': 'application/json' },
+        body: JSON.stringify({ expected_revision: detail.revision }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body && body.error ? body.error : `HTTP ${r.status}`);
+      setMsg(`forked to ${body.id} (editable)`);
+      await load();
+      setSelected(body.id);
+    } catch (e) { setMsg(`fork failed: ${e.message || e}`); }
+  };
+  const scenarioToolRows = definition => (definition?.tools || []).map((tool, i) => html`<div class="exchange" key=${i}>
+    <div class="exchange-head">tool · <span class="mono">${tool.name}</span> · ${tool.side_effect}${tool.lua_source ? ' · supplied Lua' : ' · LLM-rendered'}</div>
+    <div class="meta">${tool.description}</div>
+    ${tool.lua_source ? html`<${SourceCode} source=${tool.lua_source} />` : null}
+  </div>`);
+  return html`<div class="card">
+    <h2>scenarios <span class="meta" style="font-weight:400">— reusable worlds; investigations reference an id and pin a revision</span></h2>
+    <div class="meta">Register with <span class="mono">POST /api/scenarios</span> (multipart: <span class="mono">request</span> JSON + optional <span class="mono">workspace</span> .zip), test with probes below, then run investigations with <span class="mono">scenario_id</span>. Editable only while unreferenced; fork to change a pinned world.</div>
+    ${msg ? html`<div class="note" style="margin:.4rem 0">${msg}</div>` : null}
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+      <select aria-label="scenario" value=${selected || ''} onChange=${e => setSelected(e.target.value || null)}>
+        <option value="">— select a scenario —</option>
+        ${(list || []).map(s => html`<option value=${s.id}>${s.label ? `${s.label} · ` : ''}${s.id.slice(0, 8)} r${s.revision}${s.editable ? ' · editable' : ` · pinned by ${s.investigations}`}</option>`)}
+      </select>
+      <button class="toggle" onClick=${load}>refresh</button>
+      ${detail ? html`<button class="toggle" onClick=${forkSelected}>fork current revision</button>` : null}
+    </div>
+    ${list && !list.length ? html`<div class="empty">No scenarios yet. Register one with <span class="mono">POST /api/scenarios</span>.</div>` : null}
+    ${detail ? html`<div>
+      <div class="meta"><b class="mono">${detail.id}</b> · revision ${detail.revision} · ${detail.editable ? 'editable' : html`pinned by ${detail.investigation_ids.length} investigation(s)`} · ${detail.workspace_files} workspace file(s) · ${detail.tools || ''}${detail.definition.tools.length} tool(s), ${detail.definition.tools.filter(x => x.lua_source).length} implemented</div>
+      <div class="meta mono">definition ${detail.definition_hash.slice(0, 12)} · workspace ${detail.workspace_hash.slice(0, 12)}</div>
+      ${detail.correction ? html`<div class="note">corrects <span class="mono">${detail.correction.scenario_id.slice(0, 8)}</span> r${detail.correction.revision}: ${detail.correction.reason}</div>` : null}
+      <details><summary>world specification</summary><pre class="step">${detail.definition.world}</pre></details>
+      ${scenarioToolRows(detail.definition)}
+      <div class="meta" style="margin-top:.5rem">Simulator: <span class="mono">${detail.definition.simulation?.sim_model || 'server default'}</span> · thinking ${detail.definition.simulation?.sim_thinking_level || 'provider default'}</div>
+      <h3 style="margin:.8rem 0 .2rem">simulation probes</h3>
+      <div class="meta">Each submission runs its calls in order in one session and starts from a fresh snapshot; the PUT is never involved.</div>
+      <textarea aria-label="probe tool calls" class="mono" style="width:100%;min-height:5rem;background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.4rem" value=${calls} onInput=${e => setCalls(e.target.value)}></textarea>
+      <div style="margin-top:.35rem"><button disabled=${busy || !selected} onClick=${submitProbe}>run probe</button></div>
+      ${probes.map((probe, probeIndex) => html`<details class="lua-program" key=${probe.id} open=${probe.status !== 'done' || probeIndex === 0}>
+        <summary>probe <span class="mono">${probe.id.slice(0, 8)}</span> · ${probe.status}${probe.stop_reason ? ` · ${probe.stop_reason}` : ''} · r${probe.scenario_revision} · ${(probe.calls || []).length} call(s)${probe.usage ? ` · ${fmtUsage(probe.usage)}` : ''}</summary>
+        ${probe.error ? html`<div class="note">${probe.error}</div>` : null}
+        ${probe.reason ? html`<div class="meta">reason: ${probe.reason}</div>` : null}
+        ${(probe.calls || []).map((call, i) => html`<div class="exchange evidence-primary" key=${i}>
+          <div class="exchange-head">call ${i + 1} · <span class="mono">${call.request.name}(${JSON.stringify(call.request.args)})</span> · ${call.elapsed_ms}ms</div>
+          ${call.error ? html`<div class="note">could not be rendered: ${call.error}</div>` : html`<pre class="step">${pretty(call.response)}</pre>`}
+          ${call.lua_execution ? html`<${LuaExecutionProvenance} execution=${call.lua_execution} />` : null}
+          ${call.workspace_ops && call.workspace_ops.length ? html`<${WsOps} ops=${call.workspace_ops} />` : null}
+          ${call.lua_execution && call.lua_execution.discarded_workspace_ops && call.lua_execution.discarded_workspace_ops.length ? html`<${WsOps} ops=${call.lua_execution.discarded_workspace_ops} rolledBack=${true} label="discarded Lua writes" />` : null}
+        </div>`)}
+      </details>`)}
+    </div>` : null}
+  </div>`;
+}
+
+function BrowsingFilters({ jobs, filters, setFilters }) {
+  const keys = [...new Set((jobs || []).flatMap(j => Object.keys(jobAttributes(j))).concat(Object.keys(filters)))].sort();
+  const entries = Object.entries(filters);
+  const set = (oldKey, key, value) => {
+    const next = { ...filters }; delete next[oldKey]; if (key) next[key] = value; setFilters(next);
+  };
+  const add = () => { const key = keys.find(k => !Object.prototype.hasOwnProperty.call(filters, k)); if (key) setFilters({ ...filters, [key]: '' }); };
+  return html`<div class="card"><h2>card browsing filters <span class="meta" style="font-weight:400">— cards only; all jobs remain frontier candidates</span></h2>
+    <div class="meta">Exact AND matches against caller/system attributes. These filters never alter full-job grouping or frontier math.</div>
+    ${entries.map(([key, value]) => html`<div class="filter-row" key=${key}><select aria-label="filter attribute" value=${key} onChange=${e => set(key, e.target.value, value)}>${[...new Set([key, ...keys])].map(k => html`<option value=${k}>${k}</option>`)}</select><input aria-label="filter value" type="text" value=${value} onInput=${e => set(key, key, e.target.value)} /><button class="del" title="remove filter" onClick=${() => { const n = { ...filters }; delete n[key]; setFilters(n); }}>✕</button></div>`)}
+    <button class="toggle" disabled=${!keys.some(k => !Object.prototype.hasOwnProperty.call(filters, k))} onClick=${add}>+ attribute filter</button>
+  </div>`;
+}
+
 function App() {
+  const shared = useRef(readSharedState()).current;
   const [jobs, setJobs] = useState(null); // null = loading
   const [auto, setAuto] = useState(true);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
@@ -942,7 +1216,13 @@ function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authError, setAuthError] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
-  const [groupBy, setGroupByState] = useState(['put_model', 'put_thinking', 'prompt_hash']);
+  const [groupBy, setGroupByState] = useState(shared.groupBy);
+  const [axes, setAxes] = useState(() => shared.axes.map(a => a.name));
+  const [dirs, setDirs] = useState(() => Object.fromEntries(shared.axes.map(a => [a.name, a.better])));
+  const [filters, setFilters] = useState(shared.attributes);
+  const [urlWarning, setUrlWarning] = useState(shared.warning);
+  const [shareMsg, setShareMsg] = useState('');
+  const urlReady = useRef(false), restoringUrl = useRef(false);
   const [frontierPoints, setFrontierPoints] = useState([]);
   const [activeGroupId, setActiveGroupId] = useState(null);
   const deletedIds = useRef(new Set());
@@ -964,6 +1244,20 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  // Shared browsing state is deliberately URL-only and never includes the API
+  // token. Keep unrelated query parameters and hash intact.
+  useEffect(() => {
+    const stateAxes = axes.map(name => ({ name, better: reservedDir(name) || dirs[name] || 'higher' }));
+    if (axes.some(name => !name)) return;
+    if (restoringUrl.current) { restoringUrl.current = false; return; }
+    writeSharedState(groupBy, stateAxes, filters, !urlReady.current);
+    urlReady.current = true;
+  }, [JSON.stringify(groupBy), JSON.stringify(axes), JSON.stringify(dirs), JSON.stringify(filters)]);
+  useEffect(() => {
+    const restore = () => { const next = readSharedState(); restoringUrl.current = true; setGroupByState(next.groupBy); setAxes(next.axes.map(a => a.name)); setDirs(Object.fromEntries(next.axes.map(a => [a.name, a.better]))); setFilters(next.attributes); setUrlWarning(next.warning); setFrontierPoints([]); setActiveGroupId(null); };
+    addEventListener('popstate', restore); return () => removeEventListener('popstate', restore);
+  }, []);
 
   useEffect(() => {
     if (!auto) return;
@@ -1028,6 +1322,7 @@ function App() {
       ...j,
       grades: patch.grades === undefined ? j.grades : patch.grades,
       attributes: patch.attributes === undefined ? j.attributes : patch.attributes,
+      assessment: patch.assessment === undefined ? j.assessment : patch.assessment,
     } : j));
   };
   const removeJob = async id => {
@@ -1079,6 +1374,11 @@ function App() {
     const anyClosed = all.some(d => !d.hasAttribute('open'));
     all.forEach(d => { if (anyClosed) d.setAttribute('open', ''); else d.removeAttribute('open'); });
   };
+  const copyShareLink = async () => {
+    try { await copySource(safeShareUrl().href); setShareMsg('share link copied (no token included)'); }
+    catch { setShareMsg('could not copy share link'); }
+  };
+  const shownJobs = jobs === null ? null : jobs.filter(j => cardMatchesAttributes(j, filters));
 
   return html`
     <header>
@@ -1087,6 +1387,7 @@ function App() {
       <span class="auto">
         <label class="meta"><input type="checkbox" checked=${auto} onClick=${() => setAuto(!auto)} /> auto-refresh</label>
         <button class="toggle" onClick=${expandAll}>expand all logs</button>
+        <button class="toggle" onClick=${copyShareLink}>copy share link</button>
         <button class="toggle" onClick=${() => setTheme(theme === 'light' ? 'dark' : 'light')}
           title=${`switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>${theme === 'light' ? 'dark mode' : 'light mode'}</button>
         ${token ? html`<button class="toggle" onClick=${clearToken} title="forget the stored API token">clear token</button>` : null}
@@ -1102,15 +1403,20 @@ function App() {
         </div>
         ${authError ? html`<div class="note" style="margin-top:0.4rem">That token was rejected — check it and try again.</div>` : null}
       </div>` : null}
+    ${urlWarning ? html`<div class="frontier-err"><b>Invalid shared URL state</b><div class="meta">${urlWarning}. Defaults were used; fix the query JSON or use the controls below.</div></div>` : null}
+    ${shareMsg ? html`<div class="meta">${shareMsg}</div>` : null}
     ${authRequired ? null : jobs === null ? null : html`<${FrontierPanel}
-      jobs=${jobs} token=${token} groupBy=${groupBy} setGroupBy=${setGroupBy}
+      jobs=${jobs} token=${token} groupBy=${groupBy} setGroupBy=${setGroupBy} axes=${axes} setAxes=${setAxes} dirs=${dirs} setDirs=${setDirs}
       activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId}
       onGroupActivate=${activateGroup} onPlotChange=${setFrontierPoints} />`}
+    ${authRequired ? null : html`<${ScenarioPanel} token=${token} />`}
+    ${authRequired || jobs === null ? null : html`<${BrowsingFilters} jobs=${jobs} filters=${filters} setFilters=${setFilters} />`}
     <div id="jobs">
       ${authRequired ? null
        : jobs === null ? html`<div class="empty">loading…</div>`
        : jobs.length === 0 ? html`<div class="empty">No jobs. Start one via <span class="mono">POST /api/investigations</span>.</div>`
-       : html`<${GroupedJobCards} jobs=${jobs} groupBy=${groupBy} points=${frontierPoints}
+       : shownJobs.length === 0 ? html`<div class="empty">No cards match these filters. The frontier above still includes every job.</div>`
+       : html`<${GroupedJobCards} jobs=${shownJobs} comparisonJobs=${jobs} groupBy=${groupBy} points=${frontierPoints}
           activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId} onGroupActivate=${activateGroup}
           token=${token} onDelete=${removeJob} onPatched=${applyPatch} leaving=${leaving} uiCache=${jobUiCache} />`}
     </div>

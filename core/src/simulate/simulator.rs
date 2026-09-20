@@ -1,16 +1,21 @@
 //! The simulator LLM: runs as *one persistent conversation per trace*.
-//! The first turn resolves the prompt template's `{{variables}}` from the
-//! scenario's `input_domain`; every later turn renders a tool call's
+//! The first turn resolves the scenario's declared `input_domain` (or accepts
+//! the caller's explicit bindings); every later turn renders a tool call's
 //! response. Folding resolution into the same (world-briefed) conversation
 //! means the picked input values are consistent with the world the tools
 //! will render against — and with the simulator's own later replies. Code
 //! applies state patches; the LLM only proposes. When a reply is unusable,
 //! the repair is a conversation message, not a parsing branch in code.
 //!
+//! A tool with a CALLER-SUPPLIED Lua implementation is tried in the sandbox
+//! first; the harness never authors or rewrites that code. Computed responses
+//! enter this same conversation, delegation and sandbox errors fall through to
+//! the model, and every attempt is recorded as evidence.
+//!
 //! The simulator also has a SIMULATION WORKSPACE: an in-memory filesystem
 //! it accesses via four tools (read, write, list_dir, grep). Seeded from
-//! an optional uploaded zip; per-trace (each run clones the seed, so
-//! writes never leak across traces). The workspace is CAPABILITY, not
+//! an optional uploaded archive; per-run (each run clones the seed, so
+//! writes never leak across runs). The workspace is CAPABILITY, not
 //! POLICY: the harness offers the tools and tells the simulator they
 //! exist and are ephemeral; WHEN and WHETHER to use them — including
 //! tactics like persisting generated content — is the world narrative's
@@ -23,8 +28,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-mod program;
-
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -34,11 +37,12 @@ use crate::llm::{
     parse::parse_json_with_error,
 };
 use crate::model::ToolSchema;
+use crate::model::scenario::ToolImplementation;
 use crate::model::simulation::{
-    LuaExecutionRecord, RunProgress, SimulationProgram, ToolCall, WorkspaceOp,
+    LuaExecutionRecord, LuaOutcome, RunProgress, ToolCall, WorkspaceOp,
 };
 
-use super::lua::LuaOptions;
+use super::lua::{self, LuaExecution, LuaOptions};
 
 use super::workspace::Workspace;
 
@@ -71,6 +75,28 @@ pub struct SimulatorOptions {
     pub lua_simulation: Option<LuaOptions>,
 }
 
+impl SimulatorOptions {
+    /// Resolve a scenario's simulator settings into concrete options. Every
+    /// `None` becomes a named default here, so no limit is a hidden constant.
+    /// Lua runs exactly when the scenario supplies an implementation.
+    pub fn from_settings(
+        settings: &crate::model::scenario::SimulationSettings,
+        lua_enabled: bool,
+    ) -> Self {
+        Self {
+            temperature: settings.temperature.or(Some(DEFAULT_SIMULATOR_TEMPERATURE)),
+            max_tokens: settings.max_tokens.or(Some(DEFAULT_SIMULATOR_MAX_TOKENS)),
+            max_repair_attempts: settings
+                .max_repair_attempts
+                .unwrap_or(DEFAULT_SIMULATOR_REPAIR_ATTEMPTS),
+            max_workspace_turns: settings
+                .max_workspace_turns
+                .unwrap_or(DEFAULT_MAX_WORKSPACE_TURNS),
+            lua_simulation: lua_enabled.then(|| settings.lua.clone().unwrap_or_default()),
+        }
+    }
+}
+
 impl Default for SimulatorOptions {
     fn default() -> Self {
         Self {
@@ -89,10 +115,6 @@ pub struct ToolSimulator {
     /// Thinking level for every simulator completion in every trace;
     /// `None` = the provider's default (no field sent).
     thinking_level: Option<ThinkingLevel>,
-    /// The workspace seed (uploaded zip, or empty). Cloned cheaply per
-    /// trace (the seed is shared by `Arc`; only the per-trace overlay is
-    /// copied), so every scenario run gets an isolated workspace.
-    workspace_seed: Workspace,
     options: SimulatorOptions,
 }
 
@@ -116,7 +138,9 @@ pub struct SimOutcome {
 /// One simulator conversation for one trace; owns the chat history and
 /// this trace's private workspace.
 pub struct SimSession {
-    simulation_program: Option<SimulationProgram>,
+    /// The scenario's caller-supplied Lua implementations, if any. Empty leaves
+    /// every tool to the simulator LLM. Never generated or rewritten here.
+    implementations: Vec<ToolImplementation>,
     progress: Option<Arc<Mutex<RunProgress>>>,
     client: Arc<dyn LlmClient>,
     model: String,
@@ -138,34 +162,37 @@ impl ToolSimulator {
         client: Arc<dyn LlmClient>,
         model: impl Into<String>,
         thinking_level: Option<ThinkingLevel>,
-        workspace_seed: Workspace,
         options: SimulatorOptions,
     ) -> Self {
         Self {
             client,
             model: model.into(),
             thinking_level,
-            workspace_seed,
             options,
         }
     }
 
-    /// Start a simulator conversation for one scenario trace. The world
+    /// Start a simulator conversation for one scenario run. The world
     /// specification (world + notes) is given once, up front; from then on
     /// the conversation itself is the record of what exists. The first
     /// turn (`SimSession::resolve`) picks the template's input values;
     /// later turns (`SimSession::respond`) render tool calls. The trace
     /// gets its own workspace cloned from the seed.
-    pub fn session(&self, notes: &str) -> SimSession {
-        let system = build_system_prompt(notes, self.workspace_seed.file_count());
+    pub fn session(
+        &self,
+        notes: &str,
+        workspace_seed: &Workspace,
+        implementations: &[ToolImplementation],
+    ) -> SimSession {
+        let system = build_system_prompt(notes, workspace_seed.file_count());
         SimSession {
-            simulation_program: None,
+            implementations: implementations.to_vec(),
             progress: None,
             client: self.client.clone(),
             model: self.model.clone(),
             thinking_level: self.thinking_level,
             messages: vec![Message::System { content: system }],
-            workspace: self.workspace_seed.clone(),
+            workspace: workspace_seed.clone(),
             options: self.options.clone(),
             workspace_ops: Vec::new(),
             thinking: Vec::new(),
@@ -174,38 +201,152 @@ impl ToolSimulator {
 }
 
 impl SimSession {
-    /// The first turn: pick concrete values for the template's
-    /// `{{variables}}` from `input_domain`, in this world-briefed
-    /// conversation (so the values are consistent with the world). Empty
-    /// map when the template has no placeholders (no call). Errors if a
-    /// template variable has no domain entry.
-    pub async fn resolve(
+    pub(crate) fn set_progress(&mut self, progress: Option<Arc<Mutex<RunProgress>>>) {
+        self.progress = progress;
+    }
+
+    /// Try the scenario's caller-supplied implementation for this tool, when it
+    /// has one. No implementation means no Lua attempt at all, and the caller
+    /// renders the response with a single LLM call.
+    ///
+    /// The narrative remains ground truth: `Computed` means the code ran, not
+    /// that it implemented the declared contract faithfully. A `Fallback` or
+    /// `Error` is NOT the tool's return value — the staged workspace writes are
+    /// discarded and the simulator LLM renders the actual response.
+    async fn try_lua(
         &mut self,
-        template: &str,
+        tool: &ToolSchema,
+        call: &ToolCall,
+        world_state: &Map<String, Value>,
+    ) -> (Option<SimReply>, Option<LuaExecutionRecord>) {
+        let tool_name = tool.name.clone();
+        let Some(implementation) = self
+            .implementations
+            .iter()
+            .find(|implementation| implementation.tool == tool_name)
+            .cloned()
+        else {
+            return (None, None);
+        };
+        let Some(options) = self.options.lua_simulation.clone() else {
+            return (None, None);
+        };
+        let source_hash = implementation.source_hash.clone();
+        let (source, tool, call, state, workspace) = (
+            implementation.source,
+            tool.clone(),
+            call.clone(),
+            world_state.clone(),
+            self.workspace.clone(),
+        );
+        // An infinite loop must not block the async server's executor; the
+        // sandbox independently bounds instructions, memory and time.
+        let result = tokio::task::spawn_blocking(move || {
+            lua::execute(&source, &tool, &call, &state, &workspace, &options)
+        })
+        .await
+        .unwrap_or_else(|error| LuaExecution::Failed {
+            error: format!("Lua worker failed: {error}"),
+            operations: vec![],
+        });
+        let (computed, outcome, detail, discarded_workspace_ops) = match result {
+            LuaExecution::Computed {
+                response,
+                state_patch,
+                workspace,
+                operations,
+            } => {
+                self.workspace = workspace;
+                self.workspace_ops.extend(operations);
+                (
+                    Some(SimReply {
+                        response,
+                        state_patch,
+                    }),
+                    LuaOutcome::Computed,
+                    None,
+                    vec![],
+                )
+            }
+            LuaExecution::Fallback { reason, operations } => {
+                (None, LuaOutcome::Fallback, Some(reason), operations)
+            }
+            LuaExecution::Failed { error, operations } => {
+                (None, LuaOutcome::Error, Some(error), operations)
+            }
+        };
+        (
+            computed,
+            Some(LuaExecutionRecord {
+                tool: tool_name,
+                source_hash,
+                outcome,
+                detail,
+                discarded_workspace_ops,
+            }),
+        )
+    }
+
+    /// The first turn: pick concrete values for the scenario's declared
+    /// `input_domain`, in this world-briefed conversation (so the values are
+    /// consistent with the world). When `supplied` is given, those bindings are
+    /// used verbatim (a testable/replayable selection) and only their shape is
+    /// validated; no model call happens. Empty domain and no bindings = no call.
+    pub async fn resolve_domain(
+        &mut self,
         input_domain: &HashMap<String, String>,
+        supplied: Option<&HashMap<String, Value>>,
     ) -> Result<HashMap<String, Value>, LlmError> {
-        let vars = extract_template_vars(template);
-        if vars.is_empty() {
+        if let Some(supplied) = supplied {
+            let unknown: Vec<&String> = supplied
+                .keys()
+                .filter(|key| !input_domain.contains_key(*key))
+                .collect();
+            if !unknown.is_empty() {
+                return Err(LlmError::MalformedResponse(format!(
+                    "resolved_inputs names input(s) the scenario does not declare: {}",
+                    unknown
+                        .iter()
+                        .map(|k| format!("'{k}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            let missing: Vec<&String> = input_domain
+                .keys()
+                .filter(|key| !supplied.contains_key(*key))
+                .collect();
+            if !missing.is_empty() {
+                return Err(LlmError::MalformedResponse(format!(
+                    "resolved_inputs omits declared input(s): {} — supply every declared key or omit \
+                     resolved_inputs entirely to sample one",
+                    missing
+                        .iter()
+                        .map(|k| format!("'{k}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            return Ok(supplied.clone());
+        }
+        if input_domain.is_empty() {
             return Ok(HashMap::new());
         }
-        if let Some(missing) = vars.iter().find(|v| !input_domain.contains_key(*v)) {
-            return Err(LlmError::MalformedResponse(format!(
-                "no input_domain entry for template variable '{{{missing}}}'"
-            )));
-        }
-        let domain_block = vars
+        let mut names: Vec<&String> = input_domain.keys().collect();
+        names.sort();
+        let domain_block = names
             .iter()
-            .map(|v| format!("{v}: {}", input_domain[v]))
+            .map(|name| format!("{name}: {}", input_domain[*name]))
             .collect::<Vec<_>>()
             .join("\n");
         let user = format!(
-            "Pick concrete values for the prompt template's variables below, consistent \
+            "Pick concrete values for every declared input below, consistent \
              with the WORLD SPECIFICATION above. You may consult your simulation workspace \
              if it helps (e.g. to pick a path that actually exists). Reply with a single JSON \
-             object mapping each variable name to its value, and nothing else.\n\n\
-             VARIABLES AND THEIR DOMAINS:\n{domain_block}"
+             object mapping each input name to its value, and nothing else.\n\n\
+             DECLARED INPUTS AND THEIR DOMAINS:\n{domain_block}"
         );
-        self.ask_json::<HashMap<String, Value>>(user, "{\"<variable>\": <value>, ...}")
+        self.ask_json::<HashMap<String, Value>>(user, "{\"<input>\": <value>, ...}")
             .await
     }
 
@@ -262,11 +403,17 @@ impl SimSession {
             let mut request: Value = serde_json::from_str(&user).expect("generated JSON");
             if let Some(record) = &lua_execution {
                 request["lua_attempt"] = serde_json::to_value(record).expect("JSON Lua record");
-                request["lua_instructions"] = json!(
-                    "The Lua attempt did not commit any workspace writes or world-state patch. \
-                     Render this response now from the world and established conversation. \
-                     You may use workspace tools to repair/specialize the program for later calls."
-                );
+                request["lua_instructions"] = json!(format!(
+                    "Your caller-supplied Lua implementation DECLINED this call{}, so no workspace \
+                     write or world-state patch was committed. Declining is a normal, successful \
+                     outcome — not a bug to work around. Render this response now from the world and \
+                     the established conversation.",
+                    lua_execution
+                        .as_ref()
+                        .and_then(|record| record.detail.as_deref())
+                        .map(|detail| format!(" ({detail})"))
+                        .unwrap_or_default()
+                ));
             }
             let request_content = if lua_execution.is_some() {
                 request.to_string()
@@ -306,7 +453,6 @@ impl SimSession {
             args,
             result: result.clone(),
         });
-        self.capture_program();
         result
     }
 
@@ -506,11 +652,12 @@ fn build_system_prompt(notes: &str, workspace_files: usize) -> String {
         "You are simulating software tools inside an agent test harness. You answer \
          a sequence of requests in ONE conversation. Each FINAL answer is a single \
          JSON object and nothing else:\n\
-         • The FIRST request asks you to pick concrete values for the prompt \
-         template's {{variables}} from their input domains — reply with a JSON \
-         object mapping each variable name to its value (strings unless the domain \
-         implies structure; quote large blocks verbatim, do not paraphrase).\n\
-         • Every LATER request describes one tool call — reply with \
+         • If a request asks you to pick concrete values for the prompt template's \
+         {{variables}}, it is input resolution. Reply with a JSON object mapping each \
+         variable name to its value (strings unless the domain implies structure; quote \
+         large blocks verbatim, do not paraphrase). This request occurs only when the \
+         template has placeholders, so the first request may instead be a tool call.\n\
+         • Every tool-call request — whether first or later — requires \
          {{\"response\": <the tool's return value>, \"state_patch\": <write calls \
          only>}}.\n\n\
          YOUR SIMULATION WORKSPACE. You also have a simulation workspace: an \
@@ -520,14 +667,28 @@ fn build_system_prompt(notes: &str, workspace_files: usize) -> String {
          across files, record generated content so later re-reads stay consistent). \
          {boot_line} The workspace is EPHEMERAL: it exists only for this run, every \
          run starts fresh from the same seed, and the agent you are simulating NEVER \
-         sees it — only your tool responses reach it. So everything that agent needs \
-         must be IN your response, never merely 'saved to disk'. Call workspace \
+         sees it — only your tool responses reach it. The reserved `.prompt-explore` \
+         namespace is harness support and is NOT part of the \
+         application's world inventory, so never render it as an application file or \
+         world fact. So everything that agent needs must be \
+         IN your response, never merely 'saved to disk'. Call workspace \
          tools as needed; when you are ready, give your FINAL answer as the JSON \
          object above with NO tool calls.\n\n\
          Your earlier replies in this conversation are the established record of the \
          environment: every response MUST be consistent with them (same files, same \
          contents, same facts — what has been read stays read; the input values you \
-         picked stay picked). The WORLD SPECIFICATION below is ground truth: render \
+         picked stay picked). This includes the RESPONSE ENVELOPE. The tool's declared \
+         description and `example_responses`, together with the world, DEFINE its return \
+         shape, and that declaration WINS over what a workspace lookup happens to return: \
+         if a declared shape or example exists, reshape your answer to match it exactly — \
+         same keys, same nesting, no extra or missing fields — even when the value you looked \
+         up came back in a different form. Forwarding the workspace result object unchanged \
+         when the tool declares a DIFFERENT shape is a defect, not faithfulness. Only when \
+         the declared contract specifies no shape at all may you pass the workspace result \
+         through unchanged, and then you must keep that shape identical for every call of \
+         that tool (never a bare array in one call and an object in the next) — a downstream \
+         agent may parse the envelope, so a shape that varies between calls or runs breaks it \
+         even when each individual shape looks reasonable. The WORLD SPECIFICATION below is ground truth: render \
          responses and choose input values consistent with it, refuse queries for \
          things it says do not exist or that its inventory does not cover, and never \
          introduce facts that contradict it. Filler for unspecified content must \
@@ -545,29 +706,4 @@ pub fn apply_patch(state: &mut Map<String, Value>, patch: Map<String, Value>) {
             state.insert(k, v);
         }
     }
-}
-
-/// Extract `{{variable}}` placeholder names from a template. Names are
-/// alphanumeric/underscore only, so literal JSON braces in a template
-/// (e.g. `{"a": ...}`) are not mistaken for placeholders.
-fn extract_template_vars(template: &str) -> Vec<String> {
-    let mut vars: Vec<String> = Vec::new();
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        let after = &rest[start + 2..];
-        match after.find("}}") {
-            Some(end) => {
-                let name = after[..end].trim();
-                if !name.is_empty()
-                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                    && !vars.iter().any(|v| v == name)
-                {
-                    vars.push(name.to_string());
-                }
-                rest = &after[end + 2..];
-            }
-            None => break,
-        }
-    }
-    vars
 }

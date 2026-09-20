@@ -48,6 +48,9 @@ pub const DEFAULT_MAX_LINE_LEN: usize = 2000;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 /// Process-safety ceiling even for direct library callers or API overrides.
 pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+/// Reserved private namespace for harness support artifacts. Uploaded application
+/// workspaces cannot occupy it; the native simulator uses it for Lua programs.
+pub const PRIVATE_NAMESPACE: &str = ".prompt-explore";
 
 /// Bounds on workspace tool output inserted into the simulator conversation.
 /// They are per-workspace so an investigation can override them without
@@ -81,6 +84,8 @@ pub enum WorkspaceError {
     TooManyEntries { count: usize, limit: usize },
     #[error("zip entry escapes the workspace root (zip-slip rejected): {0}")]
     PathTraversal(String),
+    #[error("zip entry uses reserved private namespace '{PRIVATE_NAMESPACE}': {0}")]
+    ReservedPath(String),
     #[error("could not read zip: {0}")]
     BadZip(String),
 }
@@ -141,6 +146,20 @@ impl Workspace {
     /// Returns references into the shared seed; cheap.
     pub fn seed_paths(&self) -> Vec<String> {
         self.seed.files.keys().cloned().collect()
+    }
+
+    /// Every file currently in the workspace (seed ∪ writes, minus deletes) as
+    /// owned (path, bytes) pairs. Used to export a stored scenario's initial
+    /// workspace: a content hash alone is not a reproducible workspace.
+    pub fn inventory(&self) -> Vec<(String, Vec<u8>)> {
+        let mut files = Vec::new();
+        self.visit_known_paths(|path| {
+            if let Some(bytes) = self.file_bytes(path) {
+                files.push((path.to_string(), bytes.to_vec()));
+            }
+            true
+        });
+        files
     }
 
     /// Stable SHA-256 identity of the current workspace contents. Paths are
@@ -217,38 +236,69 @@ impl Workspace {
     /// Always returns a JSON value; failures are in-band
     /// (`{"error": "..."}`) so the simulator can see them and react,
     /// exactly as a real tool framework feeds errors back to an agent.
+    /// Execute a native simulator workspace tool call. Native simulator calls
+    /// may access private harness artifacts; those artifacts are not
+    /// application-world inventory.
     pub fn exec(&mut self, tool: &str, args: &Value) -> Value {
         self.exec_bounded(tool, args, self.limits.max_output_bytes)
     }
 
     /// Execute while imposing a tighter caller-specific result-construction
-    /// budget (the Lua bridge uses its remaining host/result budget here).
-    /// The hard ceiling applies even if a direct caller constructs permissive
-    /// `WorkspaceToolLimits` manually.
+    /// budget. This internal/native view can access private support files.
     pub(crate) fn exec_bounded(
         &mut self,
         tool: &str,
         args: &Value,
         max_output_bytes: usize,
     ) -> Value {
+        self.exec_bounded_with_view(tool, args, max_output_bytes, true)
+    }
+
+    /// Execute through the application-facing capability view used by Lua
+    /// handlers. It hides and rejects the harness-private namespace.
+    pub(crate) fn exec_application_bounded(
+        &mut self,
+        tool: &str,
+        args: &Value,
+        max_output_bytes: usize,
+    ) -> Value {
+        self.exec_bounded_with_view(tool, args, max_output_bytes, false)
+    }
+
+    fn exec_bounded_with_view(
+        &mut self,
+        tool: &str,
+        args: &Value,
+        max_output_bytes: usize,
+        allow_private: bool,
+    ) -> Value {
         let max_output_bytes = max_output_bytes
             .min(self.limits.max_output_bytes)
             .min(MAX_OUTPUT_BYTES);
         match tool {
-            "read" => self.exec_read_bounded(args, max_output_bytes),
-            "list_dir" => self.exec_list_dir_bounded(args, max_output_bytes),
-            "grep" => self.exec_grep_bounded(args, max_output_bytes),
-            "write" => self.exec_write(args),
+            "read" => self.exec_read_bounded(args, max_output_bytes, allow_private),
+            "list_dir" => self.exec_list_dir_bounded(args, max_output_bytes, allow_private),
+            "grep" => self.exec_grep_bounded(args, max_output_bytes, allow_private),
+            "write" => self.exec_write_bounded(args, allow_private),
             other => json!({ "error": format!("unknown workspace tool '{other}'") }),
         }
     }
 
     #[cfg(test)]
     fn exec_read(&self, args: &Value) -> Value {
-        self.exec_read_bounded(args, self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES))
+        self.exec_read_bounded(
+            args,
+            self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES),
+            true,
+        )
     }
 
-    fn exec_read_bounded(&self, args: &Value, max_output_bytes: usize) -> Value {
+    fn exec_read_bounded(
+        &self,
+        args: &Value,
+        max_output_bytes: usize,
+        allow_private: bool,
+    ) -> Value {
         let raw_path = match str_arg(args, "path") {
             Some(p) => p,
             None => return json!({ "error": "missing required argument 'path'" }),
@@ -257,6 +307,9 @@ impl Workspace {
             Some(p) => p,
             None => return json!({ "path": raw_path, "error": "invalid path" }),
         };
+        if !allow_private && is_private_path(&path) {
+            return private_path_error(raw_path);
+        }
         match self.file_bytes(&path) {
             None => json!({ "path": raw_path, "error": "not found" }),
             Some(bytes) => {
@@ -330,13 +383,23 @@ impl Workspace {
 
     #[cfg(test)]
     fn exec_list_dir(&self, args: &Value) -> Value {
-        self.exec_list_dir_bounded(args, self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES))
+        self.exec_list_dir_bounded(
+            args,
+            self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES),
+            true,
+        )
     }
 
-    fn exec_list_dir_bounded(&self, args: &Value, max_output_bytes: usize) -> Value {
+    fn exec_list_dir_bounded(
+        &self,
+        args: &Value,
+        max_output_bytes: usize,
+        allow_private: bool,
+    ) -> Value {
         let raw = str_arg(args, "path").unwrap_or("");
-        // The root is the empty string; normalize any other path.
-        let dir = if raw.trim().is_empty() {
+        // Both conventional root aliases are accepted only for directory
+        // listing. Other paths must be safe workspace-relative paths.
+        let dir = if raw.trim().is_empty() || raw.trim() == "." {
             String::new()
         } else {
             match normalize(raw) {
@@ -344,6 +407,9 @@ impl Workspace {
                 None => return json!({ "path": raw, "error": "invalid path" }),
             }
         };
+        if !allow_private && is_private_path(&dir) {
+            return private_path_error(raw);
+        }
         // If the path is itself a file, it is not a directory.
         if !dir.is_empty() && self.file_bytes(&dir).is_some() {
             return json!({ "path": raw, "error": "not a directory" });
@@ -358,6 +424,9 @@ impl Workspace {
         let mut output_bytes = raw.len().saturating_add(64);
         let mut truncated = false;
         self.visit_known_paths(|p| {
+            if !allow_private && is_private_path(p) {
+                return true;
+            }
             let rel = if prefix.is_empty() {
                 p
             } else {
@@ -401,18 +470,34 @@ impl Workspace {
 
     #[cfg(test)]
     fn exec_grep(&self, args: &Value) -> Value {
-        self.exec_grep_bounded(args, self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES))
+        self.exec_grep_bounded(
+            args,
+            self.limits.max_output_bytes.min(MAX_OUTPUT_BYTES),
+            true,
+        )
     }
 
-    fn exec_grep_bounded(&self, args: &Value, max_output_bytes: usize) -> Value {
+    fn exec_grep_bounded(
+        &self,
+        args: &Value,
+        max_output_bytes: usize,
+        allow_private: bool,
+    ) -> Value {
         let pattern = match str_arg(args, "pattern") {
             Some(p) => p.to_string(),
             None => return json!({ "error": "missing required argument 'pattern'" }),
         };
         let case_insensitive = bool_arg(args, "case_insensitive").unwrap_or(false);
-        let root = str_arg(args, "path")
-            .filter(|p| !p.trim().is_empty())
-            .and_then(normalize);
+        let root = match str_arg(args, "path").map(str::trim) {
+            None | Some("") | Some(".") => None,
+            Some(raw) => match normalize(raw) {
+                Some(path) => Some(path),
+                None => return json!({ "path": raw, "error": "invalid path" }),
+            },
+        };
+        if !allow_private && root.as_deref().is_some_and(is_private_path) {
+            return private_path_error(str_arg(args, "path").unwrap_or_default());
+        }
         // `path` may name a file (match exactly that one path) or a
         // directory (match everything under it). Unset = whole workspace.
         let in_scope = |p: &str| match &root {
@@ -428,7 +513,7 @@ impl Workspace {
         let mut output_bytes = pattern.len().saturating_add(64);
         let mut truncated = false;
         self.visit_known_paths(|p| {
-            if !in_scope(p) {
+            if (!allow_private && is_private_path(p)) || !in_scope(p) {
                 return true;
             }
             let Some(bytes) = self.file_bytes(p) else {
@@ -475,7 +560,12 @@ impl Workspace {
         })
     }
 
+    #[cfg(test)]
     fn exec_write(&mut self, args: &Value) -> Value {
+        self.exec_write_bounded(args, true)
+    }
+
+    fn exec_write_bounded(&mut self, args: &Value, allow_private: bool) -> Value {
         let raw_path = match str_arg(args, "path") {
             Some(p) => p,
             None => return json!({ "error": "missing required argument 'path'" }),
@@ -488,6 +578,9 @@ impl Workspace {
             Some(p) => p,
             None => return json!({ "path": raw_path, "error": "invalid path" }),
         };
+        if !allow_private && is_private_path(&path) {
+            return private_path_error(raw_path);
+        }
         let bytes = content.as_bytes().to_vec();
         let n = bytes.len();
         self.overlay.insert(path, Some(bytes));
@@ -505,7 +598,7 @@ impl Workspace {
                 description: "List the direct children of a directory in your simulation \
                               workspace. Returns {\"path\":..., \"entries\":[{\"name\":..., \
                               \"kind\":\"file\"|\"dir\"}], \"truncated\":bool}, or {\"error\":\"not found\"}. \
-                              Omit \"path\" (or pass \"\") for the workspace root. Use this \
+                              Omit \"path\" (or pass \"\" or \".\") for the workspace root. Use this \
                               to discover structure before reading."
                     .into(),
                 parameters: json!({
@@ -513,7 +606,7 @@ impl Workspace {
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Directory path relative to the workspace root. Omit for the root."
+                            "description": "Directory path relative to the workspace root. Omit, \"\", or \".\" for the root."
                         }
                     }
                 }),
@@ -624,6 +717,9 @@ pub fn unpack_zip_with_limits(
         let raw_name = entry.name().to_string();
         let path =
             normalize(&raw_name).ok_or_else(|| WorkspaceError::PathTraversal(raw_name.clone()))?;
+        if is_private_path(&path) {
+            return Err(WorkspaceError::ReservedPath(raw_name));
+        }
         // Read in bounded chunks: the running total defends against
         // decompression bombs regardless of the sizes the archive
         // declares. If total ever exceeds the cap, abort.
@@ -655,21 +751,20 @@ pub fn unpack_zip_with_limits(
     })
 }
 
-/// Normalize a path to a workspace-relative form and reject anything
-/// that escapes the root. `'\'` is treated as a separator, a single
-/// leading `'/'` is stripped (treated as relative to root), empty / `.`
-/// components are dropped, and any `..` component (or a NUL byte) makes
-/// the path invalid. The result never starts with `/` and never
-/// contains `..`, so it cannot traverse above the workspace root — the
-/// zip-slip guard.
+/// Normalize a safe workspace-relative path. Empty paths and root aliases are
+/// handled by the caller where their semantics are defined. Absolute paths,
+/// traversal, NULs, and Windows drive-qualified paths are rejected.
 fn normalize(raw: &str) -> Option<String> {
     let raw = raw.trim();
-    let stripped = raw.strip_prefix('/').unwrap_or(raw);
-    // Accept backslash separators (Windows-style) by normalizing to '/'.
-    let replaced = stripped.replace('\\', "/");
-    if replaced.is_empty() {
+    if raw.is_empty()
+        || raw.starts_with(['/', '\\'])
+        || (raw.len() >= 2 && raw.as_bytes()[0].is_ascii_alphabetic() && raw.as_bytes()[1] == b':')
+    {
         return None;
     }
+    // Accept backslash separators (Windows-style) after rejecting absolute
+    // backslash paths above.
+    let replaced = raw.replace('\\', "/");
     let mut parts: Vec<&str> = Vec::new();
     for comp in replaced.split('/') {
         match comp {
@@ -687,6 +782,20 @@ fn normalize(raw: &str) -> Option<String> {
         return None;
     }
     Some(parts.join("/"))
+}
+
+fn is_private_path(path: &str) -> bool {
+    path == PRIVATE_NAMESPACE
+        || path
+            .strip_prefix(PRIVATE_NAMESPACE)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn private_path_error(raw_path: &str) -> Value {
+    json!({
+        "path": raw_path,
+        "error": "private harness path is not available to application handlers",
+    })
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -808,11 +917,13 @@ mod tests {
     #[test]
     fn normalize_rejects_traversal() {
         assert_eq!(normalize("src/main.rs").as_deref(), Some("src/main.rs"));
-        assert_eq!(normalize("/src/main.rs").as_deref(), Some("src/main.rs"));
         assert_eq!(normalize("./src/./a.rs").as_deref(), Some("src/a.rs"));
         assert_eq!(normalize("src\\main.rs").as_deref(), Some("src/main.rs"));
         assert_eq!(normalize("../etc/passwd"), None);
         assert_eq!(normalize("a/../../b"), None);
+        assert_eq!(normalize("/src/main.rs"), None);
+        assert_eq!(normalize("\\\\server\\share"), None);
+        assert_eq!(normalize("C:\\temp\\file"), None);
         assert_eq!(normalize(""), None);
         assert_eq!(normalize("/"), None);
         assert_eq!(normalize("a\0b"), None);
@@ -852,6 +963,12 @@ mod tests {
             ("src/nested/deep.rs", ""),
         ]);
         let root = w.exec_list_dir(&json!({}));
+        let root_dot = w.exec_list_dir(&json!({"path":"."}));
+        let root_empty = w.exec_list_dir(&json!({"path":""}));
+        assert_eq!(root_dot["entries"], root["entries"]);
+        assert_eq!(root_empty["entries"], root["entries"]);
+        assert_eq!(root_dot["truncated"], root["truncated"]);
+        assert_eq!(root_empty["truncated"], root["truncated"]);
         let names: Vec<&str> = root["entries"]
             .as_array()
             .unwrap()
@@ -1057,6 +1174,22 @@ mod tests {
         assert!(matches!(
             unpack_zip(&bytes),
             Err(WorkspaceError::TooLargeCompressed { .. })
+        ));
+    }
+
+    #[test]
+    fn unpack_rejects_private_namespace_entry() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file(".prompt-explore/tools.lua", opts).unwrap();
+            zw.write_all(b"caller source").unwrap();
+            zw.finish().unwrap();
+        }
+        assert!(matches!(
+            unpack_zip(&buf),
+            Err(WorkspaceError::ReservedPath(path)) if path == ".prompt-explore/tools.lua"
         ));
     }
 

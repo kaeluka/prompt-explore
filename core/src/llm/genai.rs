@@ -19,10 +19,11 @@
 //! `gcloud auth application-default login` is all Gemini needs.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest as GChatRequest, ChatResponse as GChatResponse,
-    MessageContent, Tool as GTool,
+    ChatStreamEvent, MessageContent, Tool as GTool,
 };
 use genai::resolver::{AuthData, ModelMapper, ServiceTargetResolver};
 use genai::{Client, ModelIden, ModelName, ServiceTarget};
@@ -39,6 +40,24 @@ pub const DEFAULT_MAX_RETRIES: u32 = 20;
 /// Default initial linear-backoff interval in milliseconds. Override with
 /// `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS`.
 pub const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 5_000;
+/// Default wall-clock deadline for ONE *blocking* provider attempt, used only
+/// when streaming is disabled (`PROMPT_EXPLORE_STREAMING=0`). It bounds a
+/// stalled socket that would otherwise be bounded by nothing: the retry budget
+/// counts attempts (not time) and the step/token budgets only advance on
+/// completions. A deadline that expires is treated exactly like a transport
+/// failure — retryable, with the same attempt budget and backoff. Because a
+/// blocking call has no mid-flight signal, this also cuts off slow-but-healthy
+/// answers; streaming (the default) exists to avoid exactly that. Override with
+/// `PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`; `0` disables the deadline.
+pub const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 60_000;
+/// Default idle budget for one *streamed* provider attempt: how long an answer
+/// may produce NO streamed event before the attempt counts as stalled. Every
+/// event resets it — content, reasoning, a tool-call delta, or a provider
+/// heartbeat — so a slow-but-progressing answer (a large simulated listing, a
+/// long reasoning turn) is never cancelled, while a request that stops
+/// producing output is retried like a dropped connection. Override with
+/// `PROMPT_EXPLORE_STREAM_IDLE_MS`; `0` disables the bound.
+pub const DEFAULT_STREAM_IDLE_MS: u64 = 120_000;
 /// Default maximum positive retry jitter percentage. Override with
 /// `PROMPT_EXPLORE_RETRY_JITTER_PERCENT`.
 pub const DEFAULT_RETRY_JITTER_PERCENT: u64 = 10;
@@ -259,6 +278,8 @@ impl LlmClient for ProviderClient {
         }
 
         let mut options = ChatOptions::default();
+        let retry = RetrySettings::from_env();
+        let stream = StreamSettings::from_env();
         // Model string, namespace-qualified the way the ModelMapper will
         // qualify it, so provider-specific decisions below see the real
         // target.
@@ -276,16 +297,30 @@ impl LlmClient for ProviderClient {
         // content for providers that emit them inline instead of as a
         // separate field, so thinking is captured uniformly.
         options.normalize_reasoning_content = Some(true);
+        // Streamed replies arrive as deltas; these capture options make the
+        // streamer assemble exactly the reply the blocking call returns
+        // (text, tool calls, reasoning, usage) at its terminal event.
+        let options = options
+            .with_capture_content(true)
+            .with_capture_tool_calls(true)
+            .with_capture_reasoning_content(true)
+            .with_capture_usage(true);
 
         // Retry only this completion, with identical messages/options. Tool
         // execution is outside this boundary, so a network failure never
         // replays an accepted tool batch or restarts the investigation.
-        retry_provider_call(&model, RetrySettings::from_env(), || {
-            self.client
-                .exec_chat(&model, chat_req.clone(), Some(&options))
+        retry_provider_call(&model, retry, || {
+            provider_attempt(
+                &self.client,
+                &model,
+                &chat_req,
+                &options,
+                stream,
+                retry.request_timeout,
+            )
         })
         .await
-        .map(convert_response)
+        .map(convert_reply)
     }
 }
 
@@ -384,7 +419,10 @@ pub fn qualify_model(model: &str, default_provider: &str) -> String {
 }
 
 /// Retry transient HTTP/transport failures with linear backoff and positive
-/// jitter, honoring a longer provider Retry-After. The budget is per completion,
+/// jitter, honoring a longer provider Retry-After. A stalled attempt — a
+/// blocking request cancelled at its deadline, a stream that produced no event
+/// within its idle budget, or a truncated stream — is one of those transient
+/// failures. The budget is per completion,
 /// not per investigation; authentication, validation, and hard quota failures
 /// still fail fast. Keep raw prompts, responses, and headers out of retry logs.
 async fn retry_provider_call<T, F, Fut>(
@@ -394,28 +432,91 @@ async fn retry_provider_call<T, F, Fut>(
 ) -> Result<T, LlmError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = genai::Result<T>>,
+    Fut: std::future::Future<Output = Result<T, AttemptError>>,
 {
     let mut retries = 0;
     loop {
         match call().await {
             Ok(response) => return Ok(response),
-            Err(err) if retries < retry.max_retries && is_retryable(&err) => {
+            Err(err) if retries < retry.max_retries && attempt_is_retryable(&err) => {
                 retries += 1;
-                let backoff = retry.backoff(retries, &err, std::time::SystemTime::now());
-                let kind = err.status().map_or_else(
-                    || "transport/response failure".to_string(),
-                    |status| format!("HTTP {status}"),
-                );
+                let backoff = retry.backoff_attempt(retries, &err, std::time::SystemTime::now());
                 eprintln!(
-                    "LLM {model}: retry {retries}/{} in {:.3}s ({kind})",
+                    "LLM {model}: retry {retries}/{} in {:.3}s ({})",
                     retry.max_retries,
                     backoff.as_secs_f64(),
+                    attempt_kind(&err),
                 );
                 tokio::time::sleep(backoff).await;
             }
-            Err(err) => return Err(LlmError::Provider(provider_error_message(&err))),
+            Err(err) => return Err(LlmError::Provider(attempt_message(&err, retries + 1))),
         }
+    }
+}
+
+/// Run one *blocking* attempt under the configured deadline. Cancelling the
+/// future on expiry drops the in-flight request and its connection, so a
+/// stalled socket cannot outlive the attempt.
+async fn deadline_attempt<T, Fut>(
+    limit: Option<std::time::Duration>,
+    attempt: Fut,
+) -> Result<T, AttemptError>
+where
+    Fut: std::future::Future<Output = genai::Result<T>>,
+{
+    match limit {
+        None => attempt.await.map_err(AttemptError::Provider),
+        Some(limit) => match tokio::time::timeout(limit, attempt).await {
+            Ok(result) => result.map_err(AttemptError::Provider),
+            Err(_elapsed) => Err(AttemptError::Timeout(limit)),
+        },
+    }
+}
+
+fn attempt_is_retryable(err: &AttemptError) -> bool {
+    match err {
+        AttemptError::Timeout(_) | AttemptError::Truncated => true,
+        AttemptError::Provider(err) => is_retryable(err),
+    }
+}
+
+/// Short retry-log label. Never includes prompt or response bytes.
+fn attempt_kind(err: &AttemptError) -> String {
+    match err {
+        AttemptError::Timeout(limit) => {
+            format!("no output within {}", format_deadline(*limit))
+        }
+        AttemptError::Truncated => "stream ended without an end event".to_string(),
+        AttemptError::Provider(err) => err.status().map_or_else(
+            || "transport/response failure".to_string(),
+            |status| format!("HTTP {status}"),
+        ),
+    }
+}
+
+/// Whole-second deadlines read as `60s`; sub-second ones keep their unit so a
+/// configured `15` does not print as `0s`.
+fn format_deadline(limit: std::time::Duration) -> String {
+    let millis = limit.as_millis();
+    if millis % 1000 == 0 {
+        format!("{}s", limit.as_secs())
+    } else {
+        format!("{millis}ms")
+    }
+}
+
+/// Terminal message after the budget is spent. The attempt count matters
+/// because a timeout is indistinguishable from a hung provider without it.
+fn attempt_message(err: &AttemptError, attempts: u32) -> String {
+    match err {
+        AttemptError::Timeout(limit) => format!(
+            "provider produced no output within {} on each of {attempts} attempt(s)",
+            format_deadline(*limit)
+        ),
+        AttemptError::Truncated => {
+            format!("provider stream ended without an end event on {attempts} attempt(s)")
+        }
+        AttemptError::Provider(err) => provider_error_message(err),
     }
 }
 
@@ -516,6 +617,67 @@ struct RetrySettings {
     max_retries: u32,
     base_delay_ms: u64,
     jitter_percent: u64,
+    /// `None` = no per-attempt deadline (blocking path; disables the timeout).
+    request_timeout: Option<std::time::Duration>,
+}
+
+/// Which transport a completion uses. Streaming is the default because it is
+/// the only way to tell "the provider went silent" from "the answer is long":
+/// the idle budget resets on every streamed event, so a slow answer is never
+/// cut off. The blocking call remains available for providers or callers that
+/// cannot stream, and it keeps the older total per-attempt deadline.
+#[derive(Debug, Clone, Copy)]
+struct StreamSettings {
+    /// `false` = streaming disabled: use the blocking call instead.
+    enabled: bool,
+    /// `None` = no idle bound (streaming requested with a 0 override).
+    idle: Option<std::time::Duration>,
+}
+
+impl StreamSettings {
+    fn from_env() -> Self {
+        let enabled = env_flag("PROMPT_EXPLORE_STREAMING", true);
+        Self {
+            enabled,
+            idle: if enabled {
+                attempt_deadline(env_number(
+                    "PROMPT_EXPLORE_STREAM_IDLE_MS",
+                    DEFAULT_STREAM_IDLE_MS,
+                ))
+            } else {
+                None
+            },
+        }
+    }
+}
+
+/// `0`/`false`/`no`/`off` (case-insensitive) mean false; anything else true.
+fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => default,
+    }
+}
+
+/// Deadline for one attempt; `0` means "no deadline" rather than "expire
+/// immediately", because a zero-ms timeout would cancel every call.
+fn attempt_deadline(millis: u64) -> Option<std::time::Duration> {
+    (millis > 0).then(|| std::time::Duration::from_millis(millis))
+}
+
+/// Why one attempt failed. A timeout is not a provider answer, but it is
+/// retryable for the same reason a dropped connection is.
+#[derive(Debug)]
+enum AttemptError {
+    Provider(genai::Error),
+    /// No output within the budget: on the blocking path the whole attempt, on
+    /// the streaming path this many seconds since the last streamed event.
+    Timeout(std::time::Duration),
+    /// The stream ended without a terminal event (dropped connection mid-answer).
+    Truncated,
 }
 
 impl RetrySettings {
@@ -530,6 +692,24 @@ impl RetrySettings {
         jittered(delay, self.jitter_percent)
     }
 
+    /// Backoff for either kind of attempt failure. A stall carries no provider
+    /// Retry-After, so only our own delay applies; a provider answer may ask
+    /// for a longer wait.
+    fn backoff_attempt(
+        self,
+        attempt: u32,
+        err: &AttemptError,
+        now: std::time::SystemTime,
+    ) -> std::time::Duration {
+        match err {
+            AttemptError::Timeout(_) | AttemptError::Truncated => jittered(
+                retry_delay(attempt, self.base_delay_ms),
+                self.jitter_percent,
+            ),
+            AttemptError::Provider(err) => self.backoff(attempt, err, now),
+        }
+    }
+
     fn from_env() -> Self {
         Self {
             max_retries: env_number("PROMPT_EXPLORE_MAX_RETRIES", DEFAULT_MAX_RETRIES),
@@ -541,6 +721,10 @@ impl RetrySettings {
                 "PROMPT_EXPLORE_RETRY_JITTER_PERCENT",
                 DEFAULT_RETRY_JITTER_PERCENT,
             ),
+            request_timeout: attempt_deadline(env_number(
+                "PROMPT_EXPLORE_REQUEST_TIMEOUT_MS",
+                DEFAULT_REQUEST_TIMEOUT_MS,
+            )),
         }
     }
 }
@@ -922,9 +1106,146 @@ mod tests {
     }
 }
 
-fn convert_response(resp: GChatResponse) -> ChatResponse {
-    let tool_calls = resp
-        .content
+/// One completed provider answer, whichever transport produced it. The blocking
+/// call and the streaming wrapper both fill this in, so the conversion below —
+/// and everything downstream — cannot tell them apart.
+#[derive(Debug)]
+struct ProviderReply {
+    content: MessageContent,
+    reasoning_content: Option<String>,
+    usage: genai::chat::Usage,
+}
+
+impl From<GChatResponse> for ProviderReply {
+    fn from(resp: GChatResponse) -> Self {
+        Self {
+            content: resp.content,
+            reasoning_content: resp.reasoning_content,
+            usage: resp.usage,
+        }
+    }
+}
+
+/// One *blocking* attempt, under the configured total deadline.
+async fn blocking_chat(
+    client: &Client,
+    model: &str,
+    request: &GChatRequest,
+    options: &ChatOptions,
+    limit: Option<std::time::Duration>,
+) -> Result<ProviderReply, AttemptError> {
+    deadline_attempt(
+        limit,
+        client.exec_chat(model, request.clone(), Some(options)),
+    )
+    .await
+    .map(ProviderReply::from)
+}
+
+/// A blocking-shaped wrapper around a *streamed* completion: consume the event
+/// stream to its terminal event and return the same assembled reply the
+/// blocking call would have returned.
+///
+/// In essence this is a loop. Its only time bound is `idle`: every event —
+/// content, reasoning, a tool-call delta, or a provider heartbeat — resets the
+/// clock, so a slow but progressing answer (a large simulated listing, a long
+/// reasoning turn) is never cancelled, while an answer that produces nothing
+/// for `idle` counts as stalled and shares the ordinary retry path. `None`
+/// leaves the attempt unbounded.
+async fn stream_chat(
+    client: &Client,
+    model: &str,
+    request: &GChatRequest,
+    options: &ChatOptions,
+    idle: Option<std::time::Duration>,
+) -> Result<ProviderReply, AttemptError> {
+    let mut stream = client
+        .exec_chat_stream(model, request.clone(), Some(options))
+        .await
+        .map_err(AttemptError::Provider)?
+        .stream;
+    loop {
+        let next = match idle {
+            Some(limit) => match tokio::time::timeout(limit, stream.next()).await {
+                Ok(next) => next,
+                Err(_elapsed) => return Err(AttemptError::Timeout(limit)),
+            },
+            None => stream.next().await,
+        };
+        match next {
+            // A stream that closes without its terminal event was cut short.
+            // Report it as a dropped connection rather than as an answer, and
+            // never accept a possibly incomplete reply.
+            None => return Err(AttemptError::Truncated),
+            Some(Err(err)) => return Err(AttemptError::Provider(err)),
+            Some(Ok(ChatStreamEvent::End(end))) => {
+                // A reply that carried only reasoning (or nothing at all)
+                // assembles to empty content, exactly as the blocking call
+                // would report it. Deciding what an empty reply means belongs
+                // to the caller (the simulator's repair loop), not here.
+                return Ok(ProviderReply {
+                    content: end.captured_content.unwrap_or_default(),
+                    reasoning_content: end.captured_reasoning_content,
+                    usage: end.captured_usage.unwrap_or_default(),
+                });
+            }
+            // Start, content, reasoning, tool-call deltas and heartbeats are
+            // all activity: that is what the idle timer is for.
+            Some(Ok(_)) => continue,
+        }
+    }
+}
+
+/// Pick the transport for one attempt. A wrapper rather than an `if` at the
+/// call site, because the two branches must produce one future type.
+async fn provider_attempt(
+    client: &Client,
+    model: &str,
+    request: &GChatRequest,
+    options: &ChatOptions,
+    stream: StreamSettings,
+    blocking_limit: Option<std::time::Duration>,
+) -> Result<ProviderReply, AttemptError> {
+    if stream.enabled {
+        stream_chat(client, model, request, options, stream.idle).await
+    } else {
+        blocking_chat(client, model, request, options, blocking_limit).await
+    }
+}
+
+/// `normalize_reasoning_content` (an inline think block delimited by
+/// `<thinking>`-style tags) is applied by genai's blocking path. Mirror it for the streamed path so the
+/// `thinking`/`content` split is identical whichever transport ran.
+fn split_inline_think(text: Option<String>) -> (Option<String>, Option<String>) {
+    const START: &str = "\u{3c}thinking\u{3e}";
+    const END: &str = "\u{3c}/thinking\u{3e}";
+    let Some(text) = text else {
+        return (None, None);
+    };
+    let text = text.trim();
+    let Some(start) = text.find(START) else {
+        return (Some(text.to_string()), None);
+    };
+    let Some(offset) = text[start + START.len()..].find(END) else {
+        return (Some(text.to_string()), None);
+    };
+    let end = start + START.len() + offset;
+    let reasoning = text[start + START.len()..end].trim().to_string();
+    let cleaned = format!("{}{}", &text[..start], text[end + END.len()..].trim_start());
+    (
+        Some(cleaned).filter(|c| !c.trim().is_empty()),
+        Some(reasoning),
+    )
+}
+
+fn convert_reply(reply: ProviderReply) -> ChatResponse {
+    let ProviderReply {
+        content,
+        reasoning_content,
+        usage,
+    } = reply;
+
+    let tool_calls = content
         .tool_calls()
         .into_iter()
         .map(|tc| ToolCallRequest {
@@ -937,13 +1258,15 @@ fn convert_response(resp: GChatResponse) -> ChatResponse {
     // Reasoning lives as a sibling field on genai's response (the
     // OpenAI-family adapters put `/message/reasoning` there), but some
     // adapters may carry it as content parts — take whichever is set.
-    let thinking = resp
-        .reasoning_content
-        .or_else(|| resp.content.joined_reasoning_content());
-    let content = resp.content.into_first_text();
+    let thinking = reasoning_content.or_else(|| content.joined_reasoning_content());
+    let text = content.into_first_text();
+    let (content, thinking) = match thinking {
+        Some(thinking) => (text, Some(thinking)),
+        None => split_inline_think(text),
+    };
 
     let usage = {
-        let u = &resp.usage;
+        let u = &usage;
         let has_any = u.prompt_tokens.is_some() || u.completion_tokens.is_some();
         has_any.then(|| Usage {
             input_tokens: u.prompt_tokens.unwrap_or(0).max(0) as u64,

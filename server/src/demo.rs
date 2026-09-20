@@ -34,6 +34,8 @@ pub async fn run() {
     let state = Arc::new(AppState {
         client: None,
         jobs: Mutex::new(HashMap::new()),
+        scenarios: Mutex::new(prompt_explore::scenario::ScenarioStore::new()),
+        probes: Mutex::new(HashMap::new()),
         default_provider: "zai".into(),
         models_client: prompt_explore::llm::GenaiClient::builder()
             .build()

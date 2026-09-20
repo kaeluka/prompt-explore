@@ -35,3 +35,21 @@ impl LlmClient for MockLlmClient {
         Ok(responses.remove(0))
     }
 }
+
+/// A client for runs that must not call a provider: any completion is a
+/// readable error. Used when a probe is fully implemented in Lua (or declares
+/// no inputs) on a server started without provider credentials, so developing a
+/// simulation offline is possible — while any delegation fails loudly instead
+/// of silently returning something invented.
+pub struct UnavailableClient;
+
+#[async_trait::async_trait]
+impl LlmClient for UnavailableClient {
+    async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        Err(LlmError::Provider(
+            "no LLM client is configured on this server (no provider API key): this response \
+             would need the simulator model. Implement the tool in Lua, or configure a provider"
+                .into(),
+        ))
+    }
+}

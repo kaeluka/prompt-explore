@@ -88,7 +88,7 @@ pub struct ToolDef {
     pub parameters: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolCallRequest {
     pub id: String,
     pub name: String,

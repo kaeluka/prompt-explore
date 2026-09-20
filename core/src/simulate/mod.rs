@@ -3,12 +3,14 @@
 //! state patches); code does the bookkeeping. The harness surfaces the
 //! traces; the caller is the judge.
 
+pub mod engine;
 pub mod lua;
 pub mod runner;
 pub mod simulator;
 pub mod transcript;
 pub mod workspace;
 
+pub use engine::{ScenarioRuntime, SimEngine, template_variables};
 pub use runner::{
     DEFAULT_PUT_MAX_TOKENS, DEFAULT_PUT_TEMPERATURE, Runner, RunnerError, RunnerOptions,
 };

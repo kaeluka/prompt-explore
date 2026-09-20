@@ -10,9 +10,13 @@
 //! no async. Everything here is plain serializable data.
 
 pub mod input;
+pub mod lua;
 pub mod output;
+pub mod scenario;
 pub mod simulation;
 
 pub use input::*;
+pub use lua::LuaOptions;
 pub use output::*;
+pub use scenario::*;
 pub use simulation::*;

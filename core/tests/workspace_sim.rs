@@ -10,7 +10,11 @@ use serde_json::json;
 
 use prompt_explore::llm::{ChatResponse, MockLlmClient, ToolCallRequest};
 use prompt_explore::model::*;
-use prompt_explore::simulate::{Runner, RunnerOptions, Workspace, unpack_zip};
+use prompt_explore::simulate::{Runner, RunnerOptions, ScenarioRuntime, Workspace, unpack_zip};
+
+fn runtime(put: &PromptUnderTest, scenario: Scenario, workspace: Workspace) -> ScenarioRuntime {
+    ScenarioRuntime::from_put(put, scenario, workspace)
+}
 
 /// Build a zip entirely in memory and unpack it into a workspace seeded
 /// with `src/main.rs` -> "fn main() {}".
@@ -102,10 +106,18 @@ async fn simulator_consults_workspace_then_records_op_in_trace() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        seeded_workspace(),
         RunnerOptions::default(),
     );
-    let trace = runner.run(&put, &scenario, &budget, None).await.unwrap();
+    let trace = runner
+        .run(
+            &put,
+            &runtime(&put, scenario.clone(), seeded_workspace()),
+            &budget,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
     // The first turn's tool exchange must carry the workspace read the
     // simulator performed, with the REAL seeded content as the result.
@@ -175,10 +187,18 @@ async fn empty_workspace_runs_normally_without_tool_calls() {
         Arc::new(sim_model),
         "sim-model",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
-    let trace = runner.run(&put, &scenario, &budget(), None).await.unwrap();
+    let trace = runner
+        .run(
+            &put,
+            &runtime(&put, scenario.clone(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     assert!(trace.turns[0].tool_exchanges[0].workspace_ops.is_empty());
 }
 
@@ -212,12 +232,29 @@ async fn direct_runner_calls_get_isolated_workspace_overlays() {
         Arc::new(sim_model),
         "sim",
         None,
-        Workspace::empty(),
         RunnerOptions::default(),
     );
 
-    let first = runner.run(&put, &scenario, &budget(), None).await.unwrap();
-    let second = runner.run(&put, &scenario, &budget(), None).await.unwrap();
+    let first = runner
+        .run(
+            &put,
+            &runtime(&put, scenario.clone(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let second = runner
+        .run(
+            &put,
+            &runtime(&put, scenario.clone(), Workspace::empty()),
+            &budget(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(
         first.turns[0].tool_exchanges[0].workspace_ops[0].tool,

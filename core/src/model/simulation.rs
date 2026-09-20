@@ -5,12 +5,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Instant;
+
+use crate::model::scenario::ToolImplementation;
 
 /// One operation the tool SIMULATOR performed against its simulation
 /// workspace while rendering a tool response (e.g. it read a file, or
-/// grepped, before answering). Recorded for the trace so the caller can
-/// judge whether an answer was GROUNDED in the workspace (looked up) or
-/// INVENTED by the model — transparency, not enforcement. Pure data.
+/// grepped, before answering). Supporting provenance, NOT the PUT observation:
+/// a successful lookup does not prove the simulated response copied it faithfully.
+/// Inspect ToolExchange.response against this record and the narrative. Pure data.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WorkspaceOp {
     /// Which workspace tool: read, write, list_dir, or grep.
@@ -22,38 +25,19 @@ pub struct WorkspaceOp {
     pub result: Value,
 }
 
-/// A generated executable simulation, not an oracle. The narrative remains
-/// ground truth; the caller judges whether this code implements it faithfully.
-/// Code may be specialized during setup or later LLM fallbacks. All revisions
-/// are retained so each exchange identifies the exact implementation it tried.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct SimulationProgram {
-    pub path: String,
-    /// Zero-based revisions, including the initial fallback-only module.
-    pub revisions: Vec<ProgramRevision>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub setup_workspace_ops: Vec<WorkspaceOp>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup_thinking: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ProgramRevision {
-    /// Lua source, displayed as data, never executed by the browser. If error
-    /// reports an oversized/non-UTF8 file this is a bounded preview, not an
-    /// executable replacement; that revision always falls back to the LLM.
-    pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// Evidence of a Lua attempt before a tool response. A fallback or error is
-/// NOT the tool's return value: all staged mutations were discarded and the
-/// LLM rendered the actual response. Successful Lua operations appear in the
+/// Evidence of a Lua attempt before a tool response. Computed means executed,
+/// NOT faithful or correct: code can return an invalid-path error or false-empty
+/// search successfully. Inspect ToolExchange.response against the tool contract.
+/// A fallback or error is NOT the tool's return value: all staged mutations were
+/// discarded and the LLM rendered the actual response. Successful Lua operations appear in the
 /// exchange's ordinary workspace_ops instead.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LuaExecutionRecord {
-    pub program_revision: usize,
+    /// The tool whose supplied implementation was attempted.
+    pub tool: String,
+    /// SHA-256 of the exact source that ran, matching the scenario's
+    /// `implementations` entry for this tool.
+    pub source_hash: String,
     pub outcome: LuaOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -70,29 +54,117 @@ pub enum LuaOutcome {
 }
 
 /// The LLM phase of the single scenario currently being run. Exposed so a
-/// reader can see live work rather than a bare "running" status.
+/// reader can see live work rather than a bare "running" status. There is no
+/// preparation phase: Lua implementations are authored by the caller and
+/// supplied with the scenario, never generated during a run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
     /// The simulator is choosing concrete values from the input domain.
     #[default]
     ResolvingInputs,
-    /// The optional Lua simulator is preparing its program.
-    PreparingTools,
     /// The prompt under test is executing its conversation/tool loop.
     PutLoop,
 }
 
+/// Why a run stopped. This is deterministic execution bookkeeping, not a
+/// verdict on the trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStopReason {
+    /// The PUT returned a completion with no tool calls (including empty text).
+    FinalCompletion,
+    /// No further PUT completion was started because the step budget was spent.
+    StepBudget,
+    /// A PUT completion made cumulative token use exceed the token budget.
+    TokenBudget,
+    /// The runner or its task failed before a normal stopping condition.
+    RuntimeFailure,
+}
+
+/// Monotonic wall-clock time spent in each observable LLM phase.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunTiming {
+    pub elapsed_ms: u64,
+    pub resolving_inputs_ms: u64,
+    pub put_loop_ms: u64,
+}
+
+/// A provider completion received after cumulative PUT tokens exceeded the cap.
+/// It was charged and is preserved verbatim as evidence, but NOT accepted into
+/// the conversation. No tool requests here were executed or given fake responses.
+/// Raw argument strings may be malformed; they were not parsed by the runner.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct BudgetCutoffCompletion {
+    pub model_output: Option<String>,
+    pub thinking: Option<String>,
+    pub tool_calls: Vec<crate::llm::ToolCallRequest>,
+}
+
+/// Deterministic execution evidence for one run. Token use is PUT input plus
+/// output tokens reported by the provider; steps use the investigation budget's
+/// tool-call/final-completion units.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunExecution {
+    #[serde(default)]
+    #[schema(required = true)]
+    pub stop_reason: Option<RunStopReason>,
+    pub steps_used: u64,
+    pub put_tokens_used: u64,
+    /// The completion that crossed the token cap, if any. It is not an accepted
+    /// TraceTurn; inspect it without treating requested tools as executed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_cutoff_completion: Option<BudgetCutoffCompletion>,
+    /// Tool calls served by a caller-supplied Lua implementation, with no model
+    /// call. A non-zero count here is the reason a run can have zero simulator
+    /// spend; zero counts with non-empty `implementations` mean the supplied
+    /// code never actually served a call.
+    #[serde(default)]
+    pub lua_computed_calls: u64,
+    /// Calls whose Lua implementation DECLINED (`PleaseSimulateException`) and
+    /// whose response was rendered by the simulator LLM instead. Expected for a
+    /// handler that covers a subset of the contract; a large count means the
+    /// implementation is thin and the simulation is mostly model-rendered.
+    #[serde(default)]
+    pub lua_fallback_calls: u64,
+    /// Calls whose Lua implementation raised a runtime error or exceeded a
+    /// sandbox limit. Staged writes were rolled back before the simulator LLM
+    /// rendered the response, so the trace stays coherent, but the caller
+    /// should fix the implementation: this is a defect in supplied code.
+    #[serde(default)]
+    pub lua_error_calls: u64,
+    /// The tool request whose simulated response could not be rendered, when a
+    /// run failed inside a tool batch. Its siblings appear normally in `turns`;
+    /// this request has no response and none is invented. Null for failures that
+    /// did not reach a tool call (resolution, preparation, PUT model call).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unrendered_call: Option<ToolCall>,
+    #[serde(default)]
+    pub timing: RunTiming,
+}
+
+#[derive(Debug, Clone)]
+struct RunClock {
+    started_at: Instant,
+    phase_started_at: Instant,
+}
+
 /// Live progress for one scenario. The runner updates this flat value as work
-/// proceeds; if the run fails, already resolved inputs, program revisions, and
-/// completed turns remain available as evidence.
+/// proceeds; if the run fails, already resolved inputs, supplied tool
+/// implementations, and completed turns remain available as evidence.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunProgress {
     /// The current LLM phase for this scenario.
     pub phase: RunPhase,
-    /// Generated Lua program and revisions, when optional Lua simulation is enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub simulation_program: Option<SimulationProgram>,
+    /// Deterministic execution evidence. `snapshot()` refreshes its live clock;
+    /// after `finish()` it is frozen for completed and failed runs.
+    #[serde(default)]
+    pub execution: RunExecution,
+    /// The caller-supplied Lua implementations this run may execute, with the
+    /// exact source hashes each exchange's `lua_execution` refers to. Empty
+    /// when every tool is rendered by the simulator LLM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implementations: Vec<ToolImplementation>,
     /// Completed PUT model turns accumulated so far. If a sibling tool call
     /// fails, the final turn may contain only that completion's successfully
     /// rendered exchanges; no failed exchange is invented.
@@ -105,15 +177,119 @@ pub struct RunProgress {
     /// the PUT loop so a later failure still exposes reproducible inputs.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub resolved_inputs: HashMap<String, Value>,
+    /// Live token usage and estimated cost, split by role. Populated by the
+    /// server from its per-role usage trackers on every read, so spend is
+    /// visible while a run is still in flight; a finished run's frozen totals
+    /// are in `result.usage` and the two agree. None for direct library
+    /// (non-server) runs, which keep no tracker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::llm::UsageByRole>,
+    // `Instant` is deliberately not serialized: persisted/older progress has no
+    // running clock. The server must expose live values through `snapshot()`.
+    #[serde(skip)]
+    clock: Option<RunClock>,
 }
 
 impl RunProgress {
-    pub fn set_phase(&mut self, phase: RunPhase) {
-        self.phase = phase;
+    /// Start a fresh run, clearing any previous evidence and starting a
+    /// monotonic clock. The investigator calls this before spawning its task.
+    pub fn initialize(&mut self, user_message: Option<String>) {
+        let now = Instant::now();
+        self.phase = RunPhase::ResolvingInputs;
+        self.execution = RunExecution::default();
+        self.implementations.clear();
+        self.turns.clear();
+        self.user_message = user_message;
+        self.resolved_inputs.clear();
+        self.usage = None;
+        self.clock = Some(RunClock {
+            started_at: now,
+            phase_started_at: now,
+        });
     }
 
-    pub fn set_program(&mut self, program: SimulationProgram) {
-        self.simulation_program = Some(program);
+    /// Return a serialization-ready progress value with its active phase and
+    /// elapsed time refreshed. Call this for live HTTP/UI reads; it never
+    /// changes the stored accumulator, so repeated snapshots are monotonic.
+    pub fn snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.refresh(Instant::now());
+        // A snapshot is frozen data, not a second live accumulator. Taking a
+        // snapshot of it must not count the active phase a second time.
+        snapshot.clock = None;
+        snapshot
+    }
+
+    /// Freeze execution timing and record the deterministic stop reason.
+    pub fn finish(&mut self, stop_reason: RunStopReason) {
+        self.refresh(Instant::now());
+        self.execution.stop_reason = Some(stop_reason);
+        self.clock = None;
+    }
+
+    /// Ensure direct `Runner::run` callers get timing even without an
+    /// investigator-managed progress handle.
+    pub(crate) fn ensure_initialized(&mut self, user_message: Option<String>) {
+        if self.clock.is_none() {
+            self.initialize(user_message);
+        }
+    }
+
+    pub fn set_phase(&mut self, phase: RunPhase) {
+        let now = Instant::now();
+        self.refresh(now);
+        self.phase = phase;
+        if let Some(clock) = &mut self.clock {
+            clock.phase_started_at = now;
+        }
+    }
+
+    pub fn set_steps_used(&mut self, steps_used: u64) {
+        self.execution.steps_used = steps_used;
+    }
+
+    pub fn set_put_tokens_used(&mut self, put_tokens_used: u64) {
+        self.execution.put_tokens_used = put_tokens_used;
+    }
+
+    /// Count one rendered tool call by how its Lua implementation behaved.
+    /// `None` (no implementation was attempted) counts nothing: those calls are
+    /// model-rendered by design, not a delegation.
+    pub fn record_lua_outcome(&mut self, outcome: Option<LuaOutcome>) {
+        match outcome {
+            Some(LuaOutcome::Computed) => self.execution.lua_computed_calls += 1,
+            Some(LuaOutcome::Fallback) => self.execution.lua_fallback_calls += 1,
+            Some(LuaOutcome::Error) => self.execution.lua_error_calls += 1,
+            None => {}
+        }
+    }
+
+    fn refresh(&mut self, now: Instant) {
+        let Some(clock) = &self.clock else {
+            return;
+        };
+        self.execution.timing.elapsed_ms =
+            duration_ms(now.saturating_duration_since(clock.started_at));
+        let phase_ms = duration_ms(now.saturating_duration_since(clock.phase_started_at));
+        match self.phase {
+            RunPhase::ResolvingInputs => {
+                self.execution.timing.resolving_inputs_ms = self
+                    .execution
+                    .timing
+                    .resolving_inputs_ms
+                    .saturating_add(phase_ms)
+            }
+            RunPhase::PutLoop => {
+                self.execution.timing.put_loop_ms =
+                    self.execution.timing.put_loop_ms.saturating_add(phase_ms)
+            }
+        }
+    }
+
+    /// Record the scenario's supplied implementations so a live reader sees
+    /// what code may serve responses, and each exchange can name its revision.
+    pub fn set_implementations(&mut self, implementations: Vec<ToolImplementation>) {
+        self.implementations = implementations;
     }
 
     /// Append one completed PUT model turn.
@@ -125,6 +301,10 @@ impl RunProgress {
     pub fn set_resolved(&mut self, resolved: HashMap<String, Value>) {
         self.resolved_inputs = resolved;
     }
+}
+
+fn duration_ms(duration: std::time::Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
 }
 
 /// A test case: a world specification, an input domain, and a
@@ -286,9 +466,14 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Trace {
-    /// Generated simulation code and its revision history, when enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub simulation_program: Option<SimulationProgram>,
+    /// Deterministic execution evidence, including the normal stop condition.
+    /// Defaults when deserializing older trace data that predates this field.
+    #[serde(default)]
+    pub execution: RunExecution,
+    /// The caller-supplied Lua implementations available during this trace,
+    /// with source hashes. Empty when all tools are LLM-rendered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implementations: Vec<ToolImplementation>,
     /// The trace grouped by actual PUT model completion. Multi-tool calls are
     /// nested in one turn instead of appearing as several sequential turns.
     pub turns: Vec<TraceTurn>,

@@ -19,6 +19,12 @@ pub struct PromptUnderTest {
     ///   and substitutes it (strings inserted raw; other JSON values in
     ///   serialized form).
     /// - A template with no placeholders needs no `input_domain`.
+    /// - To write literal braces — a prompt that QUOTES template syntax, for
+    ///   example one auditing a template engine — escape them with a
+    ///   backslash: `\{{name}}` renders as the literal text `{{name}}` and is
+    ///   not a placeholder. In a JSON string that is written `\\{{name}}`.
+    ///   An unescaped `{{name}}` with no `input_domain` entry is rejected
+    ///   before any model call.
     ///
     /// Variables are placeholders for things meant to VARY per scenario —
     /// the simulator LLM invents each concrete value from the domain
@@ -34,8 +40,13 @@ pub struct PromptUnderTest {
     /// The opening user turn is separate — it comes from the scenario's
     /// `user_message`, not the template.
     pub template: String,
-    /// This prompt's tool surface, exactly as the model sees it.
-    /// Empty = no tool loop (but intent lives in `design_goals`, not here).
+    /// The EFFECTIVE tool surface this run exposed to the model, taken from the
+    /// referenced scenario. It is reported here so evidence is self-contained
+    /// and `prompt_hash` identifies what the model saw. Do NOT supply it when
+    /// submitting an investigation (`POST /api/investigations` rejects a
+    /// non-empty `tools`): the tool surface belongs to the scenario, where the
+    /// simulator's optional Lua implementations live next to it.
+    #[serde(default)]
     pub tools: Vec<ToolSchema>,
     /// The author's stated intent for the prompt — documentation the
     /// caller reads when judging traces. No longer judged in-harness
@@ -48,6 +59,14 @@ pub struct PromptUnderTest {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolSchema {
     pub name: String,
+    /// The PUT's actual tool contract, also used by the simulator. Describe
+    /// argument semantics AND returned shape: for repository tools, define root
+    /// aliases, literal vs regex search (and grammar), line numbering, errors,
+    /// truncation and which files belong to the inventory. A vague 'pattern'
+    /// lets LLM and Lua implementations disagree silently. Example: 'path . or
+    /// empty means root; search is literal case-sensitive substring; return
+    /// {matches:[{path,line,text}],truncated}; no match is an empty array'.
+    /// These are caller-supplied semantics, not a built-in harness tool surface.
     pub description: String,
     /// JSON Schema for the tool's parameters.
     pub parameters: Value,
@@ -101,8 +120,12 @@ pub struct Budget {
     /// completion that requests several tool calls counts as several
     /// steps but is an atomic batch: every sibling call is simulated, so
     /// one accepted batch may cross this cap. No later PUT turn then runs.
-    /// The main cost dial for tool-loop PUTs.
+    /// The main cost dial for tool-loop PUTs. Reserve room for the final
+    /// completion. A trace recorded at the cap can lack a final answer; inspect
+    /// execution.stop_reason and counters rather than equating done with success.
     pub max_steps_per_trace: u32,
-    /// Optional per-trace token cap (input+output, summed across turns).
+    /// Optional PUT input+output token cap, summed across completions (repeated
+    /// conversation history is counted on every completion). Simulator tokens
+    /// are not part of this cap. See execution.put_tokens_used and stop_reason.
     pub max_tokens: Option<u64>,
 }

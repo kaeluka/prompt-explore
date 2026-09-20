@@ -1,45 +1,61 @@
 {
-  "investigation": {
-    "reason": "Terra simulator at provider-default thinking: 21-lookup Lua amortization probe including a negative case.",
-    "budget": {
-      "max_steps_per_trace": 26
+  "step_1_register_scenario": {
+    "scenario": {
+      "world": "SKU-7 and SKU-9 exist; SKU-99 does not. This is the complete inventory.",
+      "input_domain": {},
+      "user_message": "Is SKU-7 in stock?",
+      "tools": [
+        {
+          "name": "lookup_stock",
+          "description": "Return {sku, stock} for one SKU, or {error}.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "sku": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sku"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "read",
+          "lua_source": "return function(args, ctx)\n  local stock = {['SKU-7'] = 3, ['SKU-9'] = 0}\n  if stock[args.sku] == nil then\n    return {response = {error = 'unknown sku'}}\n  end\n  return {response = {sku = args.sku, stock = stock[args.sku]}}\nend"
+        }
+      ],
+      "simulation": {
+        "sim_model": "open_router::google/gemini-2.5-flash"
+      }
+    },
+    "label": "lua-inventory"
+  },
+  "step_2_test_the_simulation": {
+    "POST": "/api/scenarios/{id}/simulations",
+    "body": {
+      "tool_calls": [
+        {
+          "name": "lookup_stock",
+          "args": {
+            "sku": "SKU-7"
+          }
+        }
+      ]
     }
   },
-  "put": {
-    "id": "lua-long-inventory",
-    "template": "Follow the user request using the provided tools. Report observed results accurately; never invent tool responses.",
-    "design_goals": "Accurate tool use and state transitions",
-    "tools": [
-      {
-        "name": "lookup",
-        "description": "Return {sku, stock} for an inventory item.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "sku": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "sku"
-          ]
-        },
-        "side_effect": "read"
+  "step_3_investigate": {
+    "scenario_id": "{id from step 1}",
+    "investigation": {
+      "reason": "baseline: does the PUT use the tools it was given?",
+      "budget": {
+        "max_steps_per_trace": 4
       }
-    ]
-  },
-  "put_model": "open_router::openai/gpt-5.6-luna",
-  "sim_model": "open_router::openai/gpt-5.6-terra",
-  "put_thinking_level": "low",
-  "conversation_controls": {
-    "put_max_tokens": 4096,
-    "sim_max_tokens": 8192,
-    "lua_simulation": {}
-  },
-  "scenario": {
-      "world": "The complete inventory is: X1 has stock 2; X2 has stock 4; X3 has stock 6; X4 has stock 8; X5 has stock 10; X6 has stock 12; X7 has stock 14; X8 has stock 16; X9 has stock 18; X10 has stock 20; X11 has stock 22; X12 has stock 24; X13 has stock 26; X14 has stock 28; X15 has stock 30; X16 has stock 32; X17 has stock 34; X18 has stock 36; X19 has stock 38; X20 has stock 40. These are ALL items. lookup returns exactly {sku,stock} for an existing SKU. Names must match exactly, including case and digits: X01 does NOT exist and must return {\"error\":\"not found\"}, as must any other missing name. No mutations, time effects, additional records, or other facts exist. Never invent items.",
-      "input_domain": {},
-      "user_message": "Look up every SKU X1 through X20, and also X01, using a separate lookup call for each. You may request multiple calls together. Report all observed results in a compact table.",
-      "simulator_notes": ""
+    },
+    "put": {
+      "id": "lua-inventory",
+      "template": "You are a careful assistant. Use the tools you are given and never invent data.",
+      "design_goals": "Use tool results and report them accurately."
+    },
+    "put_model": "open_router::google/gemini-2.5-flash"
   }
 }

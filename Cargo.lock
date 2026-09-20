@@ -2449,6 +2449,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-bedrock",
+ "futures-util",
  "gcp_auth",
  "genai",
  "httpdate",

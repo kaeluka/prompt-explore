@@ -8,8 +8,10 @@
 //! traces and decide what (if anything) to fix. The run's `reason` is advisory
 //! framing, not an oracle. There is no in-harness verdict.
 
+pub mod assessment;
 pub mod frontier;
 pub mod generate;
 pub mod llm;
 pub mod model;
+pub mod scenario;
 pub mod simulate;

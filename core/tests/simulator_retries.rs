@@ -23,7 +23,6 @@ fn simulator(client: Arc<MockLlmClient>, attempts: usize) -> ToolSimulator {
         client,
         "scripted-sim",
         None,
-        Workspace::empty(),
         SimulatorOptions {
             max_repair_attempts: attempts,
             ..Default::default()
@@ -55,8 +54,11 @@ async fn default_budget_survives_nineteen_bad_replies_and_preserves_repair_feedb
     let mut responses = vec![reply(Some(r#"{"response":"print("hello")"}"#)); attempts - 1];
     responses.push(reply(Some(r#"{"response":"print(\"hello\")\n"}"#)));
     let client = Arc::new(MockLlmClient::scripted(responses));
-    let mut session =
-        simulator(client.clone(), attempts).session("hello.py contains print(\"hello\").");
+    let mut session = simulator(client.clone(), attempts).session(
+        "hello.py contains print(\"hello\").",
+        &Workspace::empty(),
+        &[],
+    );
     let outcome = session
         .respond(&tool(), &call(), &Default::default())
         .await
@@ -86,7 +88,7 @@ async fn default_budget_survives_nineteen_bad_replies_and_preserves_repair_feedb
 async fn override_is_an_exact_total_attempt_limit_and_error_keeps_raw_reply() {
     let raw = r#"{"response":"unterminated"#;
     let client = Arc::new(MockLlmClient::scripted(vec![reply(Some(raw)); 5]));
-    let mut session = simulator(client.clone(), 3).session("one file");
+    let mut session = simulator(client.clone(), 3).session("one file", &Workspace::empty(), &[]);
     let error = session
         .respond(&tool(), &call(), &Default::default())
         .await
@@ -105,7 +107,7 @@ async fn empty_final_reply_does_not_report_an_earlier_raw_reply() {
         reply(Some("earlier malformed reply")),
         reply(None),
     ]));
-    let mut session = simulator(client.clone(), 2).session("one file");
+    let mut session = simulator(client.clone(), 2).session("one file", &Workspace::empty(), &[]);
     let error = session
         .respond(&tool(), &call(), &Default::default())
         .await
@@ -125,7 +127,7 @@ async fn empty_replies_and_schema_errors_recover_and_budget_resets_per_response(
         reply(Some(r#"{"response":"wrong patch", "state_patch":42}"#)),
         reply(Some(r#"{"response":"second"}"#)),
     ]));
-    let mut session = simulator(client.clone(), 2).session("one file");
+    let mut session = simulator(client.clone(), 2).session("one file", &Workspace::empty(), &[]);
     assert_eq!(
         session
             .respond(&tool(), &call(), &Default::default())
@@ -157,11 +159,12 @@ async fn resolution_uses_the_same_repair_budget() {
     let mut responses = vec![reply(None); 6];
     responses.push(reply(Some(r#"{"path":"hello.py"}"#)));
     let client = Arc::new(MockLlmClient::scripted(responses));
-    let mut session = simulator(client.clone(), 20).session("Only hello.py exists.");
+    let mut session =
+        simulator(client.clone(), 20).session("Only hello.py exists.", &Workspace::empty(), &[]);
     let values = session
-        .resolve(
-            "Read {{path}}",
+        .resolve_domain(
             &HashMap::from([("path".into(), "The sole file's path".into())]),
+            None,
         )
         .await
         .unwrap();
@@ -185,7 +188,7 @@ async fn repair_does_not_replay_workspace_operations() {
         reply(Some("invalid JSON")),
         reply(Some(r#"{"response":"done"}"#)),
     ]));
-    let mut session = simulator(client.clone(), 2).session("one file");
+    let mut session = simulator(client.clone(), 2).session("one file", &Workspace::empty(), &[]);
     let outcome = session
         .respond(&tool(), &call(), &Default::default())
         .await

@@ -1,81 +1,79 @@
 {
-  "investigation": {
-    "reason": "Lua hybrid probe: Terra simulator at provider-default thinking; write/read/audit",
-    "budget": {
-      "max_steps_per_trace": 12
+  "step_1_register_scenario": {
+    "scenario": {
+      "world": "Account A-1 starts at stock 0. set_stock changes it, get_stock returns it, audit reports the actions taken so far.",
+      "input_domain": {},
+      "user_message": "Set stock to 11, read it, then audit.",
+      "tools": [
+        {
+          "name": "set_stock",
+          "description": "Set the stock count; returns {stock}.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "stock": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "stock"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "write",
+          "lua_source": "return function(args, ctx)\n  return {response = {stock = args.stock}, state_patch = {stock = args.stock}}\nend"
+        },
+        {
+          "name": "get_stock",
+          "description": "Return the current stock count: {stock}.",
+          "parameters": {
+            "type": "object"
+          },
+          "side_effect": "read",
+          "lua_source": "return function(args, ctx)\n  return {response = {stock = ctx.world_state.stock}}\nend"
+        },
+        {
+          "name": "audit",
+          "description": "Report the actions taken so far as {summary}.",
+          "parameters": {
+            "type": "object"
+          },
+          "side_effect": "read",
+          "lua_source": null
+        }
+      ],
+      "simulation": {
+        "sim_model": "open_router::google/gemini-2.5-flash"
+      }
+    },
+    "label": "lua-hybrid"
+  },
+  "step_2_test_the_simulation": {
+    "POST": "/api/scenarios/{id}/simulations",
+    "body": {
+      "tool_calls": [
+        {
+          "name": "set_stock",
+          "args": {
+            "stock": 11
+          }
+        }
+      ]
     }
   },
-  "put": {
-    "id": "lua-probe-write-read-fallback",
-    "template": "Follow the user request using the provided tools. Report observed results accurately; never invent tool responses.",
-    "design_goals": "Accurate tool use and state transitions",
-    "tools": [
-      {
-        "name": "lookup",
-        "description": "Return {sku, stock} for an inventory item.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "sku": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "sku"
-          ]
-        },
-        "side_effect": "read"
-      },
-      {
-        "name": "set_stock",
-        "description": "Set the stock for an existing SKU and return {sku, stock}.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "sku": {
-              "type": "string"
-            },
-            "stock": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "sku",
-            "stock"
-          ]
-        },
-        "side_effect": "write"
-      },
-      {
-        "name": "audit",
-        "description": "Describe the inventory changes and observations made in this conversation. Return {summary: string, current_stock: integer}.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "sku": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "sku"
-          ]
-        },
-        "side_effect": "read"
+  "step_3_investigate": {
+    "scenario_id": "{id from step 1}",
+    "investigation": {
+      "reason": "baseline: does the PUT use the tools it was given?",
+      "budget": {
+        "max_steps_per_trace": 4
       }
-    ]
-  },
-  "put_model": "open_router::openai/gpt-5.6-luna",
-  "sim_model": "open_router::openai/gpt-5.6-terra",
-  "put_thinking_level": "low",
-  "conversation_controls": {
-    "put_max_tokens": 4096,
-    "sim_max_tokens": 8192,
-    "lua_simulation": {}
-  },
-  "scenario": {
-      "world": "The entire inventory consists of A with stock 3, B with stock 0, C with stock 7, and D with stock 2. These are ALL items. lookup returns exactly an object with sku and stock. Any other SKU returns {\"error\":\"not found\"}. No inventory changes occur unless set_stock is called. Never invent items, orders or other facts. set_stock replaces the stock count of an existing SKU, reflected in future lookup and audit. It never creates missing items. audit reports only events that actually occurred and the current stock. Use world-state keys equal to SKU names for changed counts.",
-      "input_domain": {},
-      "user_message": "First set A to stock 11. After that succeeds, look up A. Finally audit A and report the new stock plus the sequence of actions.",
-      "simulator_notes": ""
+    },
+    "put": {
+      "id": "lua-hybrid",
+      "template": "You are a careful assistant. Use the tools you are given and never invent data.",
+      "design_goals": "Use tool results and report them accurately."
+    },
+    "put_model": "open_router::google/gemini-2.5-flash"
   }
 }

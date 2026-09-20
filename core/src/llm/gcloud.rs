@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gcp_auth::{
-    ConfigDefaultCredentials, CustomServiceAccount, GCloudAuthorizedUser,
-    MetadataServiceAccount, TokenProvider,
+    ConfigDefaultCredentials, CustomServiceAccount, GCloudAuthorizedUser, MetadataServiceAccount,
+    TokenProvider,
 };
 use tokio::sync::OnceCell;
 
@@ -139,9 +139,9 @@ pub(crate) async fn vertex_endpoint() -> Result<String, String> {
 /// (`$CLOUDSDK_CONFIG/configurations/config_default`, else
 /// `~/.config/gcloud/configurations/config_default`) for `[core] project`.
 fn gcloud_config_project() -> Option<String> {
-    let dir = std::env::var_os("CLOUDSDK_CONFIG").map(PathBuf::from).or_else(|| {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/gcloud"))
-    })?;
+    let dir = std::env::var_os("CLOUDSDK_CONFIG")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/gcloud")))?;
     let content = std::fs::read_to_string(dir.join("configurations/config_default")).ok()?;
     let mut in_core = false;
     for line in content.lines() {
