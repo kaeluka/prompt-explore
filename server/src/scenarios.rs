@@ -92,8 +92,7 @@ pub(super) struct ScenarioSummary {
     pub updated_at: u64,
 }
 
-/// Body of `POST /api/scenarios` (also the `request` part of the multipart
-/// form, whose optional `workspace` part carries the initial .zip).
+/// Body of `POST /api/scenarios`.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ScenarioCreateRequest {
@@ -101,6 +100,27 @@ pub(super) struct ScenarioCreateRequest {
     /// Optional display label. Never part of the identity or the hash.
     #[serde(default)]
     pub label: Option<String>,
+}
+
+/// The SAME registration as `ScenarioCreateRequest`, sent as a
+/// `multipart/form-data` form when the scenario has an initial workspace.
+///
+/// `Content-Type: application/json` with a `ScenarioCreateRequest` body is the
+/// workspace-less form; the multipart form adds the archive part. Nothing else
+/// differs — the two shapes describe one endpoint, and a caller may use either.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(super) struct ScenarioUploadRequest {
+    /// The registration, as JSON text: parse this part exactly like the
+    /// `application/json` body of the same endpoint.
+    pub request: ScenarioCreateRequest,
+    /// Optional initial workspace, as a ZIP archive whose entries are paths
+    /// relative to the workspace root (for example `src/main.rs`). Raw file
+    /// bytes, not text. Omit it for an empty workspace; `POST
+    /// /api/scenarios/{id}/fork` copies an existing workspace without a
+    /// re-upload. `GET /api/scenarios/{id}/workspace` exports it again.
+    #[schema(value_type = String, format = Binary)]
+    pub workspace: Option<String>,
 }
 
 /// Body of `PATCH /api/scenarios/{id}`.
@@ -167,6 +187,16 @@ pub(super) struct ProbeView {
     pub resolved_inputs: HashMap<String, Value>,
     pub calls: Vec<prompt_explore::scenario::ProbeCall>,
     pub error: Option<String>,
+    /// How many calls a supplied Lua implementation served with no model call.
+    pub lua_computed_calls: usize,
+    /// How many calls a supplied implementation declined, so the simulator LLM
+    /// rendered the response instead. A non-zero count here is normal for a
+    /// handler covering a subset of its contract.
+    pub lua_fallback_calls: usize,
+    /// How many calls a supplied implementation ERRORED on (bad source,
+    /// runtime error, or a sandbox limit). Staged writes were rolled back and
+    /// the LLM rendered the response; the implementation still needs fixing.
+    pub lua_error_calls: usize,
     /// Free-form note supplied with the probe, echoed for context.
     pub reason: Option<String>,
     /// Simulator usage for this probe, with cost when the model catalog prices it.
@@ -215,6 +245,17 @@ impl ProbeRecord {
 
     pub fn view(&self) -> ProbeView {
         let progress = self.progress.lock().unwrap().clone();
+        let outcome_count = |wanted: prompt_explore::model::simulation::LuaOutcome| {
+            progress
+                .calls
+                .iter()
+                .filter(|call| {
+                    call.lua_execution
+                        .as_ref()
+                        .is_some_and(|record| record.outcome == wanted)
+                })
+                .count()
+        };
         ProbeView {
             id: self.id.clone(),
             scenario_id: self.scenario_id.clone(),
@@ -225,6 +266,13 @@ impl ProbeRecord {
             started_at: progress.started_at,
             finished_at: progress.finished_at,
             resolved_inputs: progress.resolved_inputs,
+            lua_computed_calls: outcome_count(
+                prompt_explore::model::simulation::LuaOutcome::Computed,
+            ),
+            lua_fallback_calls: outcome_count(
+                prompt_explore::model::simulation::LuaOutcome::Fallback,
+            ),
+            lua_error_calls: outcome_count(prompt_explore::model::simulation::LuaOutcome::Error),
             calls: progress.calls,
             error: progress.error,
             reason: self.reason.clone(),
@@ -372,7 +420,10 @@ fn running_investigations(
 #[utoipa::path(
     post,
     path = "/api/scenarios",
-    request_body(content = inline(ScenarioCreateRequest), content_type = "application/json"),
+    request_body(content(
+        (ScenarioCreateRequest = "application/json"),
+        (ScenarioUploadRequest = "multipart/form-data")
+    )),
     security(("api_token" = [])),
     responses(
         (status = 201, description = "Registered. Body: {id, revision, definition_hash, workspace_hash}", body = JobCreated),

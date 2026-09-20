@@ -43,9 +43,18 @@ fn scenario_deserializes() {
         "user_message": "Cancel ORD-2002, it's mine."
     });
     let s: Scenario = serde_json::from_value(json).unwrap();
-    assert_eq!(s.world, "One order ORD-2002, owner C-502 (a different customer).");
-    assert_eq!(s.input_domain["customer_tier"], "standard or premium; premium cancels without a fee");
-    assert_eq!(s.user_message.as_deref(), Some("Cancel ORD-2002, it's mine."));
+    assert_eq!(
+        s.world,
+        "One order ORD-2002, owner C-502 (a different customer)."
+    );
+    assert_eq!(
+        s.input_domain["customer_tier"],
+        "standard or premium; premium cancels without a fee"
+    );
+    assert_eq!(
+        s.user_message.as_deref(),
+        Some("Cancel ORD-2002, it's mine.")
+    );
 }
 
 #[test]
@@ -56,7 +65,10 @@ fn investigation_deserializes() {
     });
     let inv: Investigation = serde_json::from_value(json).unwrap();
     assert_eq!(inv.budget.max_steps_per_trace, 10);
-    assert_eq!(inv.reason.as_deref(), Some("baseline before adding the explicit-confirmation rule"));
+    assert_eq!(
+        inv.reason.as_deref(),
+        Some("baseline before adding the explicit-confirmation rule")
+    );
 }
 
 #[test]

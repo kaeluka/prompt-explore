@@ -212,6 +212,14 @@ preparation phase, no generated fallback module, no
 fallback. That whole failure class (an hour-long authoring loop that could kill
 a run) is removed rather than bounded.
 
+The handler reference is served by the running server at `GET /docs/lua`
+(source `docs/lua-api.md`): the chunk contract and the `ctx.workspace`
+operations (`list_dir`/`read`/`grep`/`write`) that let a handler serve EXACT
+uploaded file bytes instead of asking a model to reproduce them. A spec-only
+caller cannot read this repository, so anything that contract needs to say must
+be reachable from the server and from `openapi.json` (the `LuaWorkspaceCapability`
+schema + the `lua_source` field description).
+
 A handler is a chunk that RETURNS `function(args, ctx)` and returns
 `{response=..., state_patch=...}` (write tools only). Missing implementations and
 `PleaseSimulateException("reason")` delegate that one call to the simulator LLM;

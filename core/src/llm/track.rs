@@ -12,7 +12,7 @@ use super::client::{LlmClient, LlmError};
 use super::types::{ChatRequest, ChatResponse};
 
 /// Cumulative usage across every call routed through a `UsageTracker`.
-#[derive(Debug, Default, Clone, Copy, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct UsageTotals {
     pub input_tokens: u64,
     pub cache_read_tokens: u64,
@@ -38,7 +38,7 @@ pub struct UsageTotals {
 /// purposes (the sim is the test ENVIRONMENT, the PUT is the thing
 /// under test), so their spend is never lumped together — a single
 /// combined total would hide which side is expensive.
-#[derive(Debug, Default, Clone, Copy, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct UsageByRole {
     /// Usage of the prompt-under-test model (the agent being tested).
     pub put: UsageTotals,

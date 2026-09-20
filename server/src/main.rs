@@ -133,6 +133,12 @@ struct Job {
     scenario_id: String,
     scenario_revision: u64,
     scenario_definition_hash: String,
+    /// Live per-role usage trackers, shared with the running task. Kept on the
+    /// job so ANY read — the list view included — can report spend without
+    /// fetching evidence. None when the server has no provider client, in which
+    /// case the run failed before its first call and `result.usage` is zeroed.
+    put_tracker: Option<Arc<UsageTracker>>,
+    sim_tracker: Option<Arc<UsageTracker>>,
     /// The resolved model name running the prompt under test (the `put_model`
     /// from the request, or the server default). Stored so the dashboard
     /// can show which model produced the traces — set at job creation,
@@ -529,6 +535,11 @@ struct JobSummary {
     /// Immutable provenance plus caller-owned campaign attributes, sufficient for
     /// a list view to group/filter before fetching full job evidence.
     attributes: BTreeMap<String, String>,
+    /// Token usage and estimated cost, split by role. Live while the job runs,
+    /// frozen once it finishes; identical to the detail view's `result.usage`,
+    /// so a caller can total spend without fetching every job's evidence. Null
+    /// only when the run never reached a provider (no configured client).
+    usage: Option<UsageByRole>,
 }
 
 /// PATCH updates independently optional grades, attributes and assessment.
@@ -709,6 +720,17 @@ struct InvestigationPatchView {
                        PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT); zip-slip \
                        entries and files in the reserved .prompt-explore namespace are rejected. \
  \
+                       WRITING A LUA IMPLEMENTATION. `GET /docs/lua` serves the handler \
+                       reference from this server: the chunk contract, every \
+                       `ctx.workspace` operation with its argument and return shape, the sandbox \
+                       limits, and how a declined call, a runtime error and a missing implementation \
+                       each delegate a single call to the simulator LLM. The \
+                       `LuaWorkspaceCapability` schema states the same operations in the spec, \
+                       and `POST /api/scenarios/{id}/simulations` tests them before you spend an \
+                       investigation. After a run, `execution.lua_computed_calls` / \
+                       `lua_fallback_calls` / `lua_error_calls` say whether your code actually \
+                       served it.
+ \
                        AUTHENTICATION. The server is open by default. When \
                        PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* \
                        route EXCEPT /api/openapi.json requires an `Authorization: \
@@ -716,8 +738,10 @@ struct InvestigationPatchView {
                        web UI prompts for the token and stores it in localStorage."
     ),
     modifiers(&SecurityAddon),
+    components(schemas(LuaWorkspaceCapability)),
     paths(
         index,
+        lua_docs,
         list_investigations,
         create_investigation,
         get_investigation,
@@ -739,6 +763,53 @@ struct InvestigationPatchView {
     )
 )]
 struct ApiDoc;
+
+/// Documentation-only schema: the sandbox capability a Lua handler receives as
+/// `ctx`. It never appears in a payload; it exists so the spec states the
+/// handler's available operations, their shapes, and the two ways a handler can
+/// hand a call back to the simulator LLM. The full prose reference is served at
+/// `GET /docs/lua`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+struct LuaWorkspaceCapability {
+    /// The chunk must RETURN a function taking `(args, ctx)` and returning
+    /// `{response = <the value the prompt under test receives>, state_patch =
+    /// <write tools only>}`. `response` is required, and should match the tool's
+    /// declared contract shape exactly.
+    handler_contract: String,
+    /// `ctx.workspace.list_dir({path?})` — direct children only. Returns
+    /// `{path, entries:[{name, kind:"file"|"dir"}], truncated}`; unknown path
+    /// returns `{path, error:"not found"}`. Omit `path` (or pass "" or ".") for
+    /// the workspace root.
+    workspace_list_dir: String,
+    /// `ctx.workspace.read({path, start_line?, end_line?})` — a file's contents.
+    /// Returns `{path, content, start_line, end_line, total_lines, truncated}`;
+    /// a missing file returns `{path, error:"not found"}`. Lines are 1-based;
+    /// at most `workspace_max_read_lines` are returned.
+    workspace_read: String,
+    /// `ctx.workspace.grep({pattern, path?, case_insensitive?})` — a LITERAL
+    /// substring search (never a regex). Returns `{pattern, matches:[{path,
+    /// line, text}], truncated}`; at most `workspace_max_grep_matches` matches.
+    workspace_grep: String,
+    /// `ctx.workspace.write({path, content})` — writes into the run's PRIVATE
+    /// overlay (visible to later calls in this run only, never to another run
+    /// and never to the prompt under test except through `response`). Returns
+    /// `{path, bytes, ok:true}`.
+    workspace_write: String,
+    /// `PleaseSimulateException("reason")` declines this call: the simulator LLM
+    /// renders the response from the world narrative instead. Recorded as
+    /// `lua_execution.outcome = "fallback"`. Declining is a normal outcome.
+    decline_to_simulator: String,
+    /// A runtime error or breached sandbox limit also delegates that one call to
+    /// the simulator LLM, with `lua_execution.outcome = "error"`; writes the
+    /// handler staged are discarded first. A tool with no implementation
+    /// produces no `lua_execution` record at all. Read
+    /// `execution.lua_computed_calls` / `lua_fallback_calls` / `lua_error_calls`
+    /// after a run to see whether your code served it.
+    errors_and_limits_delegate: String,
+    /// The prose reference for all of this, also served at GET /docs/lua.
+    reference_url: String,
+}
 
 /// Adds the bearer `api_token` security scheme referenced by the
 /// protected operations. `#[openapi]` components only support `schemas` and
@@ -854,6 +925,7 @@ fn print_help() {
 fn build_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/docs/lua", get(lua_docs))
         .route("/openapi.json", get(openapi_json))
         .route("/vendor/preact.mjs", get(vendor_preact))
         .route("/vendor/hooks.mjs", get(vendor_hooks))
@@ -979,6 +1051,8 @@ fn fabricate_done_job(
                 usage,
             }),
             progress: Arc::new(Mutex::new(RunProgress::default())),
+            put_tracker: None,
+            sim_tracker: None,
             started_at: 0,
             finished_at: Some(0),
             budget: Budget {
@@ -1285,6 +1359,29 @@ async fn security_headers(req: Request, next: Next) -> Response {
         HeaderValue::from_static("no-referrer"),
     );
     res
+}
+
+#[utoipa::path(
+    get,
+    path = "/docs/lua",
+    responses((status = 200, description = "Lua handler reference (markdown): the chunk contract, the ctx.workspace operations with their argument and return shapes, the sandbox limits, and how delegation to the simulator LLM works", content_type = "text/markdown"))
+)]
+async fn lua_docs() -> impl axum::response::IntoResponse {
+    // The Lua handler reference travels INSIDE the binary, so the API is
+    // self-describing: a caller whose only manual is /openapi.json can still
+    // learn the handler contract and the ctx.workspace capability. Served as
+    // markdown on purpose — it is prose for a model to read, not a data type.
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/markdown; charset=utf-8",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        LUA_API_MD,
+    )
+        .into_response()
 }
 
 /// Serve the web UI. Share a view using URL-encoded JSON query parameters:
@@ -1676,6 +1773,36 @@ fn scenario_workspace_limits(
     }
 }
 
+/// Token usage and estimated cost for one job, from its frozen result when the
+/// run is terminal and from its live trackers while it is still running. Cost is
+/// attached only where the model catalog prices the role's model, so an absent
+/// number means "we do not know this provider's price", never zero.
+fn job_usage(job: &Job, pricing: &prompt_explore::llm::PricingMap) -> Option<UsageByRole> {
+    if let Some(result) = &job.result {
+        return Some(result.usage);
+    }
+    let (put_tracker, sim_tracker) = (job.put_tracker.as_ref()?, job.sim_tracker.as_ref()?);
+    let mut put = put_tracker.totals();
+    let mut sim = sim_tracker.totals();
+    put.cost_usd = pricing.get(&job.put_model).and_then(|p| {
+        cost_usd(
+            put.input_tokens,
+            put.cache_read_tokens,
+            put.output_tokens,
+            p,
+        )
+    });
+    sim.cost_usd = pricing.get(&job.sim_model).and_then(|p| {
+        cost_usd(
+            sim.input_tokens,
+            sim.cache_read_tokens,
+            sim.output_tokens,
+            p,
+        )
+    });
+    Some(UsageByRole { put, sim })
+}
+
 fn epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1739,12 +1866,23 @@ fn spawn_investigation(
     attributes.insert("scenario_revision".into(), scenario_revision.to_string());
     attributes.insert("scenario_hash".into(), scenario_definition_hash.clone());
 
+    // One tracker per role so usage is attributable to the PUT model vs. the
+    // simulator model separately. The trackers live on the job as well as in the
+    // spawned task, so a read can report spend at any point in the run.
+    let trackers = state.client.clone().map(|inner| {
+        (
+            Arc::new(UsageTracker::new(inner.clone())),
+            Arc::new(UsageTracker::new(inner)),
+        )
+    });
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
             status: JobStatus::Running,
             result: None,
             progress: progress.clone(),
+            put_tracker: trackers.as_ref().map(|(put, _)| put.clone()),
+            sim_tracker: trackers.as_ref().map(|(_, sim)| sim.clone()),
             started_at,
             finished_at: None,
             budget: req.investigation.budget.clone(),
@@ -1786,7 +1924,7 @@ fn spawn_investigation(
         // A server without provider credentials still accepts the submission
         // (there is no readiness probe and no invented verdict), then reports
         // the failure on the job instead of leaving it running forever.
-        let Some(inner) = state2.client.clone() else {
+        let Some((put_tracker, sim_tracker)) = trackers else {
             let mut jobs = state2.jobs.lock().unwrap();
             if let Some(job) = jobs.get_mut(&id2) {
                 job.finished_at = Some(epoch_millis());
@@ -1810,10 +1948,6 @@ fn spawn_investigation(
             state2.scenarios.lock().unwrap().finish_investigation(&id2);
             return;
         };
-        // One tracker per role so usage is attributable to the PUT
-        // model vs. the simulator model separately.
-        let put_tracker = Arc::new(UsageTracker::new(inner.clone()));
-        let sim_tracker = Arc::new(UsageTracker::new(inner));
         let put_model_cost = put_model.clone();
         let sim_model_cost = sim_model.clone();
         let investigator = Investigator {
@@ -1962,6 +2096,9 @@ async fn list_investigations(
             }
         },
     };
+    // Pricing needs the model catalog (an await), so resolve it BEFORE taking
+    // the job lock; the guard must never be held across an await.
+    let pricing = catalog_pricing_map(&models_cached(&state).await.providers);
     let jobs = state.jobs.lock().unwrap();
     let mut rows: Vec<JobSummary> = jobs
         .iter()
@@ -1980,6 +2117,7 @@ async fn list_investigations(
                 finished_at: j.finished_at,
                 started_at: j.started_at,
                 attributes: j.attributes.clone(),
+                usage: job_usage(j, &pricing),
             }
         })
         .collect();
@@ -2013,13 +2151,16 @@ async fn get_investigation(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<JobView>, StatusCode> {
+    // Pricing needs the model catalog (an await); fetch it before either lock.
+    let pricing = catalog_pricing_map(&models_cached(&state).await.providers);
     let jobs = state.jobs.lock().unwrap();
     let job = jobs.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     // Take the progress lock ONCE: std Mutex is not reentrant, so two
     // `progress.lock()` calls in the same expression-building block
     // (phase, then clone) can deadlock the whole runtime if the first
     // temporary guard outlives the second lock(). Snapshot once.
-    let progress_snapshot = job.progress.lock().unwrap().snapshot();
+    let mut progress_snapshot = job.progress.lock().unwrap().snapshot();
+    progress_snapshot.usage = job_usage(job, &pricing);
     let phase = progress_snapshot.phase;
     Ok(Json(JobView {
         id: id.clone(),
@@ -2068,7 +2209,7 @@ async fn get_investigation(
 /// `sim_input_tokens`, `sim_output_tokens`, `sim_cache_read_tokens`,
 /// `sim_cost_usd`, `steps_per_trace_avg`, `steps_per_trace_min`,
 /// `steps_per_trace_max`, `steps_per_trace_stdev`, `elapsed_ms`,
-/// `resolving_inputs_ms`, `preparing_tools_ms`, and `put_loop_ms`.
+/// `resolving_inputs_ms` and `put_loop_ms`.
 ///
 /// PATCH is allowed while a job runs. POST /api/frontier always considers ALL
 /// current jobs: running, failed, ungraded, or unavailable members appear as
@@ -2396,6 +2537,7 @@ async fn frontier(
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+const LUA_API_MD: &str = include_str!("../../docs/lua-api.md");
 const VENDOR_PREACT: &str = include_str!("../static/vendor/preact.mjs");
 const VENDOR_HOOKS: &str = include_str!("../static/vendor/hooks.mjs");
 const VENDOR_HTM: &str = include_str!("../static/vendor/htm.mjs");
@@ -2955,6 +3097,13 @@ mod tests {
         assert_eq!(all.as_array().unwrap().len(), 3);
         assert!(all[0]["phase"].is_string());
         assert!(all[0].get("scenarios").is_none());
+        // Spend is readable from the polling endpoint: a caller can total the
+        // campaign without fetching every job's evidence.
+        assert_eq!(
+            all[0]["usage"]["put"]["input_tokens"],
+            all[0]["attributes"].is_object().then_some(4200).unwrap()
+        );
+        assert!(all[0]["usage"]["sim"]["input_tokens"].is_number());
 
         let filtered = app
             .clone()
@@ -4163,6 +4312,8 @@ mod tests {
                 status: JobStatus::Running,
                 result: None,
                 progress: Arc::new(Mutex::new(RunProgress::default())),
+                put_tracker: None,
+                sim_tracker: None,
                 started_at: 0,
                 finished_at: None,
                 budget: Budget {
@@ -4279,6 +4430,54 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(body.contains("unknown field `investigations`"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn lua_reference_is_served_as_markdown_and_named_by_the_spec() {
+        // The Lua handler contract is the one thing a caller cannot infer from
+        // the endpoint list; the running server must be able to hand it over.
+        let app = build_app(test_state());
+        let res = app
+            .clone()
+            .oneshot(HttpRequest::get("/docs/lua").body(String::new()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(ct.starts_with("text/markdown"), "ct={ct}");
+        let body = String::from_utf8(
+            axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        for needle in [
+            "return function(args, ctx)",
+            "ctx.workspace.read",
+            "ctx.workspace.grep",
+            "ctx.workspace.write",
+            "PleaseSimulateException",
+            "lua_computed_calls",
+        ] {
+            assert!(body.contains(needle), "reference is missing {needle}");
+        }
+        // The spec points a spec-only caller at the same reference.
+        let spec = ApiDoc::openapi();
+        assert!(spec.paths.paths.contains_key("/docs/lua"));
+        let spec_json = serde_json::to_value(&spec).unwrap();
+        assert!(
+            spec_json["info"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("GET /docs/lua")
+        );
+        assert!(spec_json["components"]["schemas"]["LuaWorkspaceCapability"].is_object());
     }
 
     #[tokio::test]

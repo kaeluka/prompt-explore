@@ -43,7 +43,6 @@ pub const RESERVED_AXES: &[(&str, BetterDirection)] = &[
     ("steps_per_trace_stdev", BetterDirection::Lower),
     ("elapsed_ms", BetterDirection::Lower),
     ("resolving_inputs_ms", BetterDirection::Lower),
-    ("preparing_tools_ms", BetterDirection::Lower),
     ("put_loop_ms", BetterDirection::Lower),
 ];
 
@@ -51,7 +50,7 @@ pub const RESERVED_AXES: &[(&str, BetterDirection)] = &[
 /// (typo detection: callers can scan it for the name they meant).
 pub const RESERVED_AXES_COMPACT: &str = "put_/sim_input_tokens, put_/sim_output_tokens, \
      put_/sim_cache_read_tokens, put_/sim_cost_usd, steps_per_trace_{avg,min,max,stdev}, \
-     elapsed_ms, resolving_inputs_ms, preparing_tools_ms, put_loop_ms";
+     elapsed_ms, resolving_inputs_ms, put_loop_ms";
 
 /// Solarized categorical hues for preference-neutral differences. Their
 /// matched perceptual lightness keeps one prompt variant from looking more
@@ -254,7 +253,7 @@ pub struct FrontierAxis {
     /// `put_cost_usd` and `sim_cost_usd` (lower); and
     /// `steps_per_trace_avg`, `steps_per_trace_min`, `steps_per_trace_max`,
     /// `steps_per_trace_stdev` (lower). Monotonic durations `elapsed_ms`,
-    /// `resolving_inputs_ms`, `preparing_tools_ms`, `put_loop_ms` are also lower.
+    /// `resolving_inputs_ms` and `put_loop_ms` are also lower.
     /// Compare latency only across adequate comparable traces, not faster failures.
     /// The `put_/sim_` notation is only
     /// prose shorthand, NEVER a valid axis name. Requesting a reserved axis

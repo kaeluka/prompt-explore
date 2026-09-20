@@ -184,6 +184,13 @@ async fn supplied_implementations_compute_and_delegate_in_one_conversation() {
         Message::User { content } if content.contains("\"execution_backend\":\"lua\"")
     )));
     assert!(trace.implementations.len() == 1);
+    // The run-level counters let a caller see whether the supplied code served
+    // the run WITHOUT reading every exchange: one computed, one delegated, and
+    // the unimplemented tool counted as neither.
+    let execution = &trace.execution;
+    assert_eq!(execution.lua_computed_calls, 1);
+    assert_eq!(execution.lua_fallback_calls, 1);
+    assert_eq!(execution.lua_error_calls, 0);
 }
 
 /// A runtime error is distinct evidence, its staged writes are rolled back, and
@@ -229,6 +236,10 @@ async fn a_crashing_handler_rolls_back_and_delegates() {
     let first = &trace.turns[0].tool_exchanges[0];
     let record = first.lua_execution.as_ref().unwrap();
     assert_eq!(record.outcome, LuaOutcome::Error);
+    // Both identical calls in the batch crashed, so the run counter counts both.
+    assert_eq!(trace.execution.lua_error_calls, 2);
+    assert_eq!(trace.execution.lua_computed_calls, 0);
+    assert_eq!(trace.execution.lua_fallback_calls, 0);
     assert!(record.detail.as_ref().unwrap().contains("broken handler"));
     assert_eq!(record.discarded_workspace_ops.len(), 1);
     assert_eq!(first.response, "rendered");

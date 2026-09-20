@@ -478,7 +478,7 @@ function ResultLine({ j }) {
   return html`<div style="margin-top:0.5rem">
     <span class="badge ${r.failure ? 'failed' : 'job-done'}">${r.failure ? 'failed' : r.trace ? 'trace captured (inspect stop reason)' : 'finished (inspect stop reason)'}</span>
     <span class="meta"> ${r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
-    ${r.usage ? html`<div style="margin-top:0.2rem">${roleLine('put', r.usage.put, 'put')}${roleLine('sim', r.usage.sim, 'sim')}</div>` : null}
+    ${(r.usage || progress?.usage) ? html`<div style="margin-top:0.2rem">${roleLine('put', (r.usage || progress?.usage).put, 'put')}${roleLine('sim', (r.usage || progress?.usage).sim, 'sim')}</div>` : null}
   </div>`;
 }
 
@@ -730,7 +730,9 @@ function FrontierPanel({ jobs, token, groupBy, setGroupBy, axes, setAxes, dirs, 
     const result = j.result;
     if (!result) return null;
     return {
-      usage: result.usage || null,
+      // Live spend while a run is in flight (progress.usage), frozen totals once
+      // it finishes (result.usage). Both are the same numbers.
+      usage: result.usage || j.progress?.usage || null,
       // A single-conversation investigation has at most one terminal trace.
       // Its steps are completion boundaries (one per turn) or tool calls.
       steps_per_trace: result.trace ? [(result.trace.turns || [])

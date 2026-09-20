@@ -19,6 +19,12 @@ pub struct PromptUnderTest {
     ///   and substitutes it (strings inserted raw; other JSON values in
     ///   serialized form).
     /// - A template with no placeholders needs no `input_domain`.
+    /// - To write literal braces — a prompt that QUOTES template syntax, for
+    ///   example one auditing a template engine — escape them with a
+    ///   backslash: `\{{name}}` renders as the literal text `{{name}}` and is
+    ///   not a placeholder. In a JSON string that is written `\\{{name}}`.
+    ///   An unescaped `{{name}}` with no `input_domain` entry is rejected
+    ///   before any model call.
     ///
     /// Variables are placeholders for things meant to VARY per scenario —
     /// the simulator LLM invents each concrete value from the domain

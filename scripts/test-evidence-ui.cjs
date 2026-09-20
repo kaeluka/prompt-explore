@@ -6,7 +6,7 @@ const http = require('http'), fs = require('fs'), path = require('path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root = path.resolve(__dirname, '../server/static');
 const token = 'secret-token'; let patches = [], evidenceAuth = false;
-const execution = { stop_reason: 'step_budget', steps_used: 3, put_tokens_used: 19, timing: { elapsed_ms: 44, resolving_inputs_ms: 4, preparing_tools_ms: 8, put_loop_ms: 32 }, unrendered_call: { name: 'lookup', args: { q: 'never simulated' } } };
+const execution = { stop_reason: 'step_budget', steps_used: 3, put_tokens_used: 19, timing: { elapsed_ms: 44, resolving_inputs_ms: 4, put_loop_ms: 32 }, unrendered_call: { name: 'lookup', args: { q: 'never simulated' } } };
 const lua = source => ({ path: '.prompt-explore/tools.lua', revisions: [{ source }], setup_workspace_ops: [] });
 const jobs = [
   { id:'job-a', status:'done', started_at:Date.now()-1000, finished_at:Date.now()-500, budget:{max_steps_per_trace:3,max_tokens:20}, put:{id:'safe-put',tools:[]}, attributes:{put_model:'alpha',put_thinking:'low',prompt_hash:'a',campaign:'one',simulation_backend:'lua',step_budget:'3',token_budget:'20'}, grades:{}, scenario:{world:'world <img src=x onerror=alert(1)>',input_domain:{},user_message:'hello'}, progress:{}, result:{trace:{execution, turns:[{model_output:'not a final answer',tool_exchanges:[{call:{name:'lookup',args:{q:'<script>bad()</script>'}},response:'<b>response is text</b>',lua_execution:{outcome:'computed',program_revision:0},workspace_ops:[{tool:'read',args:{path:'x'},result:'y'}]}]}],tool_calls:1,simulation_program:lua('return { lookup = function() return "a" end }')},failure:null,usage:null}},

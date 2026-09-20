@@ -18,8 +18,8 @@ use crate::model::simulation::{
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
 use super::engine::{
-    ScenarioRuntime, SimEngine, finish_progress, missing_input_domains, parsed_args,
-    summarized_args,
+    ScenarioRuntime, SimEngine, escaped_placeholders, finish_progress, missing_input_domains,
+    parsed_args, summarized_args,
 };
 
 /// Default sampling temperature for the PUT conversation.
@@ -121,8 +121,23 @@ impl Runner {
         let missing = missing_input_domains(&put.template, &scenario.input_domain);
         if !missing.is_empty() {
             finish_progress(&progress, RunStopReason::RuntimeFailure);
+            let escaped = escaped_placeholders(&put.template);
+            let hint = if escaped.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ". The prompt also escapes {} — escaped braces are literal text too",
+                    escaped
+                        .iter()
+                        .map(|name| format!("'\\{{{{{name}}}}}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
             return Err(RunnerError::Mismatch(format!(
-                "prompt template uses {} with no input_domain entry in the scenario",
+                "prompt template uses {} with no input_domain entry in the scenario. To write \
+                 literal braces in the prompt text, escape them: \\{{{{name}}}} renders as the \
+                 literal text {{{{name}}}} (in a JSON string that is \\\\{{{{name}}}}){hint}",
                 missing
                     .iter()
                     .map(|name| format!("'{{{{{name}}}}}'"))
@@ -309,6 +324,12 @@ impl Runner {
                 if let Some(p) = &progress {
                     if let Ok(mut g) = p.lock() {
                         g.set_steps_used(steps_used);
+                        g.record_lua_outcome(
+                            tool_exchanges
+                                .last()
+                                .and_then(|exchange| exchange.lua_execution.as_ref())
+                                .map(|record| record.outcome),
+                        );
                     }
                 }
             }
@@ -359,16 +380,82 @@ fn initial_messages(
 
 /// Minimal `{{var}}` substitution. Strings are inserted raw, other
 /// JSON values in their serialized form.
+///
+/// A backslash immediately before the braces (`\{{name}}`) escapes them: the
+/// backslash is dropped and the braces are emitted literally, never
+/// substituted. Substitution is a single left-to-right pass, so a resolved
+/// value is never re-scanned for placeholders.
 fn render_template(template: &str, vars: &HashMap<String, Value>) -> String {
-    let mut out = template.to_string();
-    for (k, v) in vars {
-        let replacement = match v {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        let escaped = rest[..start].ends_with('\\');
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            break;
         };
-        out = out.replace(&format!("{{{{{k}}}}}"), &replacement);
+        let name = after[..end].trim();
+        let named = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+        if !named {
+            // Not a placeholder shape (for example literal JSON braces):
+            // copy it through untouched.
+            out.push_str(&rest[..start + 2 + end + 2]);
+        } else if escaped {
+            // Drop the escaping backslash, keep the braces as text.
+            out.push_str(&rest[..start - 1]);
+            out.push_str(&rest[start..start + 2 + end + 2]);
+        } else {
+            out.push_str(&rest[..start]);
+            match vars.get(name) {
+                Some(Value::String(s)) => out.push_str(s),
+                Some(other) => out.push_str(&other.to_string()),
+                // Undeclared placeholders are rejected before any model call;
+                // keeping the text here only serves direct library callers.
+                None => out.push_str(&rest[start..start + 2 + end + 2]),
+            }
+        }
+        rest = &after[end + 2..];
     }
+    out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod render_template_tests {
+    use super::render_template;
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+
+    fn vars() -> HashMap<String, Value> {
+        HashMap::from([("tier".to_string(), json!("gold"))])
+    }
+
+    #[test]
+    fn substitutes_declared_placeholders_and_leaves_literal_json_braces() {
+        assert_eq!(
+            render_template("tier {{tier}} and {\"a\": 1}", &vars()),
+            "tier gold and {\"a\": 1}"
+        );
+    }
+
+    #[test]
+    fn an_escaped_placeholder_renders_literal_braces() {
+        assert_eq!(
+            render_template("write \\{{tier}} for the placeholder", &vars()),
+            "write {{tier}} for the placeholder"
+        );
+        // A template with nothing but escaped braces still loses its backslashes.
+        assert_eq!(
+            render_template("only \\{{tier}}", &HashMap::new()),
+            "only {{tier}}"
+        );
+    }
+
+    #[test]
+    fn a_substituted_value_is_never_rescanned() {
+        let vars = HashMap::from([("tier".to_string(), json!("{{tier}}"))]);
+        assert_eq!(render_template("{{tier}}", &vars), "{{tier}}");
+    }
 }
 
 fn convert_tool(t: &ToolSchema) -> ToolDef {

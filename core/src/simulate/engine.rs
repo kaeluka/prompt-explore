@@ -280,15 +280,21 @@ pub(crate) fn finish_progress(
 
 /// A `{{variable}}` list for a template, used to check that an investigation's
 /// prompt agrees with the scenario's declared inputs.
+///
+/// A backslash immediately before the braces (`\{{name}}`) marks literal text:
+/// the run renders it as `{{name}}`, and it is not a variable (see
+/// [`render_template`]).
 pub fn template_variables(template: &str) -> Vec<String> {
     let mut vars: Vec<String> = Vec::new();
     let mut rest = template;
     while let Some(start) = rest.find("{{") {
+        let escaped = rest[..start].ends_with('\\');
         let after = &rest[start + 2..];
         match after.find("}}") {
             Some(end) => {
                 let name = after[..end].trim();
-                if !name.is_empty()
+                if !escaped
+                    && !name.is_empty()
                     && name.chars().all(|c| c.is_alphanumeric() || c == '_')
                     && !vars.iter().any(|v| v == name)
                 {
@@ -311,6 +317,24 @@ pub fn missing_input_domains(
         .into_iter()
         .filter(|name| !input_domain.contains_key(name))
         .collect()
+}
+
+/// The placeholder whose name this template escapes literally (for the error
+/// text a caller sees), if any.
+pub fn escaped_placeholders(template: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find("\\{{") {
+        let after = &rest[start + 3..];
+        match after.find("}}") {
+            Some(end) => {
+                out.push(after[..end].to_string());
+                rest = &after[end + 2..];
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 /// A compact, JSON-safe rendering of a call's arguments for failure messages.
@@ -345,6 +369,27 @@ mod tests {
             vec!["name".to_string(), "tier".to_string()]
         );
         assert_eq!(template_variables("no placeholders"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_escaped_placeholder_is_not_a_variable() {
+        // A prompt that must quote template syntax (for example one auditing a
+        // template engine) writes \{{literal}} and gets literal braces.
+        assert_eq!(
+            template_variables("quote \\{{placeholder}} here, use {{tier}}"),
+            vec!["tier".to_string()]
+        );
+        assert_eq!(
+            missing_input_domains(
+                "quote \\{{placeholder}} here",
+                &HashMap::<String, String>::new()
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            escaped_placeholders("quote \\{{placeholder}} here"),
+            vec!["placeholder".to_string()]
+        );
     }
 
     #[test]

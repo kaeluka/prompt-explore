@@ -43,7 +43,11 @@ The original job view still has `result.trace`, `result.failure`, and flat `prog
 runtime failure. `done` does **not** mean a final answer was produced. Original
 budgets, consumed counters, completion timestamps and monotonic phase timings are
 retained. The observable phases are `resolving_inputs` and `put_loop`: nothing is
-compiled or generated during a run.
+compiled or generated during a run. Tool calls served by supplied Lua are counted
+(`execution.lua_computed_calls` / `lua_fallback_calls` / `lua_error_calls`), so
+"my implementation never ran" is visible rather than inferred. Token usage and
+estimated cost are on the list endpoint too (`GET /api/investigations` returns
+each job's `usage`), so totalling a campaign needs no evidence fetch.
 
 After reading, PATCH your caller-owned `assessment` (summary, rubric and evidence
 references) with any justified grades. Local prose alone does not record the
@@ -59,7 +63,7 @@ supports this without ever judging for you:
   graded: `put_/sim_{input,output,cache_read}_tokens`, `put_/sim_cost_usd`
   (when the model catalog prices the model), and
   `steps_per_trace_{avg,min,max,stdev}`. Monotonic `elapsed_ms`,
-  `resolving_inputs_ms`, `preparing_tools_ms`, and `put_loop_ms` are also measured.
+  `resolving_inputs_ms` and `put_loop_ms` are also measured.
   Their better-direction is baked in (tokens lower, cache-read higher,
   cost/steps/duration lower).
 - **Judged axes** are yours: PATCH numeric grades with free-form axis
@@ -381,7 +385,9 @@ the prompt under test sees) and each attempt is recorded with the tool name, the
 exact source hash, the outcome, and any discarded operations. **Executed code is
 unverified:** it can compute successfully and still contradict the world, which is
 why the caller reads responses against the narrative. See
-[caller-authored Lua](docs/lua-simulation.md) for the handler contract, sandbox
+[caller-authored Lua](docs/lua-simulation.md) (the full handler reference is
+served by the running server at `GET /docs/lua`, source
+[docs/lua-api.md](docs/lua-api.md)) for the handler contract, sandbox
 limits, and the failure modes to probe for.
 
 ### 2. Setup with your coding agent

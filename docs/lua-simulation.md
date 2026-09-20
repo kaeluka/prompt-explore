@@ -5,9 +5,14 @@ repairs or rewrites the source. A tool without `lua_source` is rendered by the
 simulator LLM exactly as before; a tool with one is tried in the sandbox first,
 and only what the handler declines reaches the model.
 
-This is an accelerator for mechanical behavior, not a correctness oracle. Code
+This is an accelerator or a fidelity mechanism, not a correctness oracle. Code
 that executed can still be wrong: `computed` means "this code ran", never "this
-response is faithful to the world".
+response is faithful to the world". Servers also serve the handler reference at
+`GET /docs/lua` (source: [docs/lua-api.md](lua-api.md)) — that is the copy a
+caller can read with no access to this repository. Run-level counters
+(`execution.lua_computed_calls`, `lua_fallback_calls`, `lua_error_calls`)
+separate "the implementation served this run" from "the model rendered it
+anyway".
 
 ## Where it lives
 

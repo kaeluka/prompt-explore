@@ -115,6 +115,24 @@ pub struct RunExecution {
     /// TraceTurn; inspect it without treating requested tools as executed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_cutoff_completion: Option<BudgetCutoffCompletion>,
+    /// Tool calls served by a caller-supplied Lua implementation, with no model
+    /// call. A non-zero count here is the reason a run can have zero simulator
+    /// spend; zero counts with non-empty `implementations` mean the supplied
+    /// code never actually served a call.
+    #[serde(default)]
+    pub lua_computed_calls: u64,
+    /// Calls whose Lua implementation DECLINED (`PleaseSimulateException`) and
+    /// whose response was rendered by the simulator LLM instead. Expected for a
+    /// handler that covers a subset of the contract; a large count means the
+    /// implementation is thin and the simulation is mostly model-rendered.
+    #[serde(default)]
+    pub lua_fallback_calls: u64,
+    /// Calls whose Lua implementation raised a runtime error or exceeded a
+    /// sandbox limit. Staged writes were rolled back before the simulator LLM
+    /// rendered the response, so the trace stays coherent, but the caller
+    /// should fix the implementation: this is a defect in supplied code.
+    #[serde(default)]
+    pub lua_error_calls: u64,
     /// The tool request whose simulated response could not be rendered, when a
     /// run failed inside a tool batch. Its siblings appear normally in `turns`;
     /// this request has no response and none is invented. Null for failures that
@@ -159,6 +177,13 @@ pub struct RunProgress {
     /// the PUT loop so a later failure still exposes reproducible inputs.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub resolved_inputs: HashMap<String, Value>,
+    /// Live token usage and estimated cost, split by role. Populated by the
+    /// server from its per-role usage trackers on every read, so spend is
+    /// visible while a run is still in flight; a finished run's frozen totals
+    /// are in `result.usage` and the two agree. None for direct library
+    /// (non-server) runs, which keep no tracker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::llm::UsageByRole>,
     // `Instant` is deliberately not serialized: persisted/older progress has no
     // running clock. The server must expose live values through `snapshot()`.
     #[serde(skip)]
@@ -176,6 +201,7 @@ impl RunProgress {
         self.turns.clear();
         self.user_message = user_message;
         self.resolved_inputs.clear();
+        self.usage = None;
         self.clock = Some(RunClock {
             started_at: now,
             phase_started_at: now,
@@ -224,6 +250,18 @@ impl RunProgress {
 
     pub fn set_put_tokens_used(&mut self, put_tokens_used: u64) {
         self.execution.put_tokens_used = put_tokens_used;
+    }
+
+    /// Count one rendered tool call by how its Lua implementation behaved.
+    /// `None` (no implementation was attempted) counts nothing: those calls are
+    /// model-rendered by design, not a delegation.
+    pub fn record_lua_outcome(&mut self, outcome: Option<LuaOutcome>) {
+        match outcome {
+            Some(LuaOutcome::Computed) => self.execution.lua_computed_calls += 1,
+            Some(LuaOutcome::Fallback) => self.execution.lua_fallback_calls += 1,
+            Some(LuaOutcome::Error) => self.execution.lua_error_calls += 1,
+            None => {}
+        }
     }
 
     fn refresh(&mut self, now: Instant) {

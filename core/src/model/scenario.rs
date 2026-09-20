@@ -53,6 +53,16 @@ pub struct ScenarioTool {
     /// handler may decline a call with `PleaseSimulateException("reason")`;
     /// missing handlers and runtime errors also delegate, and their staged
     /// workspace writes are discarded.
+    ///
+    /// `ctx` exposes `ctx.workspace` — `list_dir`, `read`, `grep` and `write`
+    /// over the run's private copy of the scenario's uploaded workspace — so a
+    /// handler can serve EXACT file contents instead of asking a model to
+    /// reproduce them (see `LuaWorkspaceCapability` for the per-operation
+    /// shapes). The full prose reference, including the sandbox limits and how
+    /// computed/delegated/errored calls are recorded, is served by the running
+    /// server at `GET /docs/lua`. Read
+    /// `execution.lua_computed_calls`/`lua_fallback_calls`/`lua_error_calls`
+    /// after a run to check that your code actually served it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lua_source: Option<String>,
 }
