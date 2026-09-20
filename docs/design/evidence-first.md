@@ -115,17 +115,22 @@ cache, narrative DSL or semantic consistency checker.
 
 ## Transport bounds
 
-A provider attempt has a wall-clock deadline (`PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`,
-default 60000; `0` disables) applied around the HTTP request. Expiry is a
-retryable transport failure — it shares the existing attempt budget and backoff
-and is logged as `no response within 60s` — because a stalled socket is
-otherwise bounded by nothing: the retry budget counts attempts, and step/token
-budgets only advance on completions, so a wedged request could hold a job
-`running` forever (observed: ~19 minutes at `steps_used: 0` with
-`put_tokens_used` frozen). Exhaustion reports the deadline and the attempt
-count, so a timeout is distinguishable from a provider answer. Retries stay
-generous, not short: a caller wanting a bounded *job* rather than a bounded
-*attempt* would need an overall deadline, which is deliberately not added here.
+Replies are streamed, and an attempt is bounded by **idle time** rather than
+total time (`PROMPT_EXPLORE_STREAM_IDLE_MS`, default 120000; `0` disables). No
+streamed event for that long — content, reasoning, a tool-call delta or a
+heartbeat all count as events and reset the clock — is a stall, retried like a
+dropped connection and logged as `no output within 120s`. This replaced a total
+per-attempt deadline (`PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`, still used when
+`PROMPT_EXPLORE_STREAMING=0`), which without a mid-flight signal could not tell
+a stalled socket from a slow answer: a 33 KB simulated directory listing was
+cancelled at 60 s and retried, and a listing of 1500 entries burned the whole
+retry budget (21 attempts × 60 s + backoff ≈ 40 minutes) before failing the run.
+A stalled socket still cannot hold a job `running` forever (observed before the
+bound existed: ~19 minutes at `steps_used: 0` with `put_tokens_used` frozen), and
+exhaustion reports the idle budget and attempt count, so a stall is
+distinguishable from a provider answer. Retries stay generous, not short: a
+caller wanting a bounded *job* rather than a bounded *attempt* would need an
+overall deadline, which is deliberately not added here.
 
 ## Model discovery
 

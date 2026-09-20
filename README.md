@@ -305,19 +305,30 @@ bodies. Authentication, request-validation, and billing/quota errors still
 fail promptly. Only the failed completion is retried, with the same request;
 completed tool calls and scenarios are not replayed.
 
-A single attempt also has a **60-second deadline**: a request that produces no
-response in that window is cancelled and retried exactly like a dropped
-connection, with the same attempt budget and backoff. This bounds a stalled
-socket, which no retry count or step/token budget could. When the budget is
-exhausted the failure says so explicitly ("timed out with no response within
-60s on each of 21 attempt(s)") rather than looking like a provider answer.
+Replies are **streamed** and each attempt is bounded by **idle time, not total
+time**: if no streamed event arrives for `PROMPT_EXPLORE_STREAM_IDLE_MS`
+(default 120000), the attempt counts as stalled and is retried exactly like a
+dropped connection, with the same attempt budget and backoff. Every event resets
+the clock — content, reasoning, a tool-call delta, or a provider heartbeat — so
+a slow but progressing answer (a large simulated listing, a long reasoning turn)
+is never cancelled. A stream that closes without its terminal event is retried
+as a truncated answer. When the budget is exhausted the failure says so
+explicitly ("provider produced no output within 120s on each of 21 attempt(s)").
+
+`PROMPT_EXPLORE_STREAMING=0` switches back to the blocking call, which has no
+mid-flight signal and therefore keeps a **total per-attempt deadline**
+(`PROMPT_EXPLORE_REQUEST_TIMEOUT_MS`, default 60000; `0` disables it).
 
 Process-level overrides:
 
 - `PROMPT_EXPLORE_MAX_RETRIES=20` — retries per completion; `0` disables them.
 - `PROMPT_EXPLORE_RETRY_BASE_DELAY_MS=5000` — linear waits of 5s, 10s, …, 100s.
-- `PROMPT_EXPLORE_REQUEST_TIMEOUT_MS=60000` — per-attempt deadline; `0` waits
-  forever (the pre-timeout behavior).
+- `PROMPT_EXPLORE_STREAMING=1` — stream replies and bound attempts by idle time
+  (default); `0` uses the blocking call with the total deadline below.
+- `PROMPT_EXPLORE_STREAM_IDLE_MS=120000` — no streamed output for this long is a
+  stalled attempt; `0` disables the bound.
+- `PROMPT_EXPLORE_REQUEST_TIMEOUT_MS=60000` — blocking-only total per-attempt
+  deadline; `0` waits forever (the pre-timeout behavior).
 - `PROMPT_EXPLORE_RETRY_JITTER_PERCENT=10` — adds up to 10% positive jitter.
 
 A longer provider `Retry-After` (seconds or HTTP-date) or `retry-after-ms`
