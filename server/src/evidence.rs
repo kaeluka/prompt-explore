@@ -57,45 +57,38 @@ pub(super) struct InvestigationEvidence {
 
 impl From<JobView> for InvestigationEvidence {
     fn from(job: JobView) -> Self {
-        let (
-            execution,
-            turns,
-            resolved_inputs,
-            implementations,
-            final_world_state,
-            failure,
-            usage,
-        ) = match job.result {
-            Some(result) => match result.trace {
-                Some(trace) => (
-                    trace.execution,
-                    trace.turns,
-                    trace.resolved_inputs,
-                    trace.implementations,
-                    Some(trace.final_world_state),
-                    result.failure,
-                    Some(result.usage),
-                ),
+        let (execution, turns, resolved_inputs, implementations, final_world_state, failure, usage) =
+            match job.result {
+                Some(result) => match result.trace {
+                    Some(trace) => (
+                        trace.execution,
+                        trace.turns,
+                        trace.resolved_inputs,
+                        trace.implementations,
+                        Some(trace.final_world_state),
+                        result.failure,
+                        Some(result.usage),
+                    ),
+                    None => (
+                        job.progress.execution,
+                        job.progress.turns,
+                        job.progress.resolved_inputs,
+                        job.progress.implementations,
+                        None,
+                        result.failure,
+                        Some(result.usage),
+                    ),
+                },
                 None => (
                     job.progress.execution,
                     job.progress.turns,
                     job.progress.resolved_inputs,
                     job.progress.implementations,
                     None,
-                    result.failure,
-                    Some(result.usage),
+                    None,
+                    None,
                 ),
-            },
-            None => (
-                job.progress.execution,
-                job.progress.turns,
-                job.progress.resolved_inputs,
-                job.progress.implementations,
-                None,
-                None,
-                None,
-            ),
-        };
+            };
         Self {
             id: job.id,
             status: job.status,

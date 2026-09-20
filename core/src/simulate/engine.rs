@@ -68,10 +68,8 @@ impl ScenarioRuntime {
         workspace_seed: Workspace,
     ) -> Self {
         let implementations = definition.implementations();
-        let simulator = SimulatorOptions::from_settings(
-            &definition.simulation,
-            !implementations.is_empty(),
-        );
+        let simulator =
+            SimulatorOptions::from_settings(&definition.simulation, !implementations.is_empty());
         Self {
             scenario: definition.scenario(),
             tools: definition.tool_contracts(),
@@ -216,7 +214,11 @@ impl SimEngine {
     }
 
     /// Render one call whose arguments are already JSON (probe submissions).
-    pub async fn call_value(&mut self, name: &str, arguments: Value) -> Result<EngineCall, LlmError> {
+    pub async fn call_value(
+        &mut self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<EngineCall, LlmError> {
         self.call(name, &arguments.to_string()).await
     }
 }

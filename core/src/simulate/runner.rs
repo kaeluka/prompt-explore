@@ -18,7 +18,8 @@ use crate::model::simulation::{
 use crate::model::{Budget, PromptUnderTest, ToolSchema};
 
 use super::engine::{
-    ScenarioRuntime, SimEngine, finish_progress, missing_input_domains, parsed_args, summarized_args,
+    ScenarioRuntime, SimEngine, finish_progress, missing_input_domains, parsed_args,
+    summarized_args,
 };
 
 /// Default sampling temperature for the PUT conversation.

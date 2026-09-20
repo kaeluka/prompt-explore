@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You AUTHOR one scenario (a test case: a world, an input domain, and a protagonist — see the Scenario schema) and submit it with a prompt under test (PUT) and an optional free-form `reason` justifying the run. A job runs that one scenario: the simulator picks concrete inputs from the input domain, renders the world's tools, and the PUT acts in it. The harness then surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict. The `reason` justifies the run — what it aims to accomplish, what changed compared to previous runs, what a reader should know (there is no strict standard) — and is surfaced with the result to guide reading the traces; it is not an oracle. Traces are informative even when nothing is obviously wrong; the deliverable is the conversation trace, and the caller reads it and decides what (if anything) to fix. The API is job-based: POST returns a job id immediately; poll GET /api/investigations/{id} for status, then read GET /api/investigations/{id}/evidence for the complete nonduplicated conversation.\n\n WORKED OPTIMIZATION LOOP (the caller does every judgment):\n 1. GET /api/models lists catalogs, NOT generation readiness or credit balance. Before a large fanout, run one small investigation with both chosen roles. A quota/balance failure needs provider/operator action, not a prompt edit. Keep the simulator configuration stable when comparing PUT prompts/models, but expect each run to simulate afresh; identical settings do NOT pin responses.\n 2. POST one scenario per investigation; record campaign/variant attributes. For code tools, specify root paths, literal versus regex search, and response shape in their descriptions/world. Do not assume host workspace grep implements the same semantics as your invented tool. Include difficult negative controls.\n 3. Poll, then GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget and timing first: done means a trace was recorded, not necessarily a final answer. Read turns in order, including EVERY tool_exchanges[].call AND response. The response is the PUT observation; workspace_ops is only supporting provenance. lua_execution=computed means code executed, NOT that the response is faithful. A final correct answer can hide invalid root listings, false-empty searches or invented files. Inspect generated revisions too; rerunning regenerates code. Do not grade fidelity from outcome counts or final answers alone. Preserve simulation limitations in your assessment; withhold unsupported grades.\n 4. Record the judgment in the product, not only local prose: PATCH the id with grades and assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better; one inspected case, not a precision estimate\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. Adapt the score and references to what actually happened; the example is NOT a grading algorithm. Use assessment alone when no numeric grade is justified. Grades are caller-owned; the harness validates only shape and reference bounds. When a new assessment invalidates earlier scores, clear those stale grades in the SAME PATCH (for example grades:{grounded:null,quality:null}) or replace them with justified values. An assessment warning alone does not remove old scores from the frontier; never plot a discredited grade as if it were current evidence.\n 5. POST /api/frontier with explicit grouping for the variables you compare. Backend example: {\"group_by\":[\"campaign\",\"variant\",\"simulation_backend\",\"step_budget\",\"token_budget\"],\"axes\":[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]}. All stored jobs remain candidates. A listing/card filter never limits frontier candidacy; unrelated/null groups and excluded members remain explicit. Defaults group by PUT settings/prompt, so they MERGE different simulator backends unless you add the backend key. The caller owns corpus comparability and grade scales.\n 6. Hand off a shareable dashboard URL using URL-encoded JSON query values group_by (array of attribute names), axes (array of name/better objects), and attributes (exact string matches for CARDS ONLY). Example before URL encoding: /?group_by=[\"campaign\",\"variant\",\"simulation_backend\"]&axes=[{\"name\":\"quality\",\"better\":\"higher\"},{\"name\":\"sim_cost_usd\",\"better\":\"lower\"}]&attributes={\"campaign\":\"trial\"}. Never put bearer tokens in the URL. Archive evidence/requests for durability: jobs and caller annotations are in memory and lost on restart.\n\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative (prose) is the only mechanism that generalizes. This is why a scenario is a spec, not a fixture.\n • Tool responses are SIMULATED from the narrative. By default every response is rendered by the LLM. Experimental opt-in conversation_controls.lua_simulation={} lets that same simulator specialize optional Lua tool implementations before the PUT loop and during later fallbacks. This accelerates computations, NOT a cache or a semantic correctness guarantee. Unimplemented inputs delegate through PleaseSimulateException; runtime errors delegate with explicit error evidence and rolled-back Lua writes. The generated source and revision history are visible in simulation_program, beside resolved_inputs, on both progress and result.trace. Each exchange records lua_execution when tried. All computed/LLM responses enter the same simulator conversation. Progress reports its phase: resolving_inputs, preparing_tools, or put_loop. Lua has only bounded workspace capabilities, no host IO, randomness, or clock. The caller judges code and traces against the narrative; example_responses remain realism hints, NOT pinned outputs.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement. Every tool response is in the trace and the caller sees the same narrative, so a response that contradicts the stated facts is VISIBLE for the caller to read. Divergence is SURFACED, not silently fixed.\n • Because tool responses are LLM-simulated, an investigation MAY contain unrealistic or WRONG results — responses that contradict the narrative, invent facts, or drift across calls. The harness does NOT vet them (there is no judge). It is the CALLER'S responsibility to read the traces and double-check the simulated tool responses thoroughly. When simulation quality is insufficient, iterate with two levers and re-run the same scenarios: (a) sharpen the scenario NARRATIVE — tighter facts and negative facts; (b) use a stronger SIM_MODEL — it must be powerful enough to simulate believably.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). POST /api/investigations also accepts `multipart/form-data` with an optional `workspace` part: a .zip decompressed ENTIRELY IN MEMORY (never on disk) that seeds an in-memory filesystem the tool SIMULATOR consults. Narratives remain the only mechanism that generalizes (open worlds can't be materialized), but a zip IS a closed world — so when you have one (a repo slice, a corpus of articles, a mailbox export) you can hand it over so the simulator can consult authoritative bytes. This does NOT guarantee its returned reads/greps/listings are faithful; inspect the actual responses even when workspace operations succeeded. The simulator accesses the workspace with four tools — read, write, list_dir, grep — and it is named the \"simulation workspace\" in its own prompt, so your scenario `world` can address it by that name and instruct it (e.g. \"use the write tool to record any generated source code\"). The workspace is EPHEMERAL and per-trace (every scenario run gets a fresh copy; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy, not the harness's: state what the zip contains, where things live, and its completeness stance (closed: \"these are ALL the files; anything else is not found\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via\n                       PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT);\n                       zip-slip entries and files in the reserved .prompt-explore namespace are rejected. That namespace holds private program-authoring artifacts; Lua application workspace capabilities cannot list/read/grep/write it.\n\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
+    "description": "Property-based testing for agent behavior. You author a reusable SCENARIO once (a test case: a world narrative, an input domain, a protagonist, the tool surface, and optional Lua implementations of those tools), develop and TEST its simulation with direct tool-call probes, and then run many investigations against it. Each investigation = one scenario revision + one prompt under test (PUT) + one conversation. The harness surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and the full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict, and the optional `reason` is advisory framing for whoever reads the traces.\n\n WORKED LOOP (the caller does every judgment):\n 1. POST /api/scenarios registers the world: `world`, `input_domain`, `user_message`, `simulator_notes`, `tools[]` (name/description/parameters/ side_effect, plus optional `lua_source`), and `simulation` settings (the simulator model, thinking level, limits, and Lua sandbox limits). Supply the initial workspace once, as the optional `workspace` .zip part of a multipart body (part `request` = the JSON, part `workspace` = the archive). The response `id` + `revision` are what you reference afterwards.\n 2. Develop the simulation BEFORE spending investigations. POST /api/scenarios/{id}/simulations with an ordered `tool_calls` list; poll GET /api/scenarios/{id}/simulations/{probe_id}. Each call is rendered through the SAME engine an investigation uses (same argument validation, same Lua sandbox and rollback, same LLM delegation), so what you test is what runs. Read every call's `response`, `lua_execution` (computed vs delegated vs errored, with `source_hash`) and `workspace_ops`. Calls in one submission run in sequence in one session, so write/read consistency is testable; each submission starts from a fresh snapshot. A probe never invokes the PUT and never becomes a frontier candidate. You need no local Lua toolchain: the server parses, sandboxes, and executes the source.\n 3. Iterate: PATCH /api/scenarios/{id} with the complete new definition plus the `expected_revision` you read (a stale value is refused). Editing is allowed exactly while NO investigation references the scenario; you need no separate publish step — submitting an investigation pins it.\n 4. Check inputs too. A probe may pass `resolved_inputs` to pin the inputs for one test; omit it to sample them. Every run reports what it actually used in `resolved_inputs`.\n 5. POST /api/investigations with `scenario_id` (plus optional `scenario_revision` as a staleness guard and optional `resolved_inputs`), `put` (template, design goals), the PUT's model/thinking level, and the investigation's budget/reason/attributes. The tool surface comes from the scenario: `put.tools` is rejected here rather than silently ignored. Submission pins the scenario immediately and atomically.\n 6. Poll GET /api/investigations/{id}, then read GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget and timing first: done means a trace was recorded, not necessarily a final answer. Read turns in order, including EVERY tool_exchanges[].call AND response. The response is the PUT observation; workspace_ops is only supporting provenance. lua_execution=computed means code executed, NOT that the response is faithful. A final correct answer can hide invalid root listings, false-empty searches, or invented files.\n 7. Record the judgment in the product: PATCH the id with grades and assessment. Example: {\"grades\":{\"quality\":0.5},\"assessment\":{\"summary\":\"Correct conclusion, but incomplete evidence\",\"rubric\":\"quality: 0..1, higher is better\",\"evidence\":[{\"turn\":0,\"exchange\":0,\"note\":\"The actual tool response contradicts the promised root listing\"}]}}. Clear stale grades in the SAME PATCH when an assessment invalidates them (grades:{\"quality\":null}). Grades are caller-owned; the harness stores them and never interprets them.\n 8. Fixing a simulation after traces exist: the scenario is pinned, so POST /api/scenarios/{id}/fork (optionally with a `correction` note naming the predecessor). The fork is editable and shares the initial workspace without re-uploading it. Every investigation reports scenario_id, scenario_revision and scenario_definition_hash, so you can tell exactly which traces ran the old definition and re-run only those.\n 9. POST /api/frontier with explicit grouping for the variables you compare (attributes include scenario_id/scenario_revision/scenario_hash, simulation_backend, step_budget and token_budget). All stored jobs remain candidates; a card filter never limits candidacy. The caller owns corpus comparability and grade scales. Share state via URL-encoded query values (group_by, axes, attributes) — never a bearer token.\n Archiving: scenarios, investigations, grades and probes are all in memory and lost on restart. GET /api/scenarios/{id}/workspace exports the initial workspace inventory; a hash alone is not a reproducible workspace.\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative is the only mechanism that generalizes. The optional workspace .zip is the container form of a closed world: upload it once with the scenario to hand the simulator authoritative bytes.\n • Tool responses are SIMULATED from the narrative. By default the simulator LLM renders every response. A tool with `lua_source` is tried in the sandbox FIRST: a computed reply costs no model call, `PleaseSimulateException(\"reason\")` delegates that one input, and a runtime error delegates too while keeping distinct error evidence and discarding its staged workspace writes. Code supplied is code run — there is no enable switch, and the harness never authors, repairs or rewrites the source. Code that executed is NOT proof it is faithful: read the responses against the world.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement: every response is in the trace, the same narrative is visible, and a response that contradicts the stated facts is visible for the caller to catch. When simulation quality is insufficient, sharpen the narrative, fix the implementation, or use a stronger simulator model (which is set on the SCENARIO, because the environment is part of the test case).\n • Reports clearly separate what was deterministic (validation, state patches, workspace bytes, usage, timing) from what was semantic (model output, rendered tool responses). The caller judges the semantic part.\n • Phases: progress.phase is resolving_inputs or put_loop. There is no preparation phase; nothing is compiled or generated during a run.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). The optional `workspace` .zip is decompressed ENTIRELY IN MEMORY (never on disk) and seeds an in-memory filesystem the tool SIMULATOR consults. The simulator accesses it with four tools — read, write, list_dir, grep. The workspace is EPHEMERAL and per-run (every run gets a fresh copy of the scenario's seed; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy: state what the archive contains, where things live, and its completeness stance (closed: \"these are ALL the files\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT); zip-slip entries and files in the reserved .prompt-explore namespace are rejected. AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -412,6 +412,544 @@
           }
         ]
       }
+    },
+    "/api/scenarios": {
+      "get": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "List stored scenarios (summaries; no definition bodies).",
+        "operationId": "list_scenarios",
+        "responses": {
+          "200": {
+            "description": "All stored scenarios in this server's memory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScenarioSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Register a scenario: the world, its tools (with optional Lua\nimplementations), the simulator settings, and an optional initial workspace\narchive. Creating a scenario executes nothing and calls no provider.",
+        "operationId": "create_scenario",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Body of `POST /api/scenarios` (also the `request` part of the multipart\nform, whose optional `workspace` part carries the initial .zip).",
+                "required": [
+                  "scenario"
+                ],
+                "properties": {
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Optional display label. Never part of the identity or the hash."
+                  },
+                  "scenario": {
+                    "$ref": "#/components/schemas/ScenarioDefinition"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registered. Body: {id, revision, definition_hash, workspace_hash}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON, or the definition fails validation (duplicate tool names, unparsable Lua, limits out of range)"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
+    "/api/scenarios/{id}": {
+      "get": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Read one scenario: its definition, identity, and dependents.",
+        "operationId": "get_scenario",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stored scenario",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario (already deleted, or lost on restart)"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Delete a scenario. Refused while any referencing investigation is running\n(a run cannot be cancelled), and refused without `cascade=true` when\nfinished investigations still pin it. With `cascade=true` those\ninvestigations — their traces, grades and assessments — are deleted too.",
+        "operationId": "delete_scenario",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cascade",
+            "in": "query",
+            "description": "Delete investigations that reference this scenario instead of refusing (they are gone, with their traces and grades)",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted. Body: {deleted, cascade_investigations, cascade_probes}"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario"
+          },
+          "409": {
+            "description": "Investigations depend on this scenario (and cascade was not requested), or referenced work is still running"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Edit a scenario's definition, simulator settings, label, or initial\nworkspace. Refused while any investigation references the scenario (fork it\ninstead) and while `expected_revision` is stale.",
+        "operationId": "patch_scenario",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Body of `PATCH /api/scenarios/{id}`.\n\nSupplied collections REPLACE their previous values: there is no partial\ndeep merge of a definition. `expected_revision` is required, so a stale edit\ncan never silently overwrite another agent's work.",
+                "required": [
+                  "expected_revision",
+                  "scenario"
+                ],
+                "properties": {
+                  "clear_workspace": {
+                    "type": "boolean",
+                    "description": "Explicitly replace the initial workspace with an empty one."
+                  },
+                  "expected_revision": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The revision the caller last read. A mismatch is a 409.",
+                    "minimum": 0
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Set a new label; `null` clears it. Omit to keep the current label."
+                  },
+                  "scenario": {
+                    "$ref": "#/components/schemas/ScenarioDefinition",
+                    "description": "The complete new definition (replacing the stored one)."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Edited. Body: {id, revision, definition_hash, workspace_hash}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON, or the definition fails validation"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario"
+          },
+          "409": {
+            "description": "The scenario is pinned by investigations, or expected_revision is stale"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
+    "/api/scenarios/{id}/fork": {
+      "post": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Fork a scenario into a new editable one, sharing the immutable initial\nworkspace (no re-upload, no re-decompression). Optionally record what the\ncopy corrects.",
+        "operationId": "fork_scenario",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario to copy",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Body of `POST /api/scenarios/{id}/fork`.",
+                "properties": {
+                  "correction": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/CorrectionRequest",
+                        "description": "Optional description of what this copy corrects. Purely descriptive: it\nneither locks nor invalidates the predecessor, and survives its deletion."
+                      }
+                    ]
+                  },
+                  "expected_revision": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int64",
+                    "description": "Refuse to fork from a scenario that has moved on since the caller read it.",
+                    "minimum": 0
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Forked. Body: {id, revision, definition_hash, workspace_hash}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario"
+          },
+          "409": {
+            "description": "expected_revision does not match the current revision"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
+    "/api/scenarios/{id}/simulations": {
+      "get": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "List probes recorded against a scenario (most recent first).",
+        "operationId": "list_probes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Probe summaries for this scenario",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProbeView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Submit a simulation probe: an ordered list of tool calls rendered against\nthis scenario through the SAME engine an investigation uses. Calls run\nsequentially in one session from a fresh snapshot; the prompt under test is\nnever involved, and the result is never a frontier candidate.",
+        "description": "Poll `GET /api/scenarios/{id}/simulations/{probe_id}` for the result.",
+        "operationId": "create_probe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted. Body: {id, scenario_revision, scenario_hash}"
+          },
+          "400": {
+            "description": "Body is not valid JSON or the request fails validation"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario"
+          },
+          "409": {
+            "description": "expected_revision does not match the current revision"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
+    "/api/scenarios/{id}/simulations/{probe_id}": {
+      "get": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Read one probe: every call's request, response, and provenance.",
+        "operationId": "get_probe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "probe_id",
+            "in": "path",
+            "description": "Probe id returned by POST",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The probe, live or terminal, with complete per-call evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario or probe"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
+    },
+    "/api/scenarios/{id}/workspace": {
+      "get": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Export the initial workspace as a JSON file inventory (paths and contents).\nThis is the bytes every run starts from; a `workspace_hash` alone is not a\nreproducible workspace.",
+        "operationId": "get_scenario_workspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Scenario id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The initial workspace inventory: {workspace_hash, files:[{path, bytes, content (base64)}]}"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Unknown scenario"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -503,24 +1041,8 @@
         "type": "object",
         "description": "Caller-selected limits and sampling controls for an investigation's LLM\nconversations. Defaults: temperature 0.7; PUT/simulator output limits\n32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;\n5000 read lines, 1000 grep matches, 2000 characters per grep line,\nand 1 MiB constructed output per workspace tool call.",
         "properties": {
-          "lua_simulation": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/LuaOptions",
-                "description": "Experimental hybrid simulation: omit/null to keep today's LLM-only path;\n{} enables it with bounded defaults. Per trace, the simulator prepares\n.prompt-explore/tools.lua in its private workspace, initially a valid\nfallback-only module. It may specialize only selected inputs or tools.\nMissing handlers and PleaseSimulateException delegate to the LLM.\nCrashes/limits also delegate, with a distinct error record; staged Lua\nwrites are rolled back before fallback. Computed replies enter the SAME\nsimulator conversation without another LLM call. No random/time/host IO.\nInspect simulation_program beside resolved_inputs on result.trace and\nlive progress, and each tool_exchanges[].lua_execution for exact revision,\ncomputed/fallback/error outcome and discarded operations. Generated code\nis unverified simulation evidence, not ground truth or a verdict."
-              }
-            ]
-          },
           "max_workspace_turns": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Workspace tool calls per simulator response before a final-answer nudge.",
-            "minimum": 0
+            "description": "Migration only: simulator workspace turns\n(`simulation.max_workspace_turns`)."
           },
           "put_max_tokens": {
             "type": [
@@ -541,65 +1063,74 @@
             "minimum": 0
           },
           "sim_max_repair_attempts": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Total attempts per simulator JSON reply, including the initial reply\n(default 20). Empty replies, invalid JSON, and schema mismatches are\nretried in the same conversation with repair feedback. This is separate\nfrom process-level HTTP/transport retries, not a provider retry setting.",
-            "minimum": 1
+            "description": "Migration only: simulator repair budget\n(`simulation.max_repair_attempts`)."
           },
           "sim_max_tokens": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32",
-            "description": "Maximum output tokens per simulator completion; omit for the documented default.",
-            "minimum": 1
+            "description": "Migration only: simulator output limit (`simulation.max_tokens`)."
           },
           "sim_temperature": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "float",
-            "description": "Simulator sampling temperature; omit for the documented default.",
-            "minimum": 0
+            "description": "Migration only: simulator sampling temperature now lives on the\nscenario definition (`simulation.temperature`). Supplying it here is a\n400 with that guidance, never a silent override."
           },
           "workspace_max_grep_matches": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Matches one simulator workspace `grep` may return.",
-            "minimum": 1
+            "description": "Migration only: workspace grep bound (`simulation.workspace.max_grep_matches`)."
           },
           "workspace_max_line_len": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Characters retained from each simulator workspace grep-result line.",
-            "minimum": 1
+            "description": "Migration only: grep line length (`simulation.workspace.max_line_len`)."
           },
           "workspace_max_output_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Byte budget used while constructing one simulator workspace tool result.\nThis prevents a huge single-line file or directory from being copied in\nfull before downstream token/Lua limits can reject it.",
-            "maximum": 4194304,
-            "minimum": 1
+            "description": "Migration only: workspace output budget\n(`simulation.workspace.max_output_bytes`)."
           },
           "workspace_max_read_lines": {
+            "description": "Migration only: workspace read bound (`simulation.workspace.max_read_lines`)."
+          }
+        }
+      },
+      "Correction": {
+        "type": "object",
+        "description": "Where a corrected scenario came from. Purely descriptive history: it does\nNOT lock, validate, or invalidate anything, and deleting the predecessor\ndoes not break the link.",
+        "required": [
+          "scenario_id",
+          "revision",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Caller-written explanation of what changed and why."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "That scenario's revision when this fork was made.",
+            "minimum": 0
+          },
+          "scenario_id": {
+            "type": "string",
+            "description": "The scenario this one corrects or replaces."
+          }
+        }
+      },
+      "CorrectionRequest": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Explanation of what changed and why."
+          },
+          "revision": {
             "type": [
               "integer",
               "null"
             ],
-            "description": "Lines one simulator workspace `read` may return.",
-            "minimum": 1
+            "format": "int64",
+            "description": "The predecessor revision this copy was made from; defaults to the\ncurrent revision.",
+            "minimum": 0
           }
-        }
+        },
+        "additionalProperties": false
       },
       "EvidenceReference": {
         "type": "object",
@@ -861,9 +1392,9 @@
       "InvestigateRequest": {
         "type": "object",
         "required": [
+          "scenario_id",
           "investigation",
-          "put",
-          "scenario"
+          "put"
         ],
         "properties": {
           "attributes": {
@@ -878,7 +1409,7 @@
           },
           "conversation_controls": {
             "$ref": "#/components/schemas/ConversationControls",
-            "description": "Per-investigation overrides for LLM conversation controls. Omit a\nfield to use its documented server default. These controls are recorded\nresolved on the job view so traces remain reproducible."
+            "description": "Per-investigation PUT conversation controls. Omit a field to use its\ndocumented default. Simulator settings belong to the scenario."
           },
           "investigation": {
             "$ref": "#/components/schemas/Investigation"
@@ -900,31 +1431,45 @@
               },
               {
                 "$ref": "#/components/schemas/ThinkingLevel",
-                "description": "Thinking/reasoning level for the PUT runner ONLY (the agent\nunder test): `none` | `minimal` | `low` | `medium` | `high` |\n`xhigh` | `max`. Omit to keep the provider's default (which is\nwhat runs today — no field is sent). This pins what you are\nmeasuring: a reasoning model's default effort is part of its\nmeasured behavior, and without this you can neither vary it\n(trade thoroughness for cost at `low`/`none`) nor tell two runs\napart. The resolved value comes back on the job view as\n`put_thinking_level`. Independent of `sim_thinking_level`:\nsetting one never changes the other."
+                "description": "Thinking/reasoning level for the PUT runner ONLY (the agent\nunder test): `none` | `minimal` | `low` | `medium` | `high` |\n`xhigh` | `max`. Omit to keep the provider's default (which is\nwhat runs today — no field is sent). This pins what you are\nmeasuring: a reasoning model's default effort is part of its\nmeasured behavior, and without this you can neither vary it\n(trade thoroughness for cost at `low`/`none`) nor tell two runs\napart. The resolved value comes back on the job view as\n`put_thinking_level`. The SIMULATOR's level is the scenario's\n(`simulation.sim_thinking_level`), never inherited from this."
               }
             ]
           },
-          "scenario": {
-            "$ref": "#/components/schemas/Scenario",
-            "description": "The required test case to run: one world specification, input domain,\nand protagonist. A job represents exactly one scenario; `scenarios` is\nnot a compatibility alias and is rejected as an unknown field."
-          },
-          "sim_model": {
+          "resolved_inputs": {
             "type": [
-              "string",
+              "object",
               "null"
             ],
-            "description": "Model for the tool SIMULATOR only (the LLM that roleplays the\nenvironment). Omit to use the server default independently of\n`put_model`; setting `put_model` never changes the simulator.\n\nThe simulator is the test ENVIRONMENT, not the thing under test.\nTwo consequences:\n1. When tuning which model works well for your prompt, keep\n   `sim_model` STABLE across runs (vary `put_model`, not this). You\n   are comparing candidate PUTs. Stable settings reduce confounding, but\n   every run still simulates afresh and may generate different Lua code.\n   Inspect actual responses/revisions before attributing differences to PUT.\n2. The simulator must be POWERFUL ENOUGH to render a believable\n   environment — a weak simulator produces inconsistent or\n   unbelievable tool responses, which corrupts every trace\n   regardless of how good the PUT is. There is a quality floor\n   below which results stop being meaningful, even if it's\n   cheaper. Pick a strong model here and leave it set."
+            "description": "Optional explicit bindings for the scenario's declared inputs (replay a\nspecific sample instead of drawing a new one). Supply every declared key\nor omit entirely.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "scenario": {
+            "description": "Migration only: the inline scenario field this API no longer accepts.\nPresent so supplying it produces an actionable error instead of an\nopaque unknown-field message."
+          },
+          "scenario_id": {
+            "type": "string",
+            "description": "The scenario to run, BY REFERENCE. The referenced definition's tool\ncontracts become this run's tool surface; the prompt under test supplies\nonly its template and design goals."
+          },
+          "scenario_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional guard against editing races: refuse to run unless the scenario\nis still at this revision. The referenced scenario is pinned by this\nsubmission, so it cannot be edited afterwards either.",
+            "minimum": 0
+          },
+          "scenarios": {
+            "description": "Migration only: the old array form. Rejected with the same guidance."
+          },
+          "sim_model": {
+            "description": "Migration only: the simulator's model now lives on the scenario.\nSupplying it is a 400 with that guidance, never a silent override."
           },
           "sim_thinking_level": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ThinkingLevel",
-                "description": "Thinking/reasoning level for the tool SIMULATOR only. Same\nvocabulary as `put_thinking_level`; omit for the provider\ndefault. Lower effort can reduce simulation cost, but can also degrade\nrendering or generated Lua semantics. Compare actual responses/source\nbefore claiming a quality-preserving speedup; low/none is not guaranteed\nsufficient even on a strong model. Falls back INDEPENDENTLY of\n`put_thinking_level`: omitting this while setting the PUT's\nlevel leaves the simulator at its default, NOT at the PUT's\nlevel."
-              }
-            ]
+            "description": "Migration only: the simulator's thinking level now lives on the\nscenario (`simulation.sim_thinking_level`)."
           }
         },
         "additionalProperties": false
@@ -1001,10 +1546,14 @@
           "sim_model",
           "conversation_controls",
           "workspace_files",
+          "scenario_id",
+          "scenario_revision",
+          "scenario_definition_hash",
           "attributes",
           "grades",
           "assessment",
           "resolved_inputs",
+          "implementations",
           "turns"
         ],
         "properties": {
@@ -1078,6 +1627,12 @@
           "id": {
             "type": "string"
           },
+          "implementations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolImplementation"
+            }
+          },
           "phase": {
             "$ref": "#/components/schemas/RunPhase"
           },
@@ -1113,6 +1668,18 @@
           "scenario": {
             "$ref": "#/components/schemas/Scenario"
           },
+          "scenario_definition_hash": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string",
+            "description": "The reusable scenario this run pinned, with the exact revision and\ncontent hash that produced these traces."
+          },
+          "scenario_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
           "sim_model": {
             "type": "string"
           },
@@ -1123,16 +1690,6 @@
               },
               {
                 "$ref": "#/components/schemas/ThinkingLevel"
-              }
-            ]
-          },
-          "simulation_program": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/SimulationProgram"
               }
             ]
           },
@@ -1361,6 +1918,9 @@
           "sim_model",
           "conversation_controls",
           "workspace_files",
+          "scenario_id",
+          "scenario_revision",
+          "scenario_definition_hash",
           "grades",
           "attributes",
           "put",
@@ -1469,6 +2029,18 @@
             "$ref": "#/components/schemas/Scenario",
             "description": "The input scenario, by value: its narrative is the ground truth for\ninterpreting the trace and progress."
           },
+          "scenario_definition_hash": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string",
+            "description": "The reusable scenario this investigation pinned, with the exact revision\nand content hash it ran. A correction elsewhere never changes this trace;\nread the scenario to see whether a newer revision exists."
+          },
+          "scenario_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
           "sim_model": {
             "type": "string",
             "description": "The resolved model name that ran the tool simulator (the `sim_model`\nfrom the request, or the server default), resolved independently of\n`put_model`. The simulator is the test ENVIRONMENT; a reader needs to\nsee it to judge whether it was powerful enough to render the\nworld believably."
@@ -1503,7 +2075,8 @@
         "type": "object",
         "description": "Evidence of a Lua attempt before a tool response. Computed means executed,\nNOT faithful or correct: code can return an invalid-path error or false-empty\nsearch successfully. Inspect ToolExchange.response against the tool contract.\nA fallback or error is NOT the tool's return value: all staged mutations were\ndiscarded and the LLM rendered the actual response. Successful Lua operations appear in the\nexchange's ordinary workspace_ops instead.",
         "required": [
-          "program_revision",
+          "tool",
+          "source_hash",
           "outcome"
         ],
         "properties": {
@@ -1522,9 +2095,13 @@
           "outcome": {
             "$ref": "#/components/schemas/LuaOutcome"
           },
-          "program_revision": {
-            "type": "integer",
-            "minimum": 0
+          "source_hash": {
+            "type": "string",
+            "description": "SHA-256 of the exact source that ran, matching the scenario's\n`implementations` entry for this tool."
+          },
+          "tool": {
+            "type": "string",
+            "description": "The tool whose supplied implementation was attempted."
           }
         }
       },
@@ -1659,21 +2236,238 @@
           }
         }
       },
-      "ProgramRevision": {
+      "ProbeCall": {
         "type": "object",
+        "description": "One rendered call, with the provenance needed to judge it.",
         "required": [
-          "source"
+          "request",
+          "response",
+          "elapsed_ms"
         ],
         "properties": {
+          "elapsed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
           "error": {
             "type": [
               "string",
               "null"
             ]
           },
-          "source": {
-            "type": "string",
-            "description": "Lua source, displayed as data, never executed by the browser. If error\nreports an oversized/non-UTF8 file this is a bounded preview, not an\nexecutable replacement; that revision always falls back to the LLM."
+          "lua_execution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaExecutionRecord",
+                "description": "Present when a supplied Lua implementation was attempted for this call."
+              }
+            ]
+          },
+          "request": {
+            "$ref": "#/components/schemas/ToolCall",
+            "description": "The submitted request, echoed."
+          },
+          "response": {
+            "description": "The rendered tool response. `null` when this call failed and none was\nproduced; `error` then says why."
+          },
+          "sim_thinking": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The simulator model's visible reasoning while rendering this response."
+          },
+          "state_after": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Present for write tools: world state after this call's patch.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "workspace_ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceOp"
+            },
+            "description": "Workspace operations the simulator performed (its lookups, plus any\ncommitted Lua writes). Rolled-back Lua writes appear under\n`lua_execution.discarded_workspace_ops` instead."
+          }
+        }
+      },
+      "ProbeRequest": {
+        "type": "object",
+        "description": "What a caller submits to test a simulation.",
+        "required": [
+          "tool_calls"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional guard: refuse to probe a scenario that has moved on since the\ncaller last read it.",
+            "minimum": 0
+          },
+          "max_calls": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Optional lower cap on how many of `tool_calls` to run.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free-form note about what this probe is checking (surfaced with the\nresult; never interpreted)."
+          },
+          "resolved_inputs": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Pin the scenario's declared inputs for this probe instead of sampling\nthem. Supply every declared key; omit to sample.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "description": "The calls to render, in order. Each runs in the scenario's language:\n`{\"name\": \"<tool>\", \"args\": {...}}`. Arguments are validated against the\ndeclared tool schema exactly as a PUT's call would be."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProbeStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "done",
+          "failed"
+        ]
+      },
+      "ProbeStopReason": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "call_limit",
+          "runtime_failure"
+        ]
+      },
+      "ProbeView": {
+        "type": "object",
+        "description": "One simulation probe: caller-submitted tool calls rendered through the\ninvestigation engine, with complete per-call provenance.",
+        "required": [
+          "id",
+          "scenario_id",
+          "scenario_revision",
+          "scenario_hash",
+          "status",
+          "started_at",
+          "resolved_inputs",
+          "calls"
+        ],
+        "properties": {
+          "calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProbeCall"
+            }
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free-form note supplied with the probe, echoed for context."
+          },
+          "resolved_inputs": {
+            "type": "object",
+            "description": "The inputs this probe ran with: sampled, or the caller's bindings.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "scenario_hash": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "scenario_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The scenario revision this probe actually ran against (a probe does not\npin the scenario, so record what it used).",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProbeStatus"
+          },
+          "stop_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProbeStopReason"
+              }
+            ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageTotals",
+                "description": "Simulator usage for this probe, with cost when the model catalog prices it."
+              }
+            ]
           }
         }
       },
@@ -1683,7 +2477,6 @@
         "required": [
           "id",
           "template",
-          "tools",
           "design_goals"
         ],
         "properties": {
@@ -1703,7 +2496,7 @@
             "items": {
               "$ref": "#/components/schemas/ToolSchema"
             },
-            "description": "This prompt's tool surface, exactly as the model sees it.\nEmpty = no tool loop (but intent lives in `design_goals`, not here)."
+            "description": "The EFFECTIVE tool surface this run exposed to the model, taken from the\nreferenced scenario. It is reported here so evidence is self-contained\nand `prompt_hash` identifies what the model saw. Do NOT supply it when\nsubmitting an investigation (`POST /api/investigations` rejects a\nnon-empty `tools`): the tool surface belongs to the scenario, where the\nsimulator's optional Lua implementations live next to it."
           }
         }
       },
@@ -1766,31 +2559,11 @@
       },
       "ResolvedConversationControls": {
         "type": "object",
-        "description": "Actual controls after request and server defaults have been resolved.",
+        "description": "Actual controls after request and server defaults have been resolved. The\nPUT's controls come from the investigation; the simulator's come from the\nreferenced scenario.",
         "required": [
-          "sim_max_repair_attempts",
-          "max_workspace_turns",
-          "workspace_max_read_lines",
-          "workspace_max_grep_matches",
-          "workspace_max_line_len",
-          "workspace_max_output_bytes"
+          "simulator"
         ],
         "properties": {
-          "lua_simulation": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/LuaOptions",
-                "description": "Null means disabled; otherwise the actual Lua sandbox limits used."
-              }
-            ]
-          },
-          "max_workspace_turns": {
-            "type": "integer",
-            "minimum": 0
-          },
           "put_max_tokens": {
             "type": [
               "integer",
@@ -1805,6 +2578,38 @@
               "null"
             ],
             "format": "float"
+          },
+          "simulator": {
+            "$ref": "#/components/schemas/ResolvedSimulatorSettings",
+            "description": "The simulator settings this run used, resolved from the scenario."
+          }
+        }
+      },
+      "ResolvedSimulatorSettings": {
+        "type": "object",
+        "required": [
+          "sim_max_repair_attempts",
+          "max_workspace_turns",
+          "workspace_max_read_lines",
+          "workspace_max_grep_matches",
+          "workspace_max_line_len",
+          "workspace_max_output_bytes"
+        ],
+        "properties": {
+          "lua": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaOptions",
+                "description": "Lua sandbox limits, present exactly when the scenario supplies\nimplementations (there is no enable switch: code supplied is code run)."
+              }
+            ]
+          },
+          "max_workspace_turns": {
+            "type": "integer",
+            "minimum": 0
           },
           "sim_max_repair_attempts": {
             "type": "integer",
@@ -1917,16 +2722,15 @@
       },
       "RunPhase": {
         "type": "string",
-        "description": "The LLM phase of the single scenario currently being run. Exposed so a\nreader can see live work rather than a bare \"running\" status.",
+        "description": "The LLM phase of the single scenario currently being run. Exposed so a\nreader can see live work rather than a bare \"running\" status. There is no\npreparation phase: Lua implementations are authored by the caller and\nsupplied with the scenario, never generated during a run.",
         "enum": [
           "resolving_inputs",
-          "preparing_tools",
           "put_loop"
         ]
       },
       "RunProgress": {
         "type": "object",
-        "description": "Live progress for one scenario. The runner updates this flat value as work\nproceeds; if the run fails, already resolved inputs, program revisions, and\ncompleted turns remain available as evidence.",
+        "description": "Live progress for one scenario. The runner updates this flat value as work\nproceeds; if the run fails, already resolved inputs, supplied tool\nimplementations, and completed turns remain available as evidence.",
         "required": [
           "phase"
         ],
@@ -1934,6 +2738,13 @@
           "execution": {
             "$ref": "#/components/schemas/RunExecution",
             "description": "Deterministic execution evidence. `snapshot()` refreshes its live clock;\nafter `finish()` it is frozen for completed and failed runs."
+          },
+          "implementations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolImplementation"
+            },
+            "description": "The caller-supplied Lua implementations this run may execute, with the\nexact source hashes each exchange's `lua_execution` refers to. Empty\nwhen every tool is rendered by the simulator LLM."
           },
           "phase": {
             "$ref": "#/components/schemas/RunPhase",
@@ -1946,17 +2757,6 @@
             "propertyNames": {
               "type": "string"
             }
-          },
-          "simulation_program": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/SimulationProgram",
-                "description": "Generated Lua program and revisions, when optional Lua simulation is enabled."
-              }
-            ]
           },
           "turns": {
             "type": "array",
@@ -1990,16 +2790,10 @@
         "required": [
           "elapsed_ms",
           "resolving_inputs_ms",
-          "preparing_tools_ms",
           "put_loop_ms"
         ],
         "properties": {
           "elapsed_ms": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "preparing_tools_ms": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
@@ -2050,6 +2844,248 @@
           }
         }
       },
+      "ScenarioDefinition": {
+        "type": "object",
+        "description": "A reusable test case: the authored world (narrative, input domain,\nprotagonist, simulator notes), the tool surface with its optional Lua\nimplementations, and the simulator settings to run it under.",
+        "required": [
+          "world"
+        ],
+        "properties": {
+          "input_domain": {
+            "type": "object",
+            "description": "Per-`{{variable}}` input-domain descriptions: the value space,\nsemantics, and preconditions/trust contracts. The simulator picks a\nconcrete value from each domain and the chosen value is reported in\n`resolved_inputs`; `POST .../simulations` can also supply explicit\nbindings to test one selection directly.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "simulation": {
+            "$ref": "#/components/schemas/SimulationSettings",
+            "description": "Simulator settings this scenario runs under."
+          },
+          "simulator_notes": {
+            "type": "string",
+            "description": "Persona/stance guidance for a simulated user, if the scenario has one."
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScenarioTool"
+            },
+            "description": "The tool surface: contracts plus optional Lua implementations."
+          },
+          "user_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The opening message from the user/protagonist."
+          },
+          "world": {
+            "type": "string",
+            "description": "The world specification — ground truth the simulator renders tool\nresponses from, and that the caller checks claims against.\n\nCover inventory, facts (including NEGATIVE facts), completeness\nassertions, and rendering rules. Embed authoritative documentation\n(an OpenAPI spec, a man page) verbatim and pin rendering to it."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ScenarioSummary": {
+        "type": "object",
+        "description": "A scenario summary without the definition body, for listing.",
+        "required": [
+          "id",
+          "revision",
+          "definition_hash",
+          "tools",
+          "implemented_tools",
+          "workspace_files",
+          "editable",
+          "investigations",
+          "probes",
+          "updated_at"
+        ],
+        "properties": {
+          "definition_hash": {
+            "type": "string"
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "implemented_tools": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "investigations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "probes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tools": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "workspace_files": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "ScenarioTool": {
+        "type": "object",
+        "description": "One tool the scenario's world exposes: the contract the prompt under test\nsees, plus an OPTIONAL caller-authored Lua implementation of it.\n\nThe contract is model-visible; `lua_source` never is. A handler that cannot\nfaithfully implement the declared semantics should call\n`PleaseSimulateException(\"reason\")` and let the simulator LLM render that\none response instead.",
+        "required": [
+          "name",
+          "description",
+          "parameters",
+          "side_effect"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "The tool contract, exactly as the prompt under test sees it and as the\nsimulator is told to render it. Describe argument semantics AND the\nreturned shape. A vague contract makes Lua and LLM implementations\ndisagree silently."
+          },
+          "example_responses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Realism hints for the simulator LLM (anchors, not pinned outputs)."
+          },
+          "lua_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional Lua implementation, run in the sandbox for every call of this\ntool. The source RETURNS a function taking `(args, ctx)`:\n\n```lua\nreturn function(args, ctx)\n  return { response = { ... }, state_patch = { ... } } -- writes only\nend\n```\n\nOmit it to let the simulator LLM render this tool's responses. A\nhandler may decline a call with `PleaseSimulateException(\"reason\")`;\nmissing handlers and runtime errors also delegate, and their staged\nworkspace writes are discarded."
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "description": "JSON Schema for the tool's parameters."
+          },
+          "side_effect": {
+            "$ref": "#/components/schemas/SideEffect"
+          }
+        }
+      },
+      "ScenarioView": {
+        "type": "object",
+        "description": "One stored scenario, as the API reports it: the definition, its identity,\nand the dependency bookkeeping a caller needs before editing or deleting it.",
+        "required": [
+          "id",
+          "revision",
+          "definition_hash",
+          "workspace_hash",
+          "workspace_files",
+          "created_at",
+          "updated_at",
+          "editable",
+          "investigation_ids",
+          "running_investigations",
+          "probe_ids",
+          "definition"
+        ],
+        "properties": {
+          "correction": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Correction",
+                "description": "Set when this scenario was forked as a correction of another one. Purely\ndescriptive history; unrelated to dependency tracking."
+              }
+            ]
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "definition": {
+            "$ref": "#/components/schemas/ScenarioDefinition"
+          },
+          "definition_hash": {
+            "type": "string",
+            "description": "SHA-256 of the execution-relevant contents (narrative, domains,\ncontracts, Lua sources, simulator settings). Display-only metadata such\nas `label` is excluded."
+          },
+          "editable": {
+            "type": "boolean",
+            "description": "True while no investigation references this scenario. A referenced\nscenario is immutable: fork it to change it."
+          },
+          "id": {
+            "type": "string"
+          },
+          "investigation_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Investigations pinning this scenario. They block edits and, without\n`cascade=true`, deletion."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "probe_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of probes recorded against this scenario (probes never pin it)."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Increases on every edit. An investigation pins exactly one value, and\n`PATCH` requires the caller's expected revision.",
+            "minimum": 0
+          },
+          "running_investigations": {
+            "type": "integer",
+            "description": "How many of the pinned investigations are still running.",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "workspace_files": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "workspace_hash": {
+            "type": "string",
+            "description": "SHA-256 of the initial workspace inventory (paths and bytes)."
+          }
+        }
+      },
       "SideEffect": {
         "type": "string",
         "enum": [
@@ -2057,37 +3093,95 @@
           "write"
         ]
       },
-      "SimulationProgram": {
+      "SimulationSettings": {
         "type": "object",
-        "description": "A generated executable simulation, not an oracle. The narrative remains\nground truth; the caller judges whether this code implements it faithfully.\nCode may be specialized during setup or later LLM fallbacks. All revisions\nare retained so each exchange identifies the exact implementation it tried.",
-        "required": [
-          "path",
-          "revisions"
-        ],
+        "description": "Simulator configuration that belongs to the SCENARIO, not to an\ninvestigation: the environment is part of the test case, and testing a\nsimulation under different settings than an investigation runs it under\nshould be an explicit edit (or a fork), never an invisible override.",
         "properties": {
-          "path": {
-            "type": "string"
+          "lua": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaOptions",
+                "description": "Resource limits for caller-supplied Lua handlers. Omit for defaults."
+              }
+            ],
+            "default": null
           },
-          "revisions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ProgramRevision"
-            },
-            "description": "Zero-based revisions, including the initial fallback-only module."
+          "max_repair_attempts": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Total attempts per simulator JSON reply (initial reply included).",
+            "default": null,
+            "minimum": 1
           },
-          "setup_thinking": {
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum output tokens per simulator completion.",
+            "default": null,
+            "minimum": 1
+          },
+          "max_workspace_turns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Workspace tool calls per simulator response before the final-answer nudge.",
+            "default": null,
+            "minimum": 0
+          },
+          "sim_model": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Model that roleplays the environment. Omit for the server default.",
+            "default": null
           },
-          "setup_workspace_ops": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WorkspaceOp"
+          "sim_thinking_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel",
+                "description": "Reasoning effort for simulator completions. Omit for the provider default."
+              }
+            ],
+            "default": null
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Simulator sampling temperature. Omit for the documented default.",
+            "default": null
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceLimits",
+                "description": "Bounds on simulator workspace tool output."
+              }
+            ],
+            "default": {
+              "max_read_lines": null,
+              "max_grep_matches": null,
+              "max_line_len": null,
+              "max_output_bytes": null
             }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ThinkingLevel": {
         "type": "string",
@@ -2188,6 +3282,26 @@
           }
         }
       },
+      "ToolImplementation": {
+        "type": "object",
+        "description": "One caller-authored Lua implementation, as evidence: the tool it serves,\nits source, and a hash identifying the exact revision that executed.",
+        "required": [
+          "tool",
+          "source",
+          "source_hash"
+        ],
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          }
+        }
+      },
       "ToolSchema": {
         "type": "object",
         "required": [
@@ -2268,6 +3382,13 @@
               "type": "string"
             }
           },
+          "implementations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolImplementation"
+            },
+            "description": "The scenario's caller-supplied Lua implementations, with the source\nhash each tool_exchanges[].lua_execution refers to. Empty when every\nresponse was rendered by the simulator LLM."
+          },
           "resolved_inputs": {
             "type": "object",
             "description": "The concrete {{variable}} values the simulator generated from\nthe scenario's input_domain and rendered the template with — the\nexact input that produced this trace, for reproduction.",
@@ -2275,17 +3396,6 @@
             "propertyNames": {
               "type": "string"
             }
-          },
-          "simulation_program": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/SimulationProgram",
-                "description": "Generated program source/revisions and setup evidence (experimental).\nPresent when conversation_controls.lua_simulation is enabled and this\nPUT has tools; revision indices match tool_exchanges[].lua_execution."
-              }
-            ]
           },
           "tool_calls": {
             "type": "integer",
@@ -2366,6 +3476,46 @@
             "minimum": 0
           }
         }
+      },
+      "WorkspaceLimits": {
+        "type": "object",
+        "description": "Per-tool workspace capability bounds. `None` keeps the documented default.",
+        "properties": {
+          "max_grep_matches": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "max_line_len": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "max_output_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "maximum": 4194304,
+            "minimum": 0
+          },
+          "max_read_lines": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "WorkspaceOp": {
         "type": "object",

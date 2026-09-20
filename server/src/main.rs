@@ -41,16 +41,12 @@ use prompt_explore::llm::{
     catalog_pricing_map, cost_usd, list_all_map,
 };
 use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
+use prompt_explore::model::lua::LuaOptions;
 use prompt_explore::model::output::RunFailure;
 use prompt_explore::model::scenario::ToolImplementation;
-use prompt_explore::model::simulation::{
-    RunExecution, RunPhase, RunProgress, Scenario, TraceTurn,
-};
-use prompt_explore::model::lua::LuaOptions;
+use prompt_explore::model::simulation::{RunExecution, RunPhase, RunProgress, Scenario, TraceTurn};
 use prompt_explore::scenario::{ScenarioStore, runtime_for};
-use prompt_explore::simulate::{
-    RunnerOptions, SimulatorOptions, Workspace, WorkspaceToolLimits,
-};
+use prompt_explore::simulate::{RunnerOptions, SimulatorOptions, Workspace, WorkspaceToolLimits};
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 use utoipa::Modify;
@@ -1408,7 +1404,9 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": format!("could not read request body: {error}") })),
+                Json(
+                    serde_json::json!({ "error": format!("could not read request body: {error}") }),
+                ),
             )
                 .into_response();
         }
@@ -1453,9 +1451,9 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
     let mut store = state.scenarios.lock().unwrap();
     let (runtime, scenario_snapshot, scenario_revision, scenario_definition_hash) = {
         let Some(record) = store.get(&investigate_req.scenario_id) else {
-            return scenarios::store_error_response(prompt_explore::scenario::StoreError::NotFound(
-                investigate_req.scenario_id.clone(),
-            ));
+            return scenarios::store_error_response(
+                prompt_explore::scenario::StoreError::NotFound(investigate_req.scenario_id.clone()),
+            );
         };
         if let Some(expected) = investigate_req.scenario_revision {
             if expected != record.revision {
@@ -1584,9 +1582,8 @@ fn conversation_controls_problem(controls: &ConversationControls) -> Option<Stri
         .put_temperature
         .is_some_and(|value| !value.is_finite() || value < 0.0)
     {
-        problems.push(
-            "conversation_controls.put_temperature must be finite and non-negative".into(),
-        );
+        problems
+            .push("conversation_controls.put_temperature must be finite and non-negative".into());
     }
     if controls.put_max_tokens == Some(0) {
         problems.push("conversation_controls.put_max_tokens must be greater than zero".into());
@@ -1675,9 +1672,7 @@ fn scenario_workspace_limits(
         max_read_lines: limits.max_read_lines.unwrap_or(defaults.max_read_lines),
         max_grep_matches: limits.max_grep_matches.unwrap_or(defaults.max_grep_matches),
         max_line_len: limits.max_line_len.unwrap_or(defaults.max_line_len),
-        max_output_bytes: limits
-            .max_output_bytes
-            .unwrap_or(defaults.max_output_bytes),
+        max_output_bytes: limits.max_output_bytes.unwrap_or(defaults.max_output_bytes),
     }
 }
 
@@ -1722,11 +1717,8 @@ fn spawn_investigation(
     let put_thinking_level = req.put_thinking_level;
     let sim_thinking_level = runtime.settings.sim_thinking_level;
     let workspace_limits = scenario_workspace_limits(&runtime.settings);
-    let (runner_options, conversation_controls) = resolved_conversation_controls(
-        &req.conversation_controls,
-        &runtime,
-        &workspace_limits,
-    );
+    let (runner_options, conversation_controls) =
+        resolved_conversation_controls(&req.conversation_controls, &runtime, &workspace_limits);
     let workspace_files = runtime.workspace_seed.file_count();
     let workspace_hash = attributes::workspace_hash(&runtime.workspace_seed);
     let attributes = attributes::with_execution_attributes(
@@ -1745,10 +1737,7 @@ fn spawn_investigation(
     let mut attributes = attributes;
     attributes.insert("scenario_id".into(), req.scenario_id.clone());
     attributes.insert("scenario_revision".into(), scenario_revision.to_string());
-    attributes.insert(
-        "scenario_hash".into(),
-        scenario_definition_hash.clone(),
-    );
+    attributes.insert("scenario_hash".into(), scenario_definition_hash.clone());
 
     state.jobs.lock().unwrap().insert(
         id.clone(),
@@ -1782,7 +1771,10 @@ fn spawn_investigation(
             // The scenario disappeared between the lookup and here, which the
             // store lock makes impossible; fail loudly rather than run an
             // unpinned investigation.
-            eprintln!("could not pin scenario {} for investigation {id}: {error}", req.scenario_id);
+            eprintln!(
+                "could not pin scenario {} for investigation {id}: {error}",
+                req.scenario_id
+            );
         }
     }
 
@@ -1904,11 +1896,7 @@ fn spawn_investigation(
         // A finished investigation still pins the scenario it ran; only the
         // "running" flag changes, so deletion stops being blocked by liveness
         // while the reference (and thus the lock) remains.
-        state2
-            .scenarios
-            .lock()
-            .unwrap()
-            .finish_investigation(&id2);
+        state2.scenarios.lock().unwrap().finish_investigation(&id2);
     });
 
     id
@@ -3188,7 +3176,10 @@ mod tests {
     fn simulator_settings_resolve_from_the_scenario_and_reject_old_controls() {
         // Lua runs exactly when the scenario supplies an implementation, and
         // the settings carry only its limits. There is no enable switch.
-        let definition = definition_with_tools(vec![scenario_tool("lookup", Some("return function() return {response=1} end"))]);
+        let definition = definition_with_tools(vec![scenario_tool(
+            "lookup",
+            Some("return function() return {response=1} end"),
+        )]);
         let runtime = prompt_explore::simulate::ScenarioRuntime::from_definition(
             &definition,
             Workspace::empty(),
@@ -3209,7 +3200,10 @@ mod tests {
         );
 
         // A scenario's Lua limits are honored, and remain validated.
-        let mut limited = definition_with_tools(vec![scenario_tool("lookup", Some("return function() return {response=1} end"))]);
+        let mut limited = definition_with_tools(vec![scenario_tool(
+            "lookup",
+            Some("return function() return {response=1} end"),
+        )]);
         limited.simulation.lua = Some(prompt_explore::model::lua::LuaOptions {
             max_instructions: 12345,
             ..Default::default()
@@ -3239,8 +3233,14 @@ mod tests {
         .unwrap();
         let problem = conversation_controls_problem(&migrated).unwrap();
         assert!(problem.contains("sim_max_repair_attempts"), "{problem}");
-        assert!(problem.contains("simulation.max_repair_attempts"), "{problem}");
-        assert!(problem.contains("POST /api/scenarios/{id}/fork"), "{problem}");
+        assert!(
+            problem.contains("simulation.max_repair_attempts"),
+            "{problem}"
+        );
+        assert!(
+            problem.contains("POST /api/scenarios/{id}/fork"),
+            "{problem}"
+        );
     }
 
     #[test]
@@ -3683,7 +3683,13 @@ mod tests {
         assert_eq!(created["revision"], 1);
 
         // Readable, editable, no dependents yet.
-        let (code, view) = json_request(&app, "GET", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        let (code, view) = json_request(
+            &app,
+            "GET",
+            &format!("/api/scenarios/{id}"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(view["editable"], true);
         assert_eq!(view["label"], "trial");
@@ -3694,7 +3700,8 @@ mod tests {
             "expected_revision": 1,
             "scenario": {"world": "second world", "tools": [], "input_domain": {}}
         });
-        let (code, edited) = json_request(&app, "PATCH", &format!("/api/scenarios/{id}"), patch).await;
+        let (code, edited) =
+            json_request(&app, "PATCH", &format!("/api/scenarios/{id}"), patch).await;
         assert_eq!(code, StatusCode::OK, "{edited}");
         assert_eq!(edited["revision"], 2);
         assert_ne!(edited["definition_hash"], created["definition_hash"]);
@@ -3704,9 +3711,13 @@ mod tests {
             "expected_revision": 1,
             "scenario": {"world": "third world", "tools": [], "input_domain": {}}
         });
-        let (code, error) = json_request(&app, "PATCH", &format!("/api/scenarios/{id}"), stale).await;
+        let (code, error) =
+            json_request(&app, "PATCH", &format!("/api/scenarios/{id}"), stale).await;
         assert_eq!(code, StatusCode::CONFLICT, "{error}");
-        assert!(error["error"].as_str().unwrap().contains("revision 2"), "{error}");
+        assert!(
+            error["error"].as_str().unwrap().contains("revision 2"),
+            "{error}"
+        );
 
         // An accepted investigation pins it: the edit is refused with guidance.
         let investigation_id = "inv-pinning";
@@ -3716,7 +3727,13 @@ mod tests {
             .unwrap()
             .attach_investigation(&id, investigation_id)
             .unwrap();
-        let (code, view) = json_request(&app, "GET", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        let (code, view) = json_request(
+            &app,
+            "GET",
+            &format!("/api/scenarios/{id}"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(view["editable"], false);
         assert_eq!(view["investigation_ids"][0], investigation_id);
@@ -3743,7 +3760,10 @@ mod tests {
         )
         .await;
         assert_eq!(code, StatusCode::CONFLICT, "{error}");
-        assert!(error["error"].as_str().unwrap().contains("running"), "{error}");
+        assert!(
+            error["error"].as_str().unwrap().contains("running"),
+            "{error}"
+        );
 
         // Once it has stopped, the reference still pins the scenario (the
         // definition it ran must not change) and a plain delete names the
@@ -3753,9 +3773,18 @@ mod tests {
             .lock()
             .unwrap()
             .finish_investigation(investigation_id);
-        let (code, error) = json_request(&app, "DELETE", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        let (code, error) = json_request(
+            &app,
+            "DELETE",
+            &format!("/api/scenarios/{id}"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(code, StatusCode::CONFLICT, "{error}");
-        assert!(error["error"].as_str().unwrap().contains("cascade=true"), "{error}");
+        assert!(
+            error["error"].as_str().unwrap().contains("cascade=true"),
+            "{error}"
+        );
 
         // A fork is editable immediately and carries the correction note.
         let (code, forked) = json_request(
@@ -3770,11 +3799,20 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::CREATED, "{forked}");
         let fork_id = forked["id"].as_str().unwrap().to_string();
-        let (_, fork_view) = json_request(&app, "GET", &format!("/api/scenarios/{fork_id}"), serde_json::json!({})).await;
+        let (_, fork_view) = json_request(
+            &app,
+            "GET",
+            &format!("/api/scenarios/{fork_id}"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(fork_view["editable"], true);
         assert_eq!(fork_view["correction"]["scenario_id"], id);
         assert_eq!(fork_view["correction"]["revision"], 2);
-        assert_eq!(fork_view["correction"]["reason"], "grep matched nested paths");
+        assert_eq!(
+            fork_view["correction"]["reason"],
+            "grep matched nested paths"
+        );
         assert_eq!(fork_view["label"], "corrected");
 
         // Cascade removes the scenario and reports what depended on it.
@@ -3787,10 +3825,22 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK, "{deleted}");
         assert_eq!(deleted["cascade_investigations"][0], investigation_id);
-        let (code, _) = json_request(&app, "GET", &format!("/api/scenarios/{id}"), serde_json::json!({})).await;
+        let (code, _) = json_request(
+            &app,
+            "GET",
+            &format!("/api/scenarios/{id}"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(code, StatusCode::NOT_FOUND);
         // The fork survives its predecessor.
-        let (code, _) = json_request(&app, "GET", &format!("/api/scenarios/{fork_id}"), serde_json::json!({})).await;
+        let (code, _) = json_request(
+            &app,
+            "GET",
+            &format!("/api/scenarios/{fork_id}"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
     }
 
@@ -3839,7 +3889,10 @@ mod tests {
         });
         let (code, error) = json_request(&app, "POST", "/api/scenarios", broken).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
-        assert!(error["error"].as_str().unwrap().contains("lookup"), "{error}");
+        assert!(
+            error["error"].as_str().unwrap().contains("lookup"),
+            "{error}"
+        );
 
         // Run a probe: two calls in one session, plus a schema-invalid one.
         let (code, submitted) = json_request(
@@ -3867,7 +3920,13 @@ mod tests {
         assert_eq!(calls[0]["response"]["id"], "A-1");
         assert_eq!(calls[0]["lua_execution"]["outcome"], "computed");
         assert_eq!(calls[0]["lua_execution"]["tool"], "lookup");
-        assert_eq!(calls[0]["lua_execution"]["source_hash"].as_str().unwrap().len(), 64);
+        assert_eq!(
+            calls[0]["lua_execution"]["source_hash"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
         // Schema-invalid arguments are in-band errors, exactly as in a run —
         // and they never reach the implementation.
         assert!(
@@ -3974,7 +4033,10 @@ mod tests {
         });
         let (code, error) = json_request(&app, "POST", "/api/investigations", with_tools).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
-        assert!(error["error"].as_str().unwrap().contains("scenario"), "{error}");
+        assert!(
+            error["error"].as_str().unwrap().contains("scenario"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

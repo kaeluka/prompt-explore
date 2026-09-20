@@ -64,9 +64,10 @@ narrative and trace — can catch it. The user is the loop; they see what
 happened, not what was supposed to happen.
 
 **Every LLM phase is an observable status.** An investigation's LLM work is
-input resolution, optional tool preparation, and the PUT tool loop.
-`GET /api/investigations/{id}` must report `resolving_inputs`, `preparing_tools`,
-or `put_loop` (and the UI must show it), never a bare "running".
+input resolution and the PUT tool loop. `GET /api/investigations/{id}` must
+report `resolving_inputs` or `put_loop` (and the UI must show it), never a bare
+"running". There is no preparation phase: nothing is compiled, generated or
+authored during a run.
 
 **Environments are narratives, not data.** A scenario is a world
 *specification* — facts, completeness assertions, rendering instructions —
@@ -83,15 +84,29 @@ it picks one from the domain, fills the template, and the chosen value is
 reported in the trace's `resolved_inputs` so a trace is reproducible.
 This is the property-based-testing move — describe the domain, sample it.
 
-**A scenario is a value, not a record.** It carries no identity (`id`):
-it is `(world, input_domain, user_message)` and the run output embeds the
-scenario *by value* on the investigation, never by id or index. Correlation is
-content-equality.
+**A scenario definition is a reusable value; referencing it pins it.** A
+definition is `(world, input_domain, user_message, simulator_notes, tools[],
+simulation settings)` plus its initial workspace — authored outside the harness
+and registered once (`POST /api/scenarios`). Investigations reference it by
+`scenario_id` (never by index) and report the exact `scenario_revision` and
+`scenario_definition_hash` they ran, plus the narrative by value. The rules that
+make reuse trustworthy live in core (`scenario::ScenarioStore`), not in HTTP
+handlers: editable exactly while unreferenced, pinned the moment an
+investigation is accepted (finished runs keep pinning it), stale edits refused,
+deletion refused while anything is running and refused without `cascade=true`
+when dependents exist, and forking shares the immutable workspace seed instead
+of re-uploading. A corrected definition is a NEW revision that names what it
+corrects, so "which traces ran the old one" is a fact, not a guess.
 
 **The consumer owns simulation quality.** Whoever consumes an
 investigation's output judges whether the tool simulation was good enough.
-If it wasn't, the remediation is a user action — sharpen the scenario and
-re-investigate — not harness machinery. The harness's job ends at
+The caller develops and tests a world BEFORE spending investigations, with
+simulation probes (`POST /api/scenarios/{id}/simulations`): caller-submitted
+tool calls run through the same engine an investigation uses, with per-call
+responses and provenance, and they need no local Lua toolchain. If the
+simulation still wasn't good enough, the remediation is a user action — sharpen
+the scenario (edit it, or fork a pinned one) and re-probe/re-investigate — not
+harness machinery. The harness's job ends at
 transparency: surface the narrative, the trace, and divergence signals
 (e.g. a tool response that contradicts the stated facts — the caller,
 reading the trace against the narrative, flags it; there is no in-harness
@@ -105,7 +120,8 @@ operates under.
 scenario-generation endpoint and no generation-on-submit: an optional
 `scenario` field with an "absent means generate" default is *easy, not
 simple* — one endpoint, one contract. The operator's agent (e.g. Claude)
-writes scenarios; the harness evaluates them. When authoring a scenario,
+writes scenarios (and any Lua implementations); the harness validates,
+executes and reports. When authoring a scenario,
 the world is the ground truth and must pin four things (all NL, all
 visible to the simulator and the caller who reads the trace):
 
@@ -148,7 +164,10 @@ The API map is named `attributes` (not `tags`; do not add a compatibility alias)
 System attributes (resolved model/thinking settings, prompt/workspace hashes) are
 immutable. Custom attributes are editable; `label` is the UI display name. It
 changes group identity only if explicitly selected as a grouping key.
-Visible group labels are slash-separated attribute VALUES in `group_by` order
+System attributes include the pinned scenario (`scenario_id`,
+`scenario_revision`, `scenario_hash`), so a corrected definition is visible as a
+different cohort rather than a silent mix. Visible group labels are
+slash-separated attribute VALUES in `group_by` order
 (never the opaque group hash). Caller-owned values are shown completely—never
 ellipsis-truncated; model names use their basename and content hashes use a
 labeled 8-character prefix, with full source values retained in `attributes`.
@@ -182,35 +201,44 @@ comparisons; defaults do not infer an experiment's intended cohort. Catalog
 availability does not verify generation or balance; no hidden charged readiness probe.
 See `docs/design/evidence-first.md`.
 
-## Experimental Lua simulation
+## Lua tool implementations (caller-authored)
 
-`conversation_controls.lua_simulation` deliberately explores an **optional
-performance backend**, not deterministic enforcement of narrative fidelity.
-Enable it with
-`conversation_controls.lua_simulation: {}` (omit/null keeps LLM-only behavior).
-The simulator authors ordinary Lua in `.prompt-explore/tools.lua`, initially
-fallback-only. A handler may call `PleaseSimulateException` for selected inputs;
-missing handlers also delegate. Computed and LLM responses enter the SAME
-conversation. Runtime errors are distinct evidence, not simulated tool errors:
-staged workspace writes are rolled back before LLM fallback. No code is an
-oracle: the caller judges the generated source and traces against the narrative.
-Do not generalize this into automatic caching or a narrative-enforcement DSL.
+`conversation_controls.lua_simulation` is gone. A scenario tool carries an
+optional `lua_source`; supplying it is what makes Lua run (the `simulation.lua`
+object carries only resource limits — there is no enable switch). The harness
+executes supplied code and NEVER generates, repairs or rewrites it: no
+preparation phase, no generated fallback module, no
+`.prompt-explore/tools.lua` artifact, no model-driven specialization during a
+fallback. That whole failure class (an hour-long authoring loop that could kill
+a run) is removed rather than bounded.
 
-The `.prompt-explore` namespace is reserved private authoring support, rejected
-in uploads and inaccessible through application Lua workspace capabilities. Native
-simulator tools may access it to author programs. Root directory aliases `.` and
-empty path are equivalent; host grep is literal, not regex or Lua-pattern matching.
-Unsupported requested semantics should delegate, not silently return empty results.
+A handler is a chunk that RETURNS `function(args, ctx)` and returns
+`{response=..., state_patch=...}` (write tools only). Missing implementations and
+`PleaseSimulateException("reason")` delegate that one call to the simulator LLM;
+runtime errors and limits also delegate, with distinct error evidence, and their
+staged workspace writes are rolled back before the LLM runs. Computed and
+rendered responses enter the SAME conversation. Each attempt records the tool
+name, the exact `source_hash`, the outcome and any discarded operations, so
+evidence names the implementation revision that ran.
 
-The source/revisions and setup work are trace artifacts, visible beside resolved
-inputs. Each Lua attempt names its revision and computed/fallback/error outcome.
-Each investigation reports input-resolution / tool-preparation / PUT-loop phase;
-concurrent investigations can be in different phases. Execution limits are explicit,
-validated, hard-ceilinged controls; workspace results are byte-bounded before
-construction; the VM exposes only existing in-memory workspace operations.
-Randomness/time capabilities are deferred. The in-process sandbox has cooperative
-CPU deadlines, not OS process isolation; native operations cannot be preempted
-mid-call. Keep the backend experimental while assessing semantics and speed.
+`lua_source` is simulator-private: it never appears in the contract the prompt
+under test sees, and it may encode ground truth the PUT has to discover.
+
+The `.prompt-explore` namespace remains reserved (rejected in uploads, hidden
+from application Lua workspace capabilities). Native simulator tools do not need
+it any more for authoring, but removing the reservation is a separate change.
+
+No code is an oracle: `computed` means the code ran, not that it is faithful. The
+caller judges the source and the traces against the narrative. Do not generalize
+this into automatic caching, an in-harness fidelity judge, or a
+narrative-enforcement DSL. Do not add a Lua package system: helpers stay local to
+each source chunk.
+
+Execution limits are explicit, validated, hard-ceilinged controls; workspace
+results are byte-bounded before construction; the VM exposes only existing
+in-memory workspace operations. Randomness/time capabilities are deferred. The
+in-process sandbox has cooperative CPU deadlines, not OS process isolation;
+native operations cannot be preempted mid-call.
 
 ## Repo layout
 
@@ -218,8 +246,9 @@ Cargo workspace:
 
 - `core/` — the library. All logic lives here and must stay usable standalone
   (lib / CLI / examples). Pure model layer (`model/`), LLM abstraction (`llm/`),
-  simulation (`simulate/`), and the investigation orchestrator (`generate/`).
-  There is no judge module — the caller is the judge.
+  simulation (`simulate/`), the reusable-scenario registry and simulation probes
+  (`scenario/`), and the investigation orchestrator (`generate/`). There is no
+  judge module — the caller is the judge.
 - `server/` — thin axum wrapper (HTTP + web UI). **No business logic here.**
   Job-based API (`POST /api/investigations` → poll `GET /api/investigations/:id`).
   The job store is **in memory** — jobs (and any caller-supplied annotations on

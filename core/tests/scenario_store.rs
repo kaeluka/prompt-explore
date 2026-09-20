@@ -37,7 +37,9 @@ fn is_empty(workspace: &Workspace) -> bool {
 #[test]
 fn edit_probe_edit_is_allowed_while_unreferenced() {
     let mut store = ScenarioStore::new();
-    let id = store.create(definition("first"), seeded(), None, 1).unwrap();
+    let id = store
+        .create(definition("first"), seeded(), None, 1)
+        .unwrap();
     assert_eq!(store.get(&id).unwrap().revision, 1);
     assert!(store.get(&id).unwrap().editable());
 
@@ -48,9 +50,16 @@ fn edit_probe_edit_is_allowed_while_unreferenced() {
     assert_eq!(revision, 2);
     let record = store.get(&id).unwrap();
     assert_eq!(record.definition.world, "second");
-    assert_eq!(record.workspace.content_hash(), before, "kept the workspace seed");
+    assert_eq!(
+        record.workspace.content_hash(),
+        before,
+        "kept the workspace seed"
+    );
     // The hash follows the definition, never the display metadata.
-    assert_ne!(record.definition_hash, scenario_hash(&definition("first"), &seeded()));
+    assert_ne!(
+        record.definition_hash,
+        scenario_hash(&definition("first"), &seeded())
+    );
 }
 
 fn scenario_hash(definition: &ScenarioDefinition, workspace: &Workspace) -> String {
@@ -62,12 +71,16 @@ fn scenario_hash(definition: &ScenarioDefinition, workspace: &Workspace) -> Stri
 #[test]
 fn a_stale_expected_revision_is_refused() {
     let mut store = ScenarioStore::new();
-    let id = store.create(definition("w"), Workspace::empty(), None, 1).unwrap();
+    let id = store
+        .create(definition("w"), Workspace::empty(), None, 1)
+        .unwrap();
     store
         .replace(&id, 1, definition("v2"), WorkspaceAction::Keep, None, 2)
         .unwrap();
     match store.replace(&id, 1, definition("v3"), WorkspaceAction::Keep, None, 3) {
-        Err(StoreError::StaleRevision { expected, current, .. }) => {
+        Err(StoreError::StaleRevision {
+            expected, current, ..
+        }) => {
             assert_eq!((expected, current), (1, 2));
         }
         other => panic!("expected a stale-revision conflict, got {other:?}"),
@@ -78,22 +91,46 @@ fn a_stale_expected_revision_is_refused() {
 #[test]
 fn referencing_an_investigation_pins_the_definition_until_it_is_deleted() {
     let mut store = ScenarioStore::new();
-    let id = store.create(definition("w"), Workspace::empty(), None, 1).unwrap();
+    let id = store
+        .create(definition("w"), Workspace::empty(), None, 1)
+        .unwrap();
     store.attach_investigation(&id, "inv-1").unwrap();
     assert!(!store.get(&id).unwrap().editable());
 
     let error = store
-        .replace(&id, 1, definition("changed"), WorkspaceAction::Keep, None, 2)
+        .replace(
+            &id,
+            1,
+            definition("changed"),
+            WorkspaceAction::Keep,
+            None,
+            2,
+        )
         .unwrap_err();
-    assert!(error.to_string().contains("pinned by 1 investigation"), "{error}");
-    assert!(error.to_string().contains("fork"), "the error suggests forking: {error}");
+    assert!(
+        error.to_string().contains("pinned by 1 investigation"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("fork"),
+        "the error suggests forking: {error}"
+    );
 
     // A finished investigation still pins the definition it actually ran.
     store.finish_investigation("inv-1");
     assert!(!store.get(&id).unwrap().editable());
-    assert!(store
-        .replace(&id, 1, definition("changed"), WorkspaceAction::Keep, None, 3)
-        .is_err());
+    assert!(
+        store
+            .replace(
+                &id,
+                1,
+                definition("changed"),
+                WorkspaceAction::Keep,
+                None,
+                3
+            )
+            .is_err()
+    );
 
     // Deleting the investigation unlocks it, and the revision moves on so old
     // probe results cannot be confused with the new contents.
@@ -101,7 +138,14 @@ fn referencing_an_investigation_pins_the_definition_until_it_is_deleted() {
     assert!(store.get(&id).unwrap().editable());
     assert_eq!(
         store
-            .replace(&id, 1, definition("finally"), WorkspaceAction::Keep, None, 4)
+            .replace(
+                &id,
+                1,
+                definition("finally"),
+                WorkspaceAction::Keep,
+                None,
+                4
+            )
             .unwrap(),
         2
     );
@@ -110,7 +154,9 @@ fn referencing_an_investigation_pins_the_definition_until_it_is_deleted() {
 #[test]
 fn deletion_requires_cascade_and_refuses_running_work() {
     let mut store = ScenarioStore::new();
-    let id = store.create(definition("w"), Workspace::empty(), None, 1).unwrap();
+    let id = store
+        .create(definition("w"), Workspace::empty(), None, 1)
+        .unwrap();
     store.attach_investigation(&id, "inv-1").unwrap();
     store.attach_investigation(&id, "inv-2").unwrap();
     store.finish_investigation("inv-2");
@@ -145,7 +191,9 @@ fn deletion_requires_cascade_and_refuses_running_work() {
 #[test]
 fn a_fork_shares_the_workspace_seed_and_records_its_correction() {
     let mut store = ScenarioStore::new();
-    let id = store.create(definition("original"), seeded(), None, 1).unwrap();
+    let id = store
+        .create(definition("original"), seeded(), None, 1)
+        .unwrap();
     store.attach_investigation(&id, "inv-1").unwrap();
 
     let fork = store
@@ -164,19 +212,35 @@ fn a_fork_shares_the_workspace_seed_and_records_its_correction() {
     assert_eq!(fork_record.revision, 1);
     assert!(fork_record.editable());
     // Sharing the immutable seed: same content, no re-upload needed.
-    assert_eq!(fork_record.workspace.content_hash(), seeded().content_hash());
+    assert_eq!(
+        fork_record.workspace.content_hash(),
+        seeded().content_hash()
+    );
     let correction = fork_record.correction.as_ref().unwrap();
     assert_eq!(correction.scenario_id, id);
     assert_eq!(correction.revision, 1);
 
     // A fork may be edited, and its correction survives its predecessor.
     store
-        .replace(&fork, 1, definition("corrected"), WorkspaceAction::Keep, None, 3)
+        .replace(
+            &fork,
+            1,
+            definition("corrected"),
+            WorkspaceAction::Keep,
+            None,
+            3,
+        )
         .unwrap();
     store.finish_investigation("inv-1");
     store.delete(&id, true, |_| false).unwrap();
     assert_eq!(
-        store.get(&fork).unwrap().correction.as_ref().unwrap().reason,
+        store
+            .get(&fork)
+            .unwrap()
+            .correction
+            .as_ref()
+            .unwrap()
+            .reason,
         "the grep handler matched paths it should not"
     );
 
@@ -201,7 +265,14 @@ fn workspace_actions_replace_and_clear_the_seed() {
         "clear produces the empty workspace"
     );
     store
-        .replace(&id, 2, definition("w"), WorkspaceAction::Replace(seeded()), None, 3)
+        .replace(
+            &id,
+            2,
+            definition("w"),
+            WorkspaceAction::Replace(seeded()),
+            None,
+            3,
+        )
         .unwrap();
     assert!(!is_empty(&store.get(&id).unwrap().workspace));
 }

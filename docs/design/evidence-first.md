@@ -10,8 +10,9 @@ prose, confused token/step exhaustion, and timed jobs using response-file mtimes
 
 `GET /api/investigations/{id}/evidence` is the preferred reading/archival surface.
 It contains one `turns` array with every actual tool response and all supporting
-provenance, plus the world, PUT, resolved controls, original budget, input values,
-Lua revisions, failure/usage and caller annotations. Unlike the polling view it
+provenance, plus the world, PUT, effective tool contracts, the scenario revision
+(and its supplied Lua implementations), resolved controls, original budget, input
+values, failure/usage and caller annotations. Unlike the polling view it
 does not repeat terminal turns in both progress and result. It is also available
 while running and after failure, retaining successful sibling exchanges.
 
@@ -31,8 +32,10 @@ Core `RunExecution` records:
   the token cap is retained as `execution.budget_cutoff_completion`: content,
   thinking and raw tool requests, explicitly unaccepted and not executed. No
   simulated responses are invented for those requests.
-- `timing`: monotonic `elapsed_ms`, `resolving_inputs_ms`, `preparing_tools_ms`,
-  `put_loop_ms`. Live snapshots refresh the active phase; terminal values freeze.
+- `timing`: monotonic `elapsed_ms`, `resolving_inputs_ms`, `put_loop_ms`. Live
+  snapshots refresh the active phase; terminal values freeze. There is no
+  preparation phase and no preparation timing: nothing is compiled or generated
+  during a run.
 - `unrendered_call`: the tool request whose response could not be rendered when a
   run dies inside a tool batch. Its siblings appear normally in `turns`; this
   request has no response and none is invented, and the failure text names the
@@ -79,7 +82,8 @@ remain frontier candidates. A share link encodes JSON `group_by`, `axes` and
 `attributes` in the URL; it never includes authentication. Back/forward restores
 view state. Draft assessments, grades and attributes survive regrouping/filtering.
 
-System provenance adds `simulation_backend` (`llm`/`lua`), `step_budget`, and
+System provenance adds `scenario_id`/`scenario_revision`/`scenario_hash`,
+`simulation_backend` (`llm`/`lua`), `step_budget`, and
 `token_budget` (decimal or `unlimited`). Group by the actual variables being
 compared. The existing default PUT-model/thinking/prompt grouping deliberately
 does not infer a backend experiment; without adding the backend key it merges
@@ -87,22 +91,25 @@ backends. This is a recorded design decision, not an oversight: the harness must
 not guess which axis a caller is varying. Missing keys still form explicit null
 groups.
 
-Lua sources can be viewed side by side across investigations. Fresh runs generate
-fresh programs: changing a budget and observing a different adapter is not
-proof that the budget caused the behavioral difference.
+Lua sources can be viewed side by side across investigations. They are the
+scenario's SUPPLIED implementations, identified by source hash, so a difference
+between two runs is either a different scenario revision or a semantic model
+difference — never a freshly generated program. Group by `scenario_revision`
+(or `scenario_hash`) when a scenario was corrected mid-campaign, and re-run only
+the traces that ran the superseded definition.
 
 ## Lua workspace capability boundaries
 
 Application Lua handlers accept `.` or empty directory path as root. Their
 workspace view cannot list/read/grep/write `.prompt-explore` support artifacts.
-Native simulator authoring tools can still edit the private program, and source,
-revisions and setup operations remain evidence. Uploads colliding with the
-reserved private namespace are rejected. This is capability isolation, not
-validation of narrative semantics.
+Uploads colliding with the reserved private namespace are rejected. The supplied
+source and each attempt's provenance (tool, source hash, outcome, discarded
+operations) remain evidence. This is capability isolation, not validation of
+narrative semantics.
 
-Host grep is literal substring search; Lua patterns are not regexes. Authoring
-instructions require adapting the caller's contract or delegating unsupported
-semantics, rather than returning false-empty results. An unspecified search
+Host grep is literal substring search; Lua patterns are not regexes. The
+implementation contract requires adapting the caller's contract or delegating
+unsupported semantics, rather than returning false-empty results. An unspecified search
 'pattern' is ambiguous: leave that handler to the LLM rather than arbitrarily
 choosing the host's literal semantics. Result SHAPE gets the same treatment: a
 declared shape must be rendered exactly and identically across runs, and an
@@ -146,3 +153,5 @@ assessment atomicity, nonduplicated evidence/auth, capability boundaries and
 frontier timings. `scripts/test-evidence-ui.cjs` checks the UI with a mocked API.
 Matched live Lua scenarios and spec-in-world caller probes are documented in
 `docs/dogfood/evidence-first.md`; simulation reliability remains caller-owned.
+Scenario identity, pinning and probe semantics are in
+`docs/design/scenarios.md`.

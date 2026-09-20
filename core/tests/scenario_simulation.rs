@@ -74,7 +74,11 @@ fn put(tools: Vec<ToolSchema>) -> PromptUnderTest {
     }
 }
 
-fn runtime(definition: &ScenarioDefinition, put: &PromptUnderTest, workspace: Workspace) -> ScenarioRuntime {
+fn runtime(
+    definition: &ScenarioDefinition,
+    put: &PromptUnderTest,
+    workspace: Workspace,
+) -> ScenarioRuntime {
     let _ = put;
     ScenarioRuntime::from_definition(definition, workspace)
 }
@@ -108,7 +112,10 @@ async fn supplied_implementations_compute_and_delegate_in_one_conversation() {
         tool_with("lookup", SideEffect::Read, Some(source)),
         tool_with("read", SideEffect::Read, None),
     ]);
-    let put = put(vec![tool("lookup", SideEffect::Read), tool("read", SideEffect::Read)]);
+    let put = put(vec![
+        tool("lookup", SideEffect::Read),
+        tool("read", SideEffect::Read),
+    ]);
     let put_client = Arc::new(MockLlmClient::scripted(vec![
         calls(vec![
             call("lookup", json!({"compute": true})),
@@ -128,7 +135,16 @@ async fn supplied_implementations_compute_and_delegate_in_one_conversation() {
     );
     let runtime = runtime(&definition, &put, Workspace::empty());
     let trace = runner
-        .run(&put, &runtime, &Budget { max_steps_per_trace: 4, max_tokens: None }, None, None)
+        .run(
+            &put,
+            &runtime,
+            &Budget {
+                max_steps_per_trace: 4,
+                max_tokens: None,
+            },
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -147,7 +163,13 @@ async fn supplied_implementations_compute_and_delegate_in_one_conversation() {
     // 2) explicitly delegated, with the record kept as evidence.
     let delegated = exchanges[1].lua_execution.as_ref().unwrap();
     assert_eq!(delegated.outcome, LuaOutcome::Fallback);
-    assert!(delegated.detail.as_ref().unwrap().contains("needs simulation"));
+    assert!(
+        delegated
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("needs simulation")
+    );
     assert_eq!(exchanges[1].response, "I saw 17");
     // 3) a tool with no implementation never attempts Lua at all, and the
     //    simulator can read the file the Lua handler committed.
@@ -172,7 +194,10 @@ async fn a_crashing_handler_rolls_back_and_delegates() {
       c.workspace.write({path='x', content='uncommitted'})
       error('broken handler')
     end"#;
-    let sim = Arc::new(MockLlmClient::scripted(vec![reply(json!({"response": "rendered"})), reply(json!({"response": "rendered again"}))]));
+    let sim = Arc::new(MockLlmClient::scripted(vec![
+        reply(json!({"response": "rendered"})),
+        reply(json!({"response": "rendered again"})),
+    ]));
     let definition = definition(vec![tool_with("lookup", SideEffect::Read, Some(broken))]);
     let put = put(vec![tool("lookup", SideEffect::Read)]);
     let put_client = Arc::new(MockLlmClient::scripted(vec![
@@ -192,7 +217,10 @@ async fn a_crashing_handler_rolls_back_and_delegates() {
         .run(
             &put,
             &runtime(&definition, &put, Workspace::empty()),
-            &Budget { max_steps_per_trace: 4, max_tokens: None },
+            &Budget {
+                max_steps_per_trace: 4,
+                max_tokens: None,
+            },
             None,
             None,
         )
@@ -207,7 +235,16 @@ async fn a_crashing_handler_rolls_back_and_delegates() {
     // The rolled-back write never reached the workspace: the simulator's read
     // of the same path still fails in the second identical call.
     let second = &trace.turns[0].tool_exchanges[1];
-    assert!(second.lua_execution.is_none() || second.lua_execution.as_ref().unwrap().discarded_workspace_ops.len() == 1);
+    assert!(
+        second.lua_execution.is_none()
+            || second
+                .lua_execution
+                .as_ref()
+                .unwrap()
+                .discarded_workspace_ops
+                .len()
+                == 1
+    );
 }
 
 /// Nothing in the harness asks a model to write or repair code: with
@@ -222,13 +259,24 @@ async fn no_preparation_or_authoring_calls_happen() {
         calls(vec![call("lookup", json!({}))]),
         reply(json!({"response": "done"})),
     ]));
-    let runner = Runner::new(put_client, "put", None, sim.clone(), "sim", None, RunnerOptions::default());
+    let runner = Runner::new(
+        put_client,
+        "put",
+        None,
+        sim.clone(),
+        "sim",
+        None,
+        RunnerOptions::default(),
+    );
     let progress = progress_with_message(None);
     let trace = runner
         .run(
             &put,
             &runtime(&definition, &put, Workspace::empty()),
-            &Budget { max_steps_per_trace: 4, max_tokens: None },
+            &Budget {
+                max_steps_per_trace: 4,
+                max_tokens: None,
+            },
             None,
             Some(progress.clone()),
         )
@@ -256,9 +304,18 @@ async fn probes_render_through_the_shared_engine_and_carry_provenance() {
     };
     let request = ProbeRequest {
         tool_calls: vec![
-            simulation::ToolCall { name: "echo".into(), args: json!({"value": 1}) },
-            simulation::ToolCall { name: "nope".into(), args: json!({}) },
-            simulation::ToolCall { name: "echo".into(), args: json!({"value": 2}) },
+            simulation::ToolCall {
+                name: "echo".into(),
+                args: json!({"value": 1}),
+            },
+            simulation::ToolCall {
+                name: "nope".into(),
+                args: json!({}),
+            },
+            simulation::ToolCall {
+                name: "echo".into(),
+                args: json!({"value": 2}),
+            },
         ],
         resolved_inputs: None,
         expected_revision: Some(3),
@@ -267,7 +324,16 @@ async fn probes_render_through_the_shared_engine_and_carry_provenance() {
     };
     request.validate().unwrap();
     let progress = Arc::new(Mutex::new(ProbeProgress::new(0)));
-    run_probe(client, "sim", None, &target, &request, progress.clone(), || 0).await;
+    run_probe(
+        client,
+        "sim",
+        None,
+        &target,
+        &request,
+        progress.clone(),
+        || 0,
+    )
+    .await;
     let progress = progress.lock().unwrap();
     assert_eq!(progress.status, prompt_explore::scenario::ProbeStatus::Done);
     assert_eq!(progress.calls.len(), 3);
@@ -277,13 +343,15 @@ async fn probes_render_through_the_shared_engine_and_carry_provenance() {
         LuaOutcome::Computed
     );
     // An unknown tool is an in-band error, exactly as in a PUT run.
-    assert!(progress.calls[1]
-        .response
-        .as_ref()
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .contains("unknown tool 'nope'"));
+    assert!(
+        progress.calls[1]
+            .response
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("unknown tool 'nope'")
+    );
     assert_eq!(progress.calls[2].response.as_ref().unwrap()["echo"], 2);
 }
 
@@ -302,8 +370,14 @@ async fn a_failed_probe_keeps_completed_calls_and_says_where_it_stopped() {
     };
     let request = ProbeRequest {
         tool_calls: vec![
-            simulation::ToolCall { name: "lookup".into(), args: json!({}) },
-            simulation::ToolCall { name: "lookup".into(), args: json!({}) },
+            simulation::ToolCall {
+                name: "lookup".into(),
+                args: json!({}),
+            },
+            simulation::ToolCall {
+                name: "lookup".into(),
+                args: json!({}),
+            },
         ],
         resolved_inputs: None,
         expected_revision: None,
@@ -311,7 +385,16 @@ async fn a_failed_probe_keeps_completed_calls_and_says_where_it_stopped() {
         reason: None,
     };
     let progress = Arc::new(Mutex::new(ProbeProgress::new(0)));
-    run_probe(client, "sim", None, &target, &request, progress.clone(), || 0).await;
+    run_probe(
+        client,
+        "sim",
+        None,
+        &target,
+        &request,
+        progress.clone(),
+        || 0,
+    )
+    .await;
     let progress = progress.lock().unwrap();
     assert_eq!(
         progress.status,
@@ -323,7 +406,13 @@ async fn a_failed_probe_keeps_completed_calls_and_says_where_it_stopped() {
     );
     assert_eq!(progress.calls.len(), 1, "the failed call is retained");
     assert!(progress.calls[0].error.is_some());
-    assert!(progress.error.as_ref().unwrap().contains("could not be rendered"));
+    assert!(
+        progress
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("could not be rendered")
+    );
 }
 
 /// `max_calls` truncates the sequence explicitly, and the stop reason says so.
@@ -340,7 +429,10 @@ async fn max_calls_is_reported_as_a_call_limit_stop() {
     };
     let request = ProbeRequest {
         tool_calls: (1..=3)
-            .map(|n| simulation::ToolCall { name: "echo".into(), args: json!({"n": n}) })
+            .map(|n| simulation::ToolCall {
+                name: "echo".into(),
+                args: json!({"n": n}),
+            })
             .collect(),
         resolved_inputs: None,
         expected_revision: None,
@@ -348,7 +440,16 @@ async fn max_calls_is_reported_as_a_call_limit_stop() {
         reason: None,
     };
     let progress = Arc::new(Mutex::new(ProbeProgress::new(0)));
-    run_probe(client, "sim", None, &target, &request, progress.clone(), || 0).await;
+    run_probe(
+        client,
+        "sim",
+        None,
+        &target,
+        &request,
+        progress.clone(),
+        || 0,
+    )
+    .await;
     let progress = progress.lock().unwrap();
     assert_eq!(progress.calls.len(), 2);
     assert_eq!(
@@ -361,7 +462,8 @@ async fn max_calls_is_reported_as_a_call_limit_stop() {
 #[tokio::test]
 async fn explicit_inputs_are_validated_and_used_verbatim() {
     let mut definition = definition(vec![]);
-    definition.input_domain = HashMap::from([("tier".to_string(), "standard or premium".to_string())]);
+    definition.input_domain =
+        HashMap::from([("tier".to_string(), "standard or premium".to_string())]);
     let runtime = ScenarioRuntime::from_definition(&definition, Workspace::empty());
     let client = Arc::new(MockLlmClient::scripted(vec![]));
     // No declared-call sequence at all: resolution is the only simulator work,
@@ -404,7 +506,12 @@ fn definition_validation_names_the_offending_tool() {
         tool_with("dup", SideEffect::Read, None),
         tool_with("dup", SideEffect::Read, None),
     ]);
-    assert!(definition.validate().unwrap_err().contains("duplicate tool name"));
+    assert!(
+        definition
+            .validate()
+            .unwrap_err()
+            .contains("duplicate tool name")
+    );
     definition.tools = vec![tool_with(
         "broken",
         SideEffect::Read,
@@ -421,7 +528,10 @@ fn definition_validation_names_the_offending_tool() {
     )];
     definition.validate().unwrap();
     let twice = definition.implementations();
-    assert_eq!(twice[0].source_hash, definition.implementations()[0].source_hash);
+    assert_eq!(
+        twice[0].source_hash,
+        definition.implementations()[0].source_hash
+    );
     // The contract projection never carries the implementation source.
     let encoded = serde_json::to_string(&definition.tool_contracts()).unwrap();
     assert!(!encoded.contains("function()"));

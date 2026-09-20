@@ -237,7 +237,6 @@ const fmtAxisVal = v => v == null ? '—' : Math.abs(v) >= 1000 ? Math.round(v).
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({
   resolving_inputs: 'resolving input variables',
-  preparing_tools: 'preparing tool simulation',
   put_loop: 'running PUT tool loop',
 })[p] || p;
 
@@ -274,7 +273,7 @@ function LuaExecutionProvenance({ execution }) {
   const detailLabel = outcome === 'fallback' ? 'fallback reason'
     : outcome === 'error' ? 'Lua error' : 'detail';
   return html`<div class="lua-provenance">
-    <span class="uchip sim">Lua revision ${execution.program_revision}</span>
+    <span class="uchip sim">supplied Lua · ${execution.tool} · ${(execution.source_hash || '').slice(0, 8)}</span>
     <span>${outcome}</span>
     ${execution.detail ? html`<span>· ${detailLabel}: ${execution.detail}</span>` : null}
   </div>`;
@@ -350,46 +349,29 @@ function SourceCode({ source }) {
   </div>`;
 }
 
-function LuaRevision({ revision, index, current }) {
-  const diagnostic = revision.error == null ? '' : String(revision.error);
-  const content = html`<div class=${current ? 'lua-current' : 'lua-revision'}>
-    <div class="lua-revision-meta"><span class="mono">revision ${index}</span>${current ? ' · current' : ''}</div>
-    ${diagnostic ? html`<div class="lua-diagnostic">not executable: ${diagnostic}</div>` : null}
-    <${SourceCode} source=${revision.source} />
-  </div>`;
-  return current ? content : html`<details class="lua-revision"><summary><span class="mono">revision ${index}</span>${diagnostic ? ' · not executable' : ''}</summary>${content}</details>`;
-}
-
-function SetupEvidence({ program }) {
-  const ops = program.setup_workspace_ops || [];
-  const thinking = program.setup_thinking;
-  if (!ops.length && !(thinking && thinking.trim())) return null;
-  return html`<details style="margin-top:0.45rem">
-    <summary>setup simulator evidence${ops.length ? ` · ${ops.length} workspace op${ops.length===1?'':'s'}` : ''}</summary>
-    ${ops.length ? html`<${WsOps} ops=${ops} label="setup simulator workspace" />` : null}
-    ${thinking && thinking.trim() ? html`<${Thinking} side="sim" role="SIM · setup" text=${thinking} />` : null}
-  </details>`;
-}
-
-function SimulationProgram({ program }) {
-  if (!program) return null;
-  const revisions = Array.isArray(program.revisions) ? program.revisions : [];
-  const current = revisions.length - 1;
+/// The implementations the SCENARIO supplies for this run, as evidence: the
+/// caller authored them, the harness executed them. There are no generated
+/// revisions to display — a fix is a new scenario revision (fork it), and each
+/// exchange names the source hash it ran.
+function Implementations({ implementations }) {
+  const list = Array.isArray(implementations) ? implementations : [];
+  if (!list.length) return null;
   return html`<details class="lua-program">
-    <summary>SIM · Lua · <span class="mono">${program.path || '(unnamed program)'}</span>${current >= 0 ? ` · current revision ${current}` : ' · no revisions recorded'}</summary>
-    ${current >= 0 ? html`<${LuaRevision} revision=${revisions[current]} index=${current} current=${true} />` : null}
-    ${current > 0 ? html`<details style="margin-top:0.5rem"><summary>earlier revisions · ${current}</summary>
-      ${revisions.slice(0, current).map((revision, index) => html`<${LuaRevision} key=${index} revision=${revision} index=${index} current=${false} />`)}
-    </details>` : null}
-    <${SetupEvidence} program=${program} />
+    <summary>SIM · supplied Lua · ${list.length} tool${list.length === 1 ? '' : 's'} implemented</summary>
+    ${list.map((implementation, index) => html`<div class="lua-revision" key=${index}>
+      <div class="lua-revision-meta"><span class="mono">${implementation.tool}</span> · <span class="mono">${(implementation.source_hash || '').slice(0, 8)}</span></div>
+      <${SourceCode} source=${implementation.source} />
+    </div>`)}
   </details>`;
 }
 
 function Chat({ s }) {
   const out = [];
-  // The simulator's setup artifact sits beside resolved inputs, before the
-  // protagonist and even when setup fails before the first PUT turn.
-  if (s.simulation_program) out.push(html`<${SimulationProgram} key="lua" program=${s.simulation_program} />`);
+  // The scenario's supplied implementations sit beside resolved inputs: what
+  // CAN compute, before the protagonist and even when the run fails early.
+  if (s.implementations && s.implementations.length) {
+    out.push(html`<${Implementations} key="lua" implementations=${s.implementations} />`);
+  }
   // Resolved input bindings (sim agent's output) — first, SIM side.
   const ri = s.resolved_inputs;
   if (ri && Object.keys(ri).length) {
@@ -439,7 +421,7 @@ function ExecutionSummary({ execution, budget }) {
   return html`<div class=${`execution${capped ? ' capped' : ''}${failed ? ' failure' : ''}`}>
     <b>execution:</b> ${reason === 'final_completion' ? 'final completion' : capped ? `capped (${reason}) — done does not mean a final answer` : reason}
     <span class="mono"> · steps ${execution.steps_used ?? '—'} / ${budget?.max_steps_per_trace ?? '—'} · PUT tokens ${execution.put_tokens_used ?? '—'} / ${budget && budget.max_tokens == null ? 'unlimited' : budget?.max_tokens ?? '—'}</span>
-    <div class="meta">timing: elapsed ${ms(timing.elapsed_ms)} · inputs ${ms(timing.resolving_inputs_ms)} · tool preparation ${ms(timing.preparing_tools_ms)} · PUT loop ${ms(timing.put_loop_ms)}</div>
+    <div class="meta">timing: elapsed ${ms(timing.elapsed_ms)} · input resolution ${ms(timing.resolving_inputs_ms)} · PUT loop ${ms(timing.put_loop_ms)}</div>
     ${execution.budget_cutoff_completion ? html`<details open><summary>completion received at token cutoff — not accepted; tools were NOT executed</summary><pre class="step">${pretty(execution.budget_cutoff_completion)}</pre></details>` : null}
     ${execution.unrendered_call ? html`<details open><summary>tool request that could not be simulated — it has NO response; its siblings above are real</summary><pre class="step">${pretty(execution.unrendered_call)}</pre></details>` : null}
   </div>`;
@@ -511,10 +493,10 @@ const RESERVED_AXES = [
   ['sim_cache_read_tokens','higher'], ['sim_cost_usd','lower'],
   ['steps_per_trace_avg','lower'], ['steps_per_trace_min','lower'],
   ['steps_per_trace_max','lower'], ['steps_per_trace_stdev','lower'],
-  ['elapsed_ms','lower'], ['resolving_inputs_ms','lower'], ['preparing_tools_ms','lower'], ['put_loop_ms','lower'],
+  ['elapsed_ms','lower'], ['resolving_inputs_ms','lower'], ['put_loop_ms','lower'],
 ];
 const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null])[1];
-const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'simulation_backend', 'step_budget', 'token_budget']);
+const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
 const jobAttributes = j => (j && j.attributes) || {};
 const displayName = j => jobAttributes(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
 // This key deliberately mirrors the frontier request: selected attribute values
@@ -967,9 +949,14 @@ function EvidenceDownload({ id, token }) {
   return html`<div class="grow" style="margin:.35rem 0"><button onClick=${download}>download full evidence JSON</button><span class="meta">authenticated download; no token is put in the link</span>${msg ? html`<span class="meta">${msg}</span>` : null}</div>`;
 }
 function currentLuaSource(job) {
-  const p = job?.result?.trace?.simulation_program || job?.progress?.simulation_program;
-  const revisions = p?.revisions || [];
-  return { path: p?.path, revision: revisions.length - 1, source: revisions.length ? revisions[revisions.length - 1].source : null };
+  const list = job?.result?.trace?.implementations || job?.progress?.implementations || [];
+  if (!list.length) return { path: null, revision: null, source: null };
+  // Several tools may be implemented; show them together, each labeled.
+  return {
+    path: list.map(i => i.tool).join(', '),
+    revision: list[0].source_hash ? list[0].source_hash.slice(0, 8) : null,
+    source: list.map(i => `-- ${i.tool} (${(i.source_hash || '').slice(0, 8)})\n${i.source}`).join('\n\n'),
+  };
 }
 function SourceComparison({ j, jobs }) {
   const candidates = (jobs || []).filter(x => x.id !== j.id && currentLuaSource(x).source != null);
@@ -979,8 +966,8 @@ function SourceComparison({ j, jobs }) {
   if (mine.source == null || !candidates.length) return null;
   return html`<details><summary>compare Lua source with another investigation</summary><div class="meta">Side-by-side source evidence only; it does not judge fidelity or program equivalence.</div>
     <select aria-label="comparison investigation" value=${selectedId} onChange=${e => setOtherId(e.target.value)}>${candidates.map(x => html`<option value=${x.id}>${displayName(x)} · ${x.id.slice(0,8)}</option>`)}</select>
-    <div class="source-compare"><div><b class="meta">this job · ${mine.path || 'tools.lua'} · revision ${mine.revision}</b><${SourceCode} source=${mine.source} /></div>
-      <div><b class="meta">other job · ${other?.path || 'tools.lua'} · revision ${other?.revision ?? '—'}</b><${SourceCode} source=${other?.source || ''} /></div></div>
+    <div class="source-compare"><div><b class="meta">this job · supplied Lua · ${mine.path || '—'} · ${mine.revision || '—'}</b><${SourceCode} source=${mine.source} /></div>
+      <div><b class="meta">other job · supplied Lua · ${other?.path || '—'} · ${other?.revision || '—'}</b><${SourceCode} source=${other?.source || ''} /></div></div>
   </details>`;
 }
 
@@ -1007,7 +994,8 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache }) {
           ${putThinking ? html`<span class="uchip put" title="system attribute put_thinking">think ${putThinking}</span>` : null}
           ${simModel ? html`<span class="uchip sim" title="system attribute sim_model">${simModel}</span>` : null}
           ${simThinking ? html`<span class="uchip sim" title="system attribute sim_thinking">think ${simThinking}</span>` : null}
-          ${j.workspace_files ? html`<span class="uchip ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the uploaded zip; per-trace. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
+          ${j.scenario_id ? html`<span class="uchip ws" title=${`pinned scenario definition. Revision ${j.scenario_revision} (${(j.scenario_definition_hash || '').slice(0, 12)}). A correction elsewhere is a different revision; re-run only the traces you want re-run.`}>scenario ${j.scenario_id.slice(0, 8)} · r${j.scenario_revision}${attributes.scenario_revision && attributes.scenario_revision !== String(j.scenario_revision) ? ' (attr mismatch)' : ''}</span>` : null}
+          ${j.workspace_files ? html`<span class="uchip ws" title="simulation workspace: an in-memory filesystem the SIMULATOR consults (read/write/list_dir/grep), seeded from the scenario's uploaded archive; per-run. The agent under test never sees it.">ws · ${j.workspace_files} file${j.workspace_files===1?'':'s'}</span>` : null}
           <button class="del" title="delete this investigation (irreversible — removes the job, traces, grades, and attributes from server memory)" onClick=${() => onDelete(j.id)}>✕</button>
         </span>
       </h2>
@@ -1084,6 +1072,123 @@ function writeSharedState(groupBy, axes, attributes, replace = false) {
 function cardMatchesAttributes(job, filters) {
   const attrs = jobAttributes(job);
   return Object.entries(filters).every(([key, value]) => Object.prototype.hasOwnProperty.call(attrs, key) && attrs[key] === value);
+}
+
+/// Scenarios are reusable worlds: register once (narrative, tools with optional
+/// Lua implementations, simulator settings, initial workspace), test with direct
+/// tool-call probes, then reference the id from many investigations. This panel
+/// is a workbench, not a judge: it shows responses, provenance and workspace
+/// operations, and the caller decides whether the simulation is good enough.
+function ScenarioPanel({ token }) {
+  const [list, setList] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [probes, setProbes] = useState([]);
+  const [calls, setCalls] = useState('[{"name": "lookup", "args": {"id": "A-1"}}]');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try {
+      const r = await fetch('/api/scenarios', { headers: authHeaders(token) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const next = await r.json();
+      setList(next);
+      if (selected && !next.some(s => s.id === selected)) setSelected(null);
+    } catch (e) { setMsg(`could not load scenarios: ${e.message || e}`); }
+  };
+  const loadDetail = async id => {
+    try {
+      const [d, p] = await Promise.all([
+        fetch(`/api/scenarios/${encodeURIComponent(id)}`, { headers: authHeaders(token) }),
+        fetch(`/api/scenarios/${encodeURIComponent(id)}/simulations`, { headers: authHeaders(token) }),
+      ]);
+      if (!d.ok) throw new Error(`scenario: HTTP ${d.status}`);
+      setDetail(await d.json());
+      setProbes(p.ok ? await p.json() : []);
+    } catch (e) { setMsg(`could not load scenario ${id}: ${e.message || e}`); }
+  };
+  useEffect(() => { load(); }, [token]);
+  useEffect(() => { if (selected) loadDetail(selected); else { setDetail(null); setProbes([]); } }, [selected, token]);
+  useEffect(() => {
+    if (!selected) return;
+    if (!probes.some(probe => probe.status === 'running')) return;
+    const timer = setTimeout(() => loadDetail(selected), 1200);
+    return () => clearTimeout(timer);
+  }, [selected, JSON.stringify(probes.map(p => [p.id, p.status]))]);
+  const submitProbe = async () => {
+    setMsg('');
+    let parsed;
+    try { parsed = JSON.parse(calls); } catch (e) { setMsg(`tool_calls is not valid JSON: ${e.message}`); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/scenarios/${encodeURIComponent(selected)}/simulations`, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'content-type': 'application/json' },
+        body: JSON.stringify({ tool_calls: parsed }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body && body.error ? body.error : `HTTP ${r.status}`);
+      await loadDetail(selected);
+    } catch (e) { setMsg(`probe failed: ${e.message || e}`); } finally { setBusy(false); }
+  };
+  const forkSelected = async () => {
+    setMsg('');
+    try {
+      const r = await fetch(`/api/scenarios/${encodeURIComponent(selected)}/fork`, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'content-type': 'application/json' },
+        body: JSON.stringify({ expected_revision: detail.revision }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body && body.error ? body.error : `HTTP ${r.status}`);
+      setMsg(`forked to ${body.id} (editable)`);
+      await load();
+      setSelected(body.id);
+    } catch (e) { setMsg(`fork failed: ${e.message || e}`); }
+  };
+  const scenarioToolRows = definition => (definition?.tools || []).map((tool, i) => html`<div class="exchange" key=${i}>
+    <div class="exchange-head">tool · <span class="mono">${tool.name}</span> · ${tool.side_effect}${tool.lua_source ? ' · supplied Lua' : ' · LLM-rendered'}</div>
+    <div class="meta">${tool.description}</div>
+    ${tool.lua_source ? html`<${SourceCode} source=${tool.lua_source} />` : null}
+  </div>`);
+  return html`<div class="card">
+    <h2>scenarios <span class="meta" style="font-weight:400">— reusable worlds; investigations reference an id and pin a revision</span></h2>
+    <div class="meta">Register with <span class="mono">POST /api/scenarios</span> (multipart: <span class="mono">request</span> JSON + optional <span class="mono">workspace</span> .zip), test with probes below, then run investigations with <span class="mono">scenario_id</span>. Editable only while unreferenced; fork to change a pinned world.</div>
+    ${msg ? html`<div class="note" style="margin:.4rem 0">${msg}</div>` : null}
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+      <select aria-label="scenario" value=${selected || ''} onChange=${e => setSelected(e.target.value || null)}>
+        <option value="">— select a scenario —</option>
+        ${(list || []).map(s => html`<option value=${s.id}>${s.label ? `${s.label} · ` : ''}${s.id.slice(0, 8)} r${s.revision}${s.editable ? ' · editable' : ` · pinned by ${s.investigations}`}</option>`)}
+      </select>
+      <button class="toggle" onClick=${load}>refresh</button>
+      ${detail ? html`<button class="toggle" onClick=${forkSelected}>fork current revision</button>` : null}
+    </div>
+    ${list && !list.length ? html`<div class="empty">No scenarios yet. Register one with <span class="mono">POST /api/scenarios</span>.</div>` : null}
+    ${detail ? html`<div>
+      <div class="meta"><b class="mono">${detail.id}</b> · revision ${detail.revision} · ${detail.editable ? 'editable' : html`pinned by ${detail.investigation_ids.length} investigation(s)`} · ${detail.workspace_files} workspace file(s) · ${detail.tools || ''}${detail.definition.tools.length} tool(s), ${detail.definition.tools.filter(x => x.lua_source).length} implemented</div>
+      <div class="meta mono">definition ${detail.definition_hash.slice(0, 12)} · workspace ${detail.workspace_hash.slice(0, 12)}</div>
+      ${detail.correction ? html`<div class="note">corrects <span class="mono">${detail.correction.scenario_id.slice(0, 8)}</span> r${detail.correction.revision}: ${detail.correction.reason}</div>` : null}
+      <details><summary>world specification</summary><pre class="step">${detail.definition.world}</pre></details>
+      ${scenarioToolRows(detail.definition)}
+      <div class="meta" style="margin-top:.5rem">Simulator: <span class="mono">${detail.definition.simulation?.sim_model || 'server default'}</span> · thinking ${detail.definition.simulation?.sim_thinking_level || 'provider default'}</div>
+      <h3 style="margin:.8rem 0 .2rem">simulation probes</h3>
+      <div class="meta">Each submission runs its calls in order in one session and starts from a fresh snapshot; the PUT is never involved.</div>
+      <textarea aria-label="probe tool calls" class="mono" style="width:100%;min-height:5rem;background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.4rem" value=${calls} onInput=${e => setCalls(e.target.value)}></textarea>
+      <div style="margin-top:.35rem"><button disabled=${busy || !selected} onClick=${submitProbe}>run probe</button></div>
+      ${probes.map(probe => html`<details class="lua-program" key=${probe.id} open=${probe.status !== 'done'}>
+        <summary>probe <span class="mono">${probe.id.slice(0, 8)}</span> · ${probe.status}${probe.stop_reason ? ` · ${probe.stop_reason}` : ''} · r${probe.scenario_revision} · ${(probe.calls || []).length} call(s)${probe.usage ? ` · ${fmtUsage(probe.usage)}` : ''}</summary>
+        ${probe.error ? html`<div class="note">${probe.error}</div>` : null}
+        ${probe.reason ? html`<div class="meta">reason: ${probe.reason}</div>` : null}
+        ${(probe.calls || []).map((call, i) => html`<div class="exchange evidence-primary" key=${i}>
+          <div class="exchange-head">call ${i + 1} · <span class="mono">${call.request.name}(${JSON.stringify(call.request.args)})</span> · ${call.elapsed_ms}ms</div>
+          ${call.error ? html`<div class="note">could not be rendered: ${call.error}</div>` : html`<pre class="step">${pretty(call.response)}</pre>`}
+          ${call.lua_execution ? html`<${LuaExecutionProvenance} execution=${call.lua_execution} />` : null}
+          ${call.workspace_ops && call.workspace_ops.length ? html`<${WsOps} ops=${call.workspace_ops} />` : null}
+          ${call.lua_execution && call.lua_execution.discarded_workspace_ops && call.lua_execution.discarded_workspace_ops.length ? html`<${WsOps} ops=${call.lua_execution.discarded_workspace_ops} rolledBack=${true} label="discarded Lua writes" />` : null}
+        </div>`)}
+      </details>`)}
+    </div>` : null}
+  </div>`;
 }
 
 function BrowsingFilters({ jobs, filters, setFilters }) {
@@ -1302,6 +1407,7 @@ function App() {
       jobs=${jobs} token=${token} groupBy=${groupBy} setGroupBy=${setGroupBy} axes=${axes} setAxes=${setAxes} dirs=${dirs} setDirs=${setDirs}
       activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId}
       onGroupActivate=${activateGroup} onPlotChange=${setFrontierPoints} />`}
+    ${authRequired ? null : html`<${ScenarioPanel} token=${token} />`}
     ${authRequired || jobs === null ? null : html`<${BrowsingFilters} jobs=${jobs} filters=${filters} setFilters=${setFilters} />`}
     <div id="jobs">
       ${authRequired ? null

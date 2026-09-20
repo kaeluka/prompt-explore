@@ -1,133 +1,121 @@
-# Experimental hybrid Lua simulation
+# Caller-authored Lua tool implementations
 
-Experimental prototype, opt-in, and not part of a stable release's tested
-surface. No automatic cache and no in-harness semantic judge. The backend may
-change while its semantics and speed are assessed.
+Optional, per-tool, and authored by the caller. The harness never generates,
+repairs or rewrites the source. A tool without `lua_source` is rendered by the
+simulator LLM exactly as before; a tool with one is tried in the sandbox first,
+and only what the handler declines reaches the model.
 
-## Using it
+This is an accelerator for mechanical behavior, not a correctness oracle. Code
+that executed can still be wrong: `computed` means "this code ran", never "this
+response is faithful to the world".
 
-Build this branch, start the server, and add this fragment to an ordinary
-investigation request:
+## Where it lives
+
+`lua_source` is a field of a scenario's tool:
 
 ```json
 {
-  "conversation_controls": {
-    "lua_simulation": {}
+  "scenario": {
+    "world": "...",
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "path '.' or empty means root; returns {content} or {error}",
+        "parameters": {"type": "object"},
+        "side_effect": "read",
+        "lua_source": "return function(args, ctx) ... end"
+      }
+    ],
+    "simulation": {"lua": {"max_instructions": 2000000}}
   }
 }
 ```
 
-An empty object enables bounded defaults. Omit/null keeps LLM-only simulation.
-The job view echoes the actual limits in `conversation_controls.lua_simulation`;
-check this rather than assuming an older server understood a new field.
+It is simulator-private: it never appears in the contract the prompt under test
+sees, and it may encode ground truth the PUT is meant to discover. Registration
+and edits PARSE the source (reporting the tool name and the Lua error for a
+syntax mistake) but never execute it.
 
-Runnable requests are preserved in [lua-hybrid.json](examples/lua-hybrid.json)
-(write/read/audit) and [lua-inventory.json](examples/lua-inventory.json) (21
-lookups, including a negative case). Submit either to a configured server:
-
-```sh
-curl http://127.0.0.1:8095/api/investigations \
-  -H 'Content-Type: application/json' \
-  --data-binary @docs/examples/lua-hybrid.json
-```
-
-Remove `conversation_controls.lua_simulation` for the identical LLM-only
-baseline. The examples keep the PUT on OpenRouter Luna/low but use OpenRouter
-Terra for simulation with `sim_thinking_level` omitted (provider default). They
-spend provider credits.
-
-Input resolution happens first. If the PUT has tools, the harness creates a
-valid fallback-only `.prompt-explore/tools.lua` in the per-trace in-memory
-workspace. `.prompt-explore` is a reserved private harness namespace: uploads
-that contain it are rejected, and it is never application-world inventory. The
-native simulator tools used for authoring can read and revise the source during
-preparation and later LLM fallbacks. No tools means no preparation call. A
-fresh Lua VM loads the current revision for every invocation; private
-globals/upvalues do not survive calls.
-
-The simulator chooses how much to implement. Enabling the feature does not
-promise fewer model calls: leaving every stub untouched is permitted, and
-preparation then adds overhead. Narratives remain the ground truth. `computed`
-means the generated code executed; it is not a fidelity grade. Source is an
-unverified interpretation, not a compiled guarantee of the author's intent.
+There is no enable switch. Supplying `lua_source` is what makes Lua run; the
+`simulation.lua` object carries only resource limits.
 
 ## Handler contract
 
-A UTF-8 Lua 5.4 module returns a table keyed by exact PUT tool names. Each
-handler receives `(args, ctx)` and returns `{response=..., state_patch=...}`.
-`response` must be present; use `json.null` for null. Ordinary `{}` is an empty
-object; `json.array({})` is an empty array. Write handlers return an object
-`state_patch` (empty is allowed); read handlers cannot return nonempty patches.
-Patches use the existing shallow-merge convention: `json.null` deletes a key.
-
-Example of a partial implementation for a tool that reads repository files:
+The chunk is UTF-8 Lua 5.4 text that RETURNS a handler function. It receives
+`(args, ctx)` and returns `{response=..., state_patch=...}`. `response` must be
+present; use `json.null` for null. Ordinary `{}` is an empty object and
+`json.array({})` an empty array. Write tools return an object `state_patch`
+(empty allowed); read tools cannot return a nonempty patch. Patches use the
+existing shallow-merge convention: `json.null` deletes a key.
 
 ```lua
-return {
-  read_file = function(args, ctx)
-    if type(args.path) ~= "string" or args.path:sub(1, 5) ~= "repo/" then
-      PleaseSimulateException("render this input with the simulator")
-    end
-    local result = ctx.workspace.read({path = args.path})
-    if result.error then
-      return {response = {error = result.error}}
-    end
-    return {response = result.content}
+return function(args, ctx)
+  if type(args.path) ~= "string" or args.path:sub(1, 5) ~= "repo/" then
+    PleaseSimulateException("render this input with the simulator")
   end
-}
+  local result = ctx.workspace.read({path = args.path})
+  if result.error then
+    return {response = {error = result.error}}
+  end
+  return {response = {content = result.content}}
+end
 ```
 
 `PleaseSimulateException(reason)` **raises** a host-recognized signal; it is not
-a string comparison. Missing handlers also delegate. Ordinary crashes, invalid
-results, and resource-limit failures are distinct `error` attempts, followed by
-LLM fallback. A string containing "PleaseSimulateException" is just an ordinary
-error, not the delegation signal.
+a string comparison, and it is not an error: it delegates that one call to the
+simulator LLM. A string containing "PleaseSimulateException" is an ordinary
+error. An ordinary crash, an invalid result, or a resource limit is recorded as
+an `error` attempt and also delegates. The requested tool's semantics come from
+its declared description and the world: if the contract is ambiguous, defer
+instead of guessing, because a confident empty result is worse than a delegation.
 
-`ctx.workspace.read/write/list_dir/grep` take the same argument tables and
-return the same result objects as the simulator's workspace tools. This is NOT
-the host filesystem. Lua handlers receive an application-facing view: private
-`.prompt-explore` files cannot be listed, read, grepped, or written (including
-through a root listing or unscoped grep). The generated program is simulation
-machinery, not an extra fact in the scenario's world; handlers must adapt
-workspace results to the PUT tool's actual contract and inventory.
+`ctx.workspace.read/write/list_dir/grep` take the same argument tables and return
+the same result objects as the simulator's own workspace tools. This is NOT the
+host filesystem. The application-facing view hides the reserved `.prompt-explore`
+namespace (a root listing, a read, an unscoped grep or a write cannot reach into
+it). `list_dir` treats omitted `path`, `""` and `"."` as the root; traversal and
+absolute paths are invalid. Workspace `grep` is a literal Unicode-substring
+search, and Lua patterns are not regexes. `ctx.world_state` is a COPY of the
+current state: persist changes through `state_patch` or workspace operations.
 
-`list_dir` treats omitted `path`, `""`, and `"."` as the root; traversal and
-absolute paths remain invalid. Workspace `grep` is a literal Unicode-substring
-search, not regex. A PUT tool's requested semantics still come from its schema
-and description: Lua patterns are also not regex (`|` is not alternation). If
-a handler cannot implement a requested syntax faithfully, it should raise
-`PleaseSimulateException` rather than silently changing it. Legitimate
-in-band tool errors should remain computed response data rather than being
-automatically delegated. `ctx.world_state` is a copy of current state; use
-patches or workspace operations for persistent changes.
+All workspace mutations are staged. Only a valid computed result commits the
+staged workspace and its patch; delegation, crashes and limits discard both
+before the LLM runs, and the discarded operations are reported separately so they
+are never mistaken for committed world mutations. The computed or rendered
+response enters the same simulator conversation, so later calls (computed or
+rendered) see the established history.
 
-All Lua workspace mutations are staged. Only a valid computed response commits
-the staged workspace and its patch. Delegation/crashes/limits discard it before
-the LLM runs. Discarded operations are reported separately, never presented as
-committed world mutations. The actual computed or LLM response enters the same
-persistent simulator conversation, so subsequent fallbacks see previous calls,
-responses, and current explicit world state without an LLM call for every
-computed exchange.
+## Testing it
 
-## Evidence and UI
+`POST /api/scenarios/{id}/simulations` runs caller-submitted calls through the
+same engine an investigation uses — before any investigation is spent, and
+without a local Lua toolchain. See `docs/design/scenarios.md`. Prefer testing
 
-- `progress.simulation_program` is published during preparation,
-  including on failures before the first PUT turn.
-- `result.trace.simulation_program` preserves source revisions and setup
-  workspace operations/reasoning alongside `resolved_inputs`.
-- `tool_exchanges[].lua_execution` identifies the **zero-based revision** tried,
-  `computed` / `fallback` / `error`, diagnostic, and discarded operations.
-  Committed operations remain in ordinary `workspace_ops`.
-- The investigation's `phase` (also `progress.phase`) reports `resolving_inputs`,
-  `preparing_tools`, or `put_loop`; concurrent investigations can be in different
-  phases. On failure, `result.failure` explains the error and the flat `progress`
-  retains resolved inputs, source revisions, setup work, and completed PUT turns.
-- The UI displays escaped, copyable source and earlier revisions near resolved
-  inputs, with neutral execution labels. Source is never browser markup.
+* a computed call that returns a value,
+* a call your handler declines (`fallback` in the provenance),
+* a call whose arguments violate the schema (an in-band error that never reaches
+  the handler),
+* a write followed by a read of what it wrote (state/workspace consistency),
+* a call you expect to crash, to see the rollback and the delegation.
 
-## Limits and caveats
+Per call the response reports `lua_execution.outcome`
+(`computed`|`fallback`|`error`), the `tool`, the exact `source_hash` that ran,
+the diagnostic, and `discarded_workspace_ops`.
 
-All controls are positive and overridable under `lua_simulation`:
+## Evidence
+
+* The scenario definition carries the source; each run reports
+  `implementations` (tool, source, `source_hash`) on `progress` and on
+  `result.trace`.
+* Each `tool_exchanges[].lua_execution` names the tool, the source hash, the
+  outcome, the diagnostic, and any discarded operations. Committed operations
+  stay in the ordinary `workspace_ops`.
+* There are no generated revisions to display: a fix is a new scenario revision
+  (fork a pinned scenario), and the hash tells you which traces ran the old one.
+
+## Limits
+
+All controls are positive and overridable under `simulation.lua`:
 
 | Control | Default | Hard maximum |
 |---|---:|---:|
@@ -140,105 +128,43 @@ All controls are positive and overridable under `lua_simulation`:
 | `max_value_depth` | 128 | 128 (host-stack ceiling) |
 | `max_result_bytes` (converted values; shared response/patch budget) | 1 MiB | 4 MiB |
 
-`conversation_controls.workspace_max_output_bytes` separately bounds construction
-of every workspace read/list/grep result (default 1 MiB, hard maximum 4 MiB).
-This cap is applied before copying a huge single-line file or accumulating a
-large listing, and the Lua bridge may impose a still-tighter remaining
-host/result budget for an invocation.
+`simulation.workspace.max_output_bytes` separately bounds construction of every
+workspace read/list/grep result (default 1 MiB, hard maximum 4 MiB), before a
+huge single-line file or listing is copied. Controls above the hard maxima are
+rejected rather than weakening containment.
 
 JSON conversion rejects cycles, oversized/deep/expanding structures, non-finite
 numbers, mixed object/array keys, and unsigned integers above Lua's exact
-signed-integer range rather than silently rounding them. Request controls above
-the hard maxima are rejected rather than weakening process containment. The VM cannot access
-host IO, loading/FFI, debug facilities, error-catching escapes, randomness, or
-a clock. Random/time capabilities are deliberately deferred.
+signed-integer range rather than silently rounding them. The VM has no host IO,
+no `require`/FFI, no debug facilities or error-catching escapes, and no
+randomness or clock access.
 
 **This is in-process containment, not an OS isolation boundary.** CPU deadlines
-are cooperative: native Lua C operations and synchronous host operations cannot
-be interrupted mid-call. Lua allocator limits are not whole-process memory
-limits; workspace inputs and Rust bookkeeping have their own bounds. Do not
-present this experimental backend as a hardened multi-tenant code-execution
-service. No cross-platform replay guarantee is implied by Lua table iteration
-order or by the stochastic LLM that generates code.
+are cooperative: a native Lua C operation or a synchronous host call cannot be
+interrupted mid-call. Lua allocator limits are not whole-process memory limits;
+workspace inputs and Rust bookkeeping have their own bounds. Do not present this
+as a hardened multi-tenant code-execution service.
 
-## What the live probes found (2026-09-15)
+## What earlier live probes found (kept as evidence)
 
-The current comparison keeps the PUT on OpenRouter Luna/low and uses OpenRouter
-Terra for the simulator, with `sim_thinking_level` omitted so the provider chooses
-its default. Hybrid and LLM-only pairs used identical worlds and PUTs, with
-4096/8192 output-token limits. Counts include setup and JSON repairs; timings and
-costs are **single concurrent samples**, not performance guarantees.
-Deterministic tests separately cover input-dependent fallback within one handler,
-history continuity, state updates, and rollback.
+These runs predate caller-authored Lua; the mechanism (sandbox, delegation,
+rollback, shared conversation) is unchanged, and the findings still explain the
+failure modes worth probing for.
 
-### Terra/default: correct long execution
-
-For 21 separate lookups (`X1` through `X20` plus the deliberately absent `X01`),
-four independently generated hybrid programs returned every result correctly.
-Terra used an explicit loop once and valid Lua patterns/string checks in the
-repeats; it did not repeat the invalid regex-style alternation from the earlier
-Luna run. Every hybrid used 2 simulator completions and took about 12–20s, with
-reported simulator cost about $0.0048–$0.0073. The one paired LLM-only run used
-21 completions, about 34s, and $0.0270. This is encouraging repeated evidence
-for this world, not a general semantic guarantee.
-
-Terra also specialized both five-item lookup variants correctly, including the
-missing SKU. Hybrid used 2 simulator completions versus 5. On these short traces,
-setup did not pay for itself: one pair took about 16s versus 14s and cost about
-$0.0106 versus $0.0062; the sequential pair took about 16s on both paths and
-cost about $0.0040 versus $0.0028.
-
-### Terra/default: mixed execution
-
-A stock update was computed by Lua and a Lua read observed the updated count 11.
-The `audit` handler deliberately raised `PleaseSimulateException`, and the LLM
-fallback saw enough shared history/state to report that A had changed and was
-currently 11. The PUT then accurately reported the complete set/read/audit
-sequence. The fallback summary itself was less specific than the LLM-only
-baseline: it omitted the intervening lookup. Hybrid and baseline each used 4
-simulator completions; hybrid took about 24s versus 16s and cost about $0.0214
-versus $0.0068. This demonstrates continuity, not a short-trace efficiency win.
-
-### Earlier Luna/low counterexample retained
-
-The first experiment used Luna with low simulator thinking. A 21-lookup hybrid
-run dropped simulator completions from 23 to 2 and wall time from about 57s to
-12s, **but its generated program returned wrong answers for all 20 existing
-SKUs**. This was not a valid speedup result. The model wrote:
-
-```lua
-local digits = string.match(sku, "^X([1-9]|1[0-9]|20)$")
-```
-
-Lua patterns do not implement regex alternation. The implementation executed
-successfully, so runtime fallback did not trigger. The evidence remains useful
-as a failure of that weak setup and as a general reminder: stronger generation
-repaired this observed case, but runtime fallback still handles crashes rather
-than plausible-but-wrong computations. We did not silently repair either
-program or add a deterministic semantic oracle.
-
-### Probe framing mattered
-
-An earlier corpus put Lua-specific delegation instructions in simulator notes.
-The old LLM-only path sometimes rendered `PleaseSimulateException` as a tool
-error instead of the required inventory response; one hybrid fallback also
-omitted stock fields. Those were visible simulation failures, not wins. We
-reran the corpus with those implementation-specific notes removed, keeping the
-clean worlds identical across backends. The earlier evidence is retained.
-
-Validation: 143 locked workspace tests and the release build passed. Browser
-checks covered light/dark themes, live preparation with zero PUT turns, completed
-programs/revisions, copy-to-clipboard, escaped source text, and explicit rollback
-labels. Failure/HTML-looking-source browser fixtures are synthetic UI tests,
-separate from the live model investigations above.
-
-Full-spec caller probes before/after correctly moved from "unsupported" to the
-exact opt-in field, program locations, revision provenance, rollback and shared
-history. One probe caught schema minima of zero conflicting with documented
-positive limits; the generated schema was corrected to match validation.
-
-Local artifacts: `/tmp/pe-lua/` contains requests, full job views, timings, source
-revisions in those job views, caller-probe answers, test logs, and UI screenshots.
-Terra/default A/B and repeated runs are under `/tmp/pe-lua/terra/`. The earlier
-Luna/low counterexample is `long-after.result.json`; its clean short runs are
-`clean-after-v2-*.result.json`. There is no claim of direct-AWS verification.
+* **A weak generator produced confidently wrong answers.** An LLM-written
+  handler used `string.match(sku, "^X([1-9]|1[0-9]|20)$")` — Lua patterns have no
+  alternation — and returned wrong answers for all 20 SKUs while executing
+  successfully, so runtime fallback never triggered. It cut simulator calls
+  from 23 to 2 in one run, but the numbers were wrong: not a valid speedup.
+  Caller-authored code does not remove this class of bug; it makes it a fixed,
+  inspectable revision instead of a fresh lottery each run.
+* **Delegation and continuity work.** A computed write followed by a delegated
+  audit let the LLM read the updated state and report it, and mixed
+  computed/rendered exchanges shared one conversation and one world state.
+* **Setup does not always pay off on short traces.** Hybrid runs with a handful
+  of tool calls sometimes cost more wall clock than LLM-only, because the
+  implementation exists whether or not it is used. Test the probe before
+  running a campaign.
+* **Probe framing matters.** Handlers written against an ambiguous contract
+  returned confidently wrong shapes; the fix was to sharpen the tool contract or
+  the world, not to add harness enforcement.

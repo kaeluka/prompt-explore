@@ -7,12 +7,18 @@ Several investigations may run concurrently; grouping is external to execution.
 
 ## API contract
 
-- POST requires `scenario`, an object. `scenarios`, even a one-element array,
-  is rejected; there is no compatibility alias or sample-count field.
-- GET embeds the authored `scenario` by value, beside the PUT and provenance.
+- POST requires `scenario_id`, naming a stored scenario definition (see
+  `docs/design/scenarios.md`), plus the PUT and the investigation's own controls.
+  An inline `scenario`/`scenarios`, a per-run workspace upload, `sim_model`,
+  `sim_thinking_level`, the simulator keys of `conversation_controls`, and
+  `put.tools` are all rejected with migration guidance: the world, its tool
+  surface, its simulation settings and its workspace belong to the scenario.
+- GET embeds the pinned narrative by value, beside the PUT, the
+  `scenario_id`/`scenario_revision`/`scenario_definition_hash` it came from, and
+  the supplied Lua implementations.
 - `progress` is flat: `phase`, `turns`, `resolved_inputs`, optional
-  `simulation_program`, and optional `user_message`. Job `phase` mirrors it:
-  `resolving_inputs`, `preparing_tools`, or `put_loop`.
+  `implementations`, and optional `user_message`. Job `phase` mirrors it:
+  `resolving_inputs` or `put_loop`.
 - A finished job has `result: {trace, failure, usage}`. Success has a trace and
   no failure; failure has a structured `{stage, error}` and no completed trace.
   There is no partial-batch status, result-within-result, or attempts array.
@@ -36,36 +42,40 @@ missing values. Hover/focus links a plotted group to its cards; activation
 scrolls to that group. GET-list attribute filters are browsing conveniences,
 not frontier selection: every stored investigation remains a candidate.
 
-Repeat a scenario by creating separate investigations. Each repetition resolves
-inputs and simulates afresh, including Lua preparation if enabled. This measures
-variation of the whole experiment, not exclusively PUT randomness with fixed
-inputs and tool responses. The caller judges both behavior and simulation quality.
+Repeat a scenario by creating separate investigations that reference the SAME
+scenario revision. Each repetition resolves inputs and simulates afresh, with the
+same workspace seed and the same supplied implementations — so what varies is the
+PUT (and the simulator LLM's rendering), not a freshly generated program. Pass
+`resolved_inputs` to pin one input sample and isolate that further. The caller
+judges both behavior and simulation quality.
 
-A future multi-submit convenience could accept one upload and create N ordinary
-investigations sharing the immutable workspace seed. It should return their IDs,
-not introduce nested samples or another grading boundary. It is not built now.
+Multi-submit remains unbuilt: submit one investigation per repetition, or script
+the loop. A convenience that accepts one scenario id and creates N ordinary
+investigations should return their IDs, not introduce nested samples or another
+grading boundary.
 
 ## Workspace trade-off
 
-Within a Runner, workspace clones share an immutable seed and isolate mutations
-in private overlays. Independent HTTP uploads are separately decompressed and
-are not deduplicated by workspace hash. Repeated large uploads therefore add
-memory and decompression costs while runs overlap (default decompressed limit:
-500 MiB per upload). Different workspaces cannot benefit from seed sharing anyway.
+A workspace is uploaded ONCE, with the scenario. Every run clones the immutable
+seed (shared by `Arc`) and isolates its mutations in a private overlay, so
+repeated investigations pay neither the upload nor the decompression again.
+Forking a scenario shares the same seed. Two scenarios with identical contents
+still hold separate seeds: content-addressed deduplication across scenarios was
+not built, because it would add a resource lifecycle for no observed need.
 
-We accept this cost for a simpler contract in an LLM-latency-dominated workload.
-Workspace handles, persistence, and cross-job deduplication require separate
-justification; no new resource lifecycle is introduced speculatively.
+Uploaded archives are decompressed in memory with the same hard caps (default:
+50 MiB compressed, 500 MiB decompressed) and are never written to disk.
 
 ## Migration
 
-Replace `scenarios: [s]` with `scenario: s`. Split multi-scenario submissions
-into independent requests, reusing desired custom attributes. Poll each ID.
-Read `result.trace` instead of `result.attempts[0]`, `result.failure` instead of
-`result.result.failures`, and flat `progress` instead of `progress.scenarios[0]`.
-A failed conversation has job status `failed`, not a successful batch wrapper.
-The optional workspace multipart part and grades/attributes PATCH shapes stay
-the same. Models, budgets, retries, and simulator prompt semantics are unchanged.
+Replace inline `scenario` with `scenario_id`: register the world once
+(`POST /api/scenarios`, multipart `request` JSON + optional `workspace` archive),
+moving the tool contracts, the simulator settings and any Lua implementation into
+it. Then submit one investigation per PUT. Read `result.trace` instead of
+`result.attempts[0]`, `result.failure` instead of `result.result.failures`, and
+flat `progress` instead of `progress.scenarios[0]`. A failed conversation has job
+status `failed`, not a successful batch wrapper. Grades, attributes and
+assessment PATCH shapes are unchanged.
 
 ## Caller-model dogfood
 

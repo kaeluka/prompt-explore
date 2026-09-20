@@ -16,13 +16,24 @@ The tool is 100% sandboxed, no tool calls can ever reach the outside, no hard dr
 
 ## One investigation, one conversation
 
-Each investigation runs **one authored scenario** against one prompt under test,
-with one optional workspace upload. Submit separate investigations concurrently
-for different worlds/workspaces or repeated runs; use attributes to group them.
-There is no batch or sample-count field. Repeating a scenario samples its inputs
-and simulation anew, not just the PUT's response to fixed inputs.
+Each investigation runs **one stored scenario** against one prompt under test.
+The scenario — world narrative, tool contracts, simulator settings, optional Lua
+implementations and the initial workspace — is registered ONCE
+(`POST /api/scenarios`) and referenced by `scenario_id`, so an upload and a
+simulation are developed once and reused. Submit separate investigations
+concurrently for repeated runs; use attributes to group them. There is no batch
+or sample-count field. Repeating a check against the same scenario revision
+samples its inputs and simulation afresh, not just the PUT's response to fixed
+inputs; pass `resolved_inputs` to pin one sample.
 
-The request uses `scenario` (not `scenarios`). Poll the job for status, then read
+**Test the simulation before spending investigations.** `POST
+/api/scenarios/{id}/simulations` runs tool calls you supply through the same
+engine an investigation uses — no local Lua toolchain, and no provider
+credentials needed when the calls are fully implemented in Lua. See
+[reusable scenarios](docs/design/scenarios.md) and
+[caller-authored Lua](docs/lua-simulation.md).
+
+Poll the job for status, then read
 `GET /api/investigations/{id}/evidence`: one complete conversation, without
 duplicated terminal progress. Inspect **actual tool responses**, not only final
 answers, workspace lookups or Lua `computed` counts. Execution success is not fidelity.
@@ -31,7 +42,8 @@ The original job view still has `result.trace`, `result.failure`, and flat `prog
 `execution.stop_reason` distinguishes a final completion, step/token cutoff, and
 runtime failure. `done` does **not** mean a final answer was produced. Original
 budgets, consumed counters, completion timestamps and monotonic phase timings are
-retained. The observable phases remain `resolving_inputs`, `preparing_tools`, `put_loop`.
+retained. The observable phases are `resolving_inputs` and `put_loop`: nothing is
+compiled or generated during a run.
 
 After reading, PATCH your caller-owned `assessment` (summary, rubric and evidence
 references) with any justified grades. Local prose alone does not record the
@@ -75,8 +87,10 @@ supports this without ever judging for you:
   its missing grades remain visible in the API and UI as a grading backlog.
 
 Attributes are string-valued. `put_model`, `sim_model`, `put_thinking`,
-`sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`,
-`step_budget`, and `token_budget` are recorded automatically and cannot be edited.
+`sim_thinking`, `prompt_hash`, `workspace_hash`, `scenario_id`,
+`scenario_revision`, `scenario_hash`, `simulation_backend`, `step_budget`, and
+`token_budget` are recorded automatically and cannot be edited. Group by
+`scenario_id`/`scenario_revision` when a scenario was corrected mid-campaign.
 For a backend comparison, explicitly group by `simulation_backend`; the default
 PUT grouping otherwise merges LLM and Lua runs. `label` is editable and displayed in
 the UI; other custom attributes are editable too. Renaming a label leaves the default
@@ -179,9 +193,13 @@ investigation contributes one conversation's measurements and caller grades.
 Keep scenarios, budgets, grading scales, and simulator settings comparable;
 the harness surfaces membership but does not judge comparability.
 
-**API migration:** investigations now require singular `scenario`; read
-`result.trace` or `result.failure` and flat `progress`. Split old scenario arrays
-into separate submissions. See [the single-conversation contract](docs/design/single-conversation.md).
+**API migration:** register the world once (`POST /api/scenarios`) and submit
+investigations with `scenario_id`; read `result.trace` or `result.failure` and
+flat `progress`. An inline `scenario`, a per-run workspace upload, `sim_model`,
+`sim_thinking_level`, the simulator keys of `conversation_controls`, and
+`put.tools` are rejected with migration guidance. See
+[reusable scenarios](docs/design/scenarios.md) and
+[the single-conversation contract](docs/design/single-conversation.md).
 The former `investigations` selection field on frontier
 requests is replaced by `group_by`; old selection requests are rejected rather
 than silently broadened to all jobs. Groups with missing data now appear in a
@@ -349,24 +367,22 @@ Override it per investigation with
 This setting does not change HTTP/transport retries. Failed investigations
 are not automatically resubmitted when either budget is exhausted.
 
-### Experimental Lua simulation
+### Optional Lua tool implementations
 
-Add `"conversation_controls": {"lua_simulation": {}}` to an investigation to try
-hybrid execution. This backend is experimental and may change while its
-semantics and speed are assessed; it is opt-in, and omitting the option (or
-sending `null`) keeps the existing LLM-only behavior. The simulator can
-specialize `.prompt-explore/tools.lua`
-using its workspace tools. Handlers compute suitable inputs and call
-`PleaseSimulateException("reason")` for others. Computed and LLM-rendered
-responses share one conversation; failed/delegated Lua writes are rolled back.
+Give a scenario tool an optional `lua_source` and that tool is tried in the
+sandbox first: a computed reply costs no model call, while
+`PleaseSimulateException("reason")` (or a missing implementation, or a crash with
+its staged writes rolled back) delegates that one call to the simulator LLM.
+You author the code and test it with probes; the harness never generates,
+repairs or rewrites it, and there is no enable switch — supplied code runs.
 
-The UI shows the generated source, every revision, and setup work beside the
-resolved inputs. Exchanges identify Lua computation, intentional delegation,
-or Lua errors followed by LLM recovery. Lua controls have documented hard
-ceilings, and workspace result construction is byte-bounded before data enters
-the VM. **Generated code is unverified:** it can run successfully and still
-contradict the world. See
-[the prototype notes, limits, and live findings](docs/lua-simulation.md).
+A tool's implementation is simulator-private (it never appears in the contract
+the prompt under test sees) and each attempt is recorded with the tool name, the
+exact source hash, the outcome, and any discarded operations. **Executed code is
+unverified:** it can compute successfully and still contradict the world, which is
+why the caller reads responses against the narrative. See
+[caller-authored Lua](docs/lua-simulation.md) for the handler contract, sandbox
+limits, and the failure modes to probe for.
 
 ### 2. Setup with your coding agent
 
@@ -394,27 +410,24 @@ Existing `aws login` credentials, workload roles, and other sources in the
 AWS credential chain also work; no permanent access key is needed. Catalog
 access alone does not guarantee invocation access.
 
-In another terminal, submit a small inventory scenario. Both roles explicitly
-select Luna's US inference profile: the PUT uses `high` reasoning, while the
-simulator uses `none`. Model and thinking settings are independent per role.
-Only the LLM calls reach AWS; `lookup_stock` is simulated, not a real tool.
+In another terminal, register a small inventory world (once), then run the PUT
+against it. Both roles explicitly select Luna's US inference profile: the PUT uses
+`high` reasoning; the simulator uses `none` (set on the SCENARIO, because the
+environment is part of the test case). Only the LLM calls reach AWS;
+`lookup_stock` is simulated, not a real tool.
 
 ```bash
-curl --fail-with-body -sS http://127.0.0.1:8080/api/investigations \
+SCENARIO_ID=$(curl --fail-with-body -sS http://127.0.0.1:8080/api/scenarios \
   -H 'Content-Type: application/json' \
-  --data-binary @- <<'JSON'
+  --data-binary @- <<'JSON' | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
 {
-  "investigation": {
-    "reason": "Check that Luna looks up stock rather than inventing availability.",
-    "budget": {"max_steps_per_trace": 3}
-  },
-  "put": {
-    "id": "luna-stock-check",
-    "template": "You are an inventory assistant. Always look up stock before answering availability questions. Never invent stock counts.",
-    "design_goals": "Use the lookup result and report availability accurately.",
+  "scenario": {
+    "world": "SKU-7 is a Solar Lantern with stock 3. This is the complete inventory; no other SKUs exist and stock never changes. lookup_stock returns the requested SKU and its stock count, or an unknown-SKU error. Never invent items or contradict these facts.",
+    "input_domain": {},
+    "user_message": "Is SKU-7 in stock?",
     "tools": [{
       "name": "lookup_stock",
-      "description": "Return the stock count for one SKU.",
+      "description": "Return the stock count for one SKU: {sku, stock} or {error}.",
       "parameters": {
         "type": "object",
         "properties": {"sku": {"type": "string"}},
@@ -422,18 +435,36 @@ curl --fail-with-body -sS http://127.0.0.1:8080/api/investigations \
         "additionalProperties": false
       },
       "side_effect": "read"
-    }]
+    }],
+    "simulation": {"sim_model": "bedrock_sigv4::us.openai.gpt-5.6-luna", "sim_thinking_level": "none"}
+  },
+  "label": "luna-stock"
+}
+JSON
+)
+
+# Optional but recommended: test the world's tools before spending a run.
+curl --fail-with-body -sS "http://127.0.0.1:8080/api/scenarios/$SCENARIO_ID/simulations" \
+  -H 'Content-Type: application/json' \
+  --data-binary '{"tool_calls": [{"name": "lookup_stock", "args": {"sku": "SKU-7"}},
+                                 {"name": "lookup_stock", "args": {"sku": "SKU-404"}}]}'
+
+curl --fail-with-body -sS http://127.0.0.1:8080/api/investigations \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<JSON
+{
+  "scenario_id": "$SCENARIO_ID",
+  "investigation": {
+    "reason": "Check that Luna looks up stock rather than inventing availability.",
+    "budget": {"max_steps_per_trace": 3}
+  },
+  "put": {
+    "id": "luna-stock-check",
+    "template": "You are an inventory assistant. Always look up stock before answering availability questions. Never invent stock counts.",
+    "design_goals": "Use the lookup result and report availability accurately."
   },
   "put_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
-  "sim_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
-  "put_thinking_level": "high",
-  "sim_thinking_level": "none",
-  "conversation_controls": {"put_max_tokens": 2048, "sim_max_tokens": 2048},
-  "scenario": {
-    "world": "SKU-7 is a Solar Lantern with stock 3. This is the complete inventory; no other SKUs exist and stock never changes. lookup_stock returns the requested SKU and its stock count, or an unknown-SKU error. Never invent items or contradict these facts.",
-    "input_domain": {},
-    "user_message": "Is SKU-7 in stock?"
-  }
+  "put_thinking_level": "high"
 }
 JSON
 ```

@@ -54,8 +54,11 @@ async fn default_budget_survives_nineteen_bad_replies_and_preserves_repair_feedb
     let mut responses = vec![reply(Some(r#"{"response":"print("hello")"}"#)); attempts - 1];
     responses.push(reply(Some(r#"{"response":"print(\"hello\")\n"}"#)));
     let client = Arc::new(MockLlmClient::scripted(responses));
-    let mut session =
-        simulator(client.clone(), attempts).session("hello.py contains print(\"hello\").", &Workspace::empty(), &[]);
+    let mut session = simulator(client.clone(), attempts).session(
+        "hello.py contains print(\"hello\").",
+        &Workspace::empty(),
+        &[],
+    );
     let outcome = session
         .respond(&tool(), &call(), &Default::default())
         .await
@@ -156,7 +159,8 @@ async fn resolution_uses_the_same_repair_budget() {
     let mut responses = vec![reply(None); 6];
     responses.push(reply(Some(r#"{"path":"hello.py"}"#)));
     let client = Arc::new(MockLlmClient::scripted(responses));
-    let mut session = simulator(client.clone(), 20).session("Only hello.py exists.", &Workspace::empty(), &[]);
+    let mut session =
+        simulator(client.clone(), 20).session("Only hello.py exists.", &Workspace::empty(), &[]);
     let values = session
         .resolve_domain(
             &HashMap::from([("path".into(), "The sole file's path".into())]),

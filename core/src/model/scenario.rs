@@ -269,7 +269,8 @@ impl ScenarioDefinition {
             }
         }
         if let Some(lua) = &self.simulation.lua {
-            lua.validate().map_err(|error| format!("simulation.lua: {error}"))?;
+            lua.validate()
+                .map_err(|error| format!("simulation.lua: {error}"))?;
         }
         Ok(())
     }

@@ -218,7 +218,11 @@ pub(super) fn store_error_response(error: StoreError) -> Response {
         | StoreError::Running { .. } => StatusCode::CONFLICT,
         StoreError::Invalid(_) => StatusCode::BAD_REQUEST,
     };
-    (status, Json(serde_json::json!({ "error": error.to_string() }))).into_response()
+    (
+        status,
+        Json(serde_json::json!({ "error": error.to_string() })),
+    )
+        .into_response()
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
@@ -301,9 +305,7 @@ async fn read_request<T: serde::de::DeserializeOwned>(
         let bytes = match to_bytes(req.into_body(), investigation_body_limit()).await {
             Ok(bytes) => bytes,
             Err(error) => {
-                return Err(bad_request(format!(
-                    "could not read request body: {error}"
-                )));
+                return Err(bad_request(format!("could not read request body: {error}")));
             }
         };
         serde_json::from_slice(&bytes)
@@ -323,7 +325,10 @@ fn probe_ids(state: &AppState, scenario_id: &str) -> Vec<String> {
         .collect()
 }
 
-fn running_investigations(state: &AppState, record: &prompt_explore::scenario::ScenarioRecord) -> usize {
+fn running_investigations(
+    state: &AppState,
+    record: &prompt_explore::scenario::ScenarioRecord,
+) -> usize {
     let jobs = state.jobs.lock().unwrap();
     record
         .investigation_ids()
@@ -349,10 +354,7 @@ fn running_investigations(state: &AppState, record: &prompt_explore::scenario::S
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
-pub(super) async fn create_scenario(
-    State(state): State<Arc<AppState>>,
-    req: Request,
-) -> Response {
+pub(super) async fn create_scenario(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let (request, workspace) = match read_request::<ScenarioCreateRequest>(req, &state).await {
         Ok(parsed) => parsed,
         Err(response) => return response,
@@ -388,7 +390,9 @@ pub(super) async fn create_scenario(
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
-pub(super) async fn list_scenarios(State(state): State<Arc<AppState>>) -> Json<Vec<ScenarioSummary>> {
+pub(super) async fn list_scenarios(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ScenarioSummary>> {
     let store = state.scenarios.lock().unwrap();
     let mut summaries: Vec<ScenarioSummary> = store
         .list()

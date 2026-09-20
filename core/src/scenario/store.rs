@@ -82,30 +82,38 @@ pub enum WorkspaceAction {
 pub enum StoreError {
     #[error("no scenario '{0}' in this server's memory — already deleted, or lost on restart")]
     NotFound(String),
-    #[error("scenario '{id}' is pinned by {count} investigation(s) ({examples}); \
+    #[error(
+        "scenario '{id}' is pinned by {count} investigation(s) ({examples}); \
              fork it (POST /api/scenarios/{id}/fork) to make an editable copy, or delete those \
-             investigations first (DELETE /api/scenarios/{id}?cascade=true deletes them for you)")]
+             investigations first (DELETE /api/scenarios/{id}?cascade=true deletes them for you)"
+    )]
     Locked {
         id: String,
         count: usize,
         examples: String,
     },
-    #[error("scenario '{id}' is at revision {current} but the edit expected {expected}; \
-             re-read the scenario and retry against the current revision")]
+    #[error(
+        "scenario '{id}' is at revision {current} but the edit expected {expected}; \
+             re-read the scenario and retry against the current revision"
+    )]
     StaleRevision {
         id: String,
         expected: u64,
         current: u64,
     },
-    #[error("scenario '{id}' can be deleted only with cascade=true: {count} investigation(s) \
-             depend on it ({examples})")]
+    #[error(
+        "scenario '{id}' can be deleted only with cascade=true: {count} investigation(s) \
+             depend on it ({examples})"
+    )]
     HasDependents {
         id: String,
         count: usize,
         examples: String,
     },
-    #[error("scenario '{id}' has running work and cannot be deleted: investigation(s) {examples} \
-             are still running — poll them until done or failed (a run cannot be cancelled)")]
+    #[error(
+        "scenario '{id}' has running work and cannot be deleted: investigation(s) {examples} \
+             are still running — poll them until done or failed (a run cannot be cancelled)"
+    )]
     Running { id: String, examples: String },
     #[error("{0}")]
     Invalid(String),
@@ -340,7 +348,13 @@ impl ScenarioStore {
         }
     }
 
-    fn next_id(&mut self, prefix: &str, now: u64, definition: &ScenarioDefinition, workspace: &Workspace) -> String {
+    fn next_id(
+        &mut self,
+        prefix: &str,
+        now: u64,
+        definition: &ScenarioDefinition,
+        workspace: &Workspace,
+    ) -> String {
         self.sequence += 1;
         let mut hash = Sha256::new();
         hash.update(now.to_le_bytes());
