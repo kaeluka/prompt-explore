@@ -1175,7 +1175,7 @@ function ScenarioPanel({ token }) {
       <div class="meta">Each submission runs its calls in order in one session and starts from a fresh snapshot; the PUT is never involved.</div>
       <textarea aria-label="probe tool calls" class="mono" style="width:100%;min-height:5rem;background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.4rem" value=${calls} onInput=${e => setCalls(e.target.value)}></textarea>
       <div style="margin-top:.35rem"><button disabled=${busy || !selected} onClick=${submitProbe}>run probe</button></div>
-      ${probes.map(probe => html`<details class="lua-program" key=${probe.id} open=${probe.status !== 'done'}>
+      ${probes.map((probe, probeIndex) => html`<details class="lua-program" key=${probe.id} open=${probe.status !== 'done' || probeIndex === 0}>
         <summary>probe <span class="mono">${probe.id.slice(0, 8)}</span> · ${probe.status}${probe.stop_reason ? ` · ${probe.stop_reason}` : ''} · r${probe.scenario_revision} · ${(probe.calls || []).length} call(s)${probe.usage ? ` · ${fmtUsage(probe.usage)}` : ''}</summary>
         ${probe.error ? html`<div class="note">${probe.error}</div>` : null}
         ${probe.reason ? html`<div class="meta">reason: ${probe.reason}</div>` : null}

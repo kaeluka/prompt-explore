@@ -182,11 +182,37 @@ pub(super) struct ProbeRecord {
     pub scenario_hash: String,
     pub reason: Option<String>,
     pub progress: Arc<Mutex<ProbeProgress>>,
+    /// The usage tracker for a provider-backed probe. Kept so a reader always
+    /// sees live totals, even when it polls the instant the probe stops (the
+    /// probe's own task may not have stored its final figure yet).
+    pub tracker: Option<Arc<UsageTracker>>,
+    /// The resolved simulator model this probe runs on, for cost attribution.
+    pub sim_model: String,
     pub usage: UsageTotals,
     pub cost_usd: Option<f64>,
 }
 
 impl ProbeRecord {
+    /// Refresh usage/cost from the live tracker, if any, with a pricing map the
+    /// caller has already fetched. Called by the read handlers so a poll cannot
+    /// race the probe's own finalization.
+    pub fn refresh_usage(&mut self, pricing: &prompt_explore::llm::PricingMap) {
+        let Some(tracker) = &self.tracker else {
+            return;
+        };
+        let mut usage = tracker.totals();
+        usage.cost_usd = pricing.get(&self.sim_model).and_then(|price| {
+            cost_usd(
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.output_tokens,
+                price,
+            )
+        });
+        self.usage = usage.clone();
+        self.cost_usd = usage.cost_usd;
+    }
+
     pub fn view(&self) -> ProbeView {
         let progress = self.progress.lock().unwrap().clone();
         ProbeView {
@@ -743,6 +769,8 @@ pub(super) async fn create_probe(
             scenario_hash: target.definition_hash.clone(),
             reason: request.reason.clone(),
             progress: progress.clone(),
+            tracker: tracker.clone(),
+            sim_model: sim_model.clone(),
             usage: UsageTotals::default(),
             cost_usd: None,
         },
@@ -770,22 +798,12 @@ pub(super) async fn create_probe(
             epoch_millis,
         )
         .await;
-        let Some(tracker) = tracker else {
+        if tracker.is_none() {
             return;
-        };
-        let mut usage = tracker.totals();
+        }
         let pricing = catalog_pricing_map(&models_cached(&state2).await.providers);
-        usage.cost_usd = pricing.get(&sim_model).and_then(|price| {
-            cost_usd(
-                usage.input_tokens,
-                usage.cache_read_tokens,
-                usage.output_tokens,
-                price,
-            )
-        });
         if let Some(probe) = state2.probes.lock().unwrap().get_mut(&probe_id2) {
-            probe.usage = usage.clone();
-            probe.cost_usd = usage.cost_usd;
+            probe.refresh_usage(&pricing);
         }
     });
 
@@ -811,7 +829,11 @@ pub(super) async fn list_probes(
     if state.scenarios.lock().unwrap().get(&id).is_none() {
         return store_error_response(StoreError::NotFound(id));
     }
-    let probes = state.probes.lock().unwrap();
+    let pricing = catalog_pricing_map(&models_cached(&state).await.providers);
+    let mut probes = state.probes.lock().unwrap();
+    for probe in probes.values_mut() {
+        probe.refresh_usage(&pricing);
+    }
     let mut views: Vec<ProbeView> = probes
         .values()
         .filter(|probe| probe.scenario_id == id)
@@ -840,9 +862,13 @@ pub(super) async fn get_probe(
     State(state): State<Arc<AppState>>,
     Path((id, probe_id)): Path<(String, String)>,
 ) -> Response {
-    let probes = state.probes.lock().unwrap();
-    match probes.get(&probe_id) {
-        Some(probe) if probe.scenario_id == id => Json(probe.view()).into_response(),
+    let pricing = catalog_pricing_map(&models_cached(&state).await.providers);
+    let mut probes = state.probes.lock().unwrap();
+    match probes.get_mut(&probe_id) {
+        Some(probe) if probe.scenario_id == id => {
+            probe.refresh_usage(&pricing);
+            Json(probe.view()).into_response()
+        }
         _ => store_error_response(StoreError::NotFound(format!(
             "probe '{probe_id}' for scenario '{id}'"
         ))),

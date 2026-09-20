@@ -683,9 +683,11 @@ pub async fn list_all_map(client: &Client) -> BTreeMap<String, ProviderModels> {
 /// namespaced model names — the same strings callers paste into a
 /// request's `put_model` or `sim_model` field — so a job's stored model name can be looked
 /// up directly.
-pub fn catalog_pricing_map(
-    providers: &BTreeMap<String, ProviderModels>,
-) -> BTreeMap<String, BTreeMap<String, String>> {
+/// A model's per-token price keys (OpenRouter vocabulary): `prompt`,
+/// `completion`, `input_cache_read`.
+pub type PricingMap = BTreeMap<String, BTreeMap<String, String>>;
+
+pub fn catalog_pricing_map(providers: &BTreeMap<String, ProviderModels>) -> PricingMap {
     let mut out = BTreeMap::new();
     for pm in providers.values() {
         if let ProviderModels::Available { models, .. } = pm {
