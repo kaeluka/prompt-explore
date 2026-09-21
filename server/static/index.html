@@ -446,7 +446,7 @@ function InvocationStage({ invocation, turns, index, total }) {
     <summary class="turn-head"><span class="uchip put">Agent ${index + 1}${total > 1 ? ` / ${total}` : ''}</span><span>${name}</span><span class="meta">${shortModel(invocation.model)}</span>${invocation.running ? html`<span class="badge running">running</span>` : invocation.failure ? html`<span class="badge failed">failed</span>` : invocation.stop_reason ? html`<span class="badge ${invocation.stop_reason === 'final_completion' ? 'completed' : 'partial'}">${stopLabel(invocation.stop_reason)}</span>` : null}</summary>
     <div class="meta">model <span class="mono">${shortModel(invocation.model)}</span>${range ? (range[1] > range[0] ? ` · flat turns ${range[0]}–${range[1] - 1}` : ' · flat turns none') : ' · turn range not recorded'} · steps ${invocation.steps_used ?? '—'} · tokens ${invocation.tokens_used ?? '—'}${invocation.stop_reason ? ` · stop ${String(invocation.stop_reason).replaceAll('_', ' ')}` : ''}</div>
     <details><summary class="meta">Input, instructions and settings</summary>
-      ${invocation.prompt ? html`<div style="margin-top:.3rem"><b class="meta">Instructions to this agent</b><div class="body" style="white-space:pre-wrap;word-break:break-word;font-size:.78rem">${invocation.prompt}</div></div>` : null}
+      ${invocation.prompt ? html`<div style="margin-top:.3rem"><b class="meta">Prompt</b><div class="body" style="white-space:pre-wrap;word-break:break-word;font-size:.78rem">${invocation.prompt}</div></div>` : null}
       ${invocation.input ? html`<div style="margin-top:.3rem"><b class="meta">Input to this stage</b><div class="body" style="white-space:pre-wrap;word-break:break-word;font-size:.78rem">${invocation.input}</div></div>` : null}
       <div class="meta" style="margin-top:.3rem">tools: <span class="mono">${tools.length ? tools.join(', ') : '(none exposed)'}</span></div>
       <div class="meta">controls: <span class="mono">${pretty(controls)}</span></div>
@@ -662,7 +662,7 @@ function PutPanel({ put }) {
   const tools = put.tools || [];
   return html`
     <details style="margin-top:0.4rem">
-      <summary class="meta">prompt under test</summary>
+      <summary class="meta">Prompt goals and tool contracts</summary>
       <div class="meta" style="margin:0.3rem 0"><b>design goals:</b> ${put.design_goals || ''}</div>
       ${tools.length ? html`
         <div class="meta" style="margin:0.3rem 0"><b>tools:</b> (click to expand)</div>
@@ -676,7 +676,6 @@ function PutPanel({ put }) {
             </div>
           </details>`)}
       ` : null}
-      <details style="margin-top:0.3rem"><summary class="meta">template</summary><div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0;font-size:0.78rem">${put.template || ''}</div></details>
     </details>`;
 }
 
@@ -787,6 +786,32 @@ function ResultLine({ j }) {
     <span class="badge ${r.failure ? 'failed' : 'job-done'}">${r.failure ? 'failed' : r.trace ? 'trace captured (inspect stop reason)' : 'finished (inspect stop reason)'}</span>
     <span class="meta"> ${wf ? `${(wf.invocations || []).length} workflow stage(s) · ${(wf.tool_calls || []).length} direct tool call(s) — output is the program's return value` : r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
     ${(r.usage || j.progress?.usage) ? html`<div style="margin-top:0.2rem">${roleLine('put', (r.usage || j.progress?.usage).put, 'put')}${roleLine('sim', (r.usage || j.progress?.usage).sim, 'sim')}</div>` : null}
+  </div>`;
+}
+
+// Prompts are inputs, not something the reader should have to find in a
+// completed agent trace. Custom Lua can construct them dynamically: show the
+// actual recorded prompts, never guess their meaning from arbitrary params.
+function PromptInputs({ j }) {
+  const custom = isCustomWorkflow(j);
+  const template = j.put?.template;
+  const invocations = workflowEvidence(j)?.invocations || [];
+  const prompts = [];
+  if (!custom && template != null) prompts.push({ label: 'Prompt', text: template });
+  invocations.forEach((invocation, index) => {
+    if (invocation.prompt == null || (!custom && invocation.prompt === template)) return;
+    prompts.push({
+      label: `${custom ? 'Prompt' : 'Rendered prompt'} · ${invocation.name || `Agent ${index + 1}`}`,
+      text: invocation.prompt,
+      model: invocation.model,
+    });
+  });
+  return html`<div class="prompt-inputs">
+    ${prompts.length ? prompts.map((prompt, index) => html`<div class="prompt-input" key=${index} style="margin-bottom:.8rem">
+      <h3 style="margin:0 0 .3rem">${prompt.label}</h3>
+      ${prompt.model ? html`<div class="meta">${shortModel(prompt.model)}</div>` : null}
+      <div class="returned-value prompt-text">${prompt.text === '' ? html`<span class="meta">(empty prompt)</span>` : prompt.text}</div>
+    </div>`) : html`<div class="meta">${custom ? (j.status === 'running' ? 'Stage prompts will appear here as the program starts each agent. The program and parameters are below.' : 'No agent prompts were recorded. The program and parameters are below.') : 'No prompt recorded in this investigation.'}</div>`}
   </div>`;
 }
 
@@ -1526,8 +1551,11 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
     </div>
     ${j.reason ? html`<div class="meta" style="margin:.5rem 0 1rem"><b>Purpose:</b> ${j.reason}</div>` : null}
 
-    <section class="detail-section"><div class="panel-head"><h2>Task</h2></div>
+    <section class="detail-section investigation-inputs"><div class="panel-head"><h2>Inputs</h2></div>
+      <${PromptInputs} j=${j} />
       <${TaskPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} />
+      ${!customWorkflow ? html`<${PutPanel} put=${j.put} />` : null}
+      ${(j.workflow || wf) ? html`<${WorkflowProgramPanel} program=${j.workflow} evidence=${wf} />` : null}
     </section>
     <section class="detail-section"><div class="panel-head"><h2>Returned output</h2></div>
       <${ReturnedOutputPanel} j=${j} />
@@ -1541,8 +1569,6 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
     </section>
     <section class="detail-section"><div class="panel-head"><h2>Configuration and exports</h2></div>
       <${Implementations} implementations=${j.result?.trace?.implementations || j.progress?.implementations} />
-      ${!customWorkflow ? html`<${PutPanel} put=${j.put} />` : null}
-      ${(j.workflow || wf) ? html`<${WorkflowProgramPanel} program=${j.workflow} evidence=${wf} />` : null}
       ${trace?.final_world_state != null ? html`<details><summary>Final tool state (state patches)</summary><pre class="step">${pretty(trace.final_world_state)}</pre></details>` : null}
       <${ControlsPanel} controls=${j.conversation_controls} />
       <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />

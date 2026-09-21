@@ -158,7 +158,15 @@ The first pass asked for caller assessment before exposing the result, buried th
 program's output inside a collapsed conversation, and mixed source/provenance
 with the execution story. That was not a good first-time reading order.
 
-The final hierarchy is **Task → Returned output → Run steps → Your assessment →
+A follow-up review found another ordering mistake: the tested prompts were still
+buried inside run steps and labeled "instructions". Prompts are inputs. They now
+appear explicitly as **Prompt** (or **Prompt · stage name**) in the first section,
+visible without opening any disclosure. The original single-agent template and
+any different rendered prompt are retained; custom stage prompts come from actual
+invocation evidence, never guesses about arbitrary parameter names. The program
+and its parameters are also grouped with inputs.
+
+The final hierarchy is **Inputs → Returned output → Run steps → Your assessment →
 Configuration and exports**. The actual program return is visible immediately;
 structured return fields are rendered as readable labeled values. Agent stages
 and program tool calls form one chronological, compact list with expandable
@@ -168,7 +176,8 @@ Failures, running/no-output states, cutoffs and unknown cost remain explicit.
 Sources and technical controls stay in disclosures. Workflow Lua and tool Lua
 have separate documentation links.
 
-Browser tests assert section order, visible output without opening details,
+Browser tests assert section order, visible exact prompts before execution/output,
+no guessed prompts for unstarted programs, visible output without opening details,
 chronological agent/direct-call ordering, collapsed stage internals, no repeated
 stage answer, and distinct failed/running output states. Live desktop and narrow
 screen review showed no horizontal overflow. This is an expert/browser review,

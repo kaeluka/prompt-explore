@@ -37,7 +37,7 @@ const workflowEvidenceD = {
 };
 const workflowScenario = { world:'workflow world', input_domain:{}, user_message:'start' };
 const jobs = [
-  { id:'job-a', status:'done', started_at:Date.now()-1000, finished_at:Date.now()-500, budget:{max_steps_per_trace:3,max_tokens:20}, put:{id:'safe-put',tools:[]}, attributes:{put_model:'alpha',put_thinking:'low',prompt_hash:'a',campaign:'one',simulation_backend:'lua',step_budget:'3',token_budget:'20'}, grades:{}, scenario:{world:'world <img src=x onerror=alert(1)>',input_domain:{},user_message:'hello'}, progress:{}, result:{trace:{execution, turns:[{model_output:'not a final answer',tool_exchanges:[{call:{name:'lookup',args:{q:'<script>bad()</script>'}},response:'<b>response is text</b>',lua_execution:{outcome:'computed',program_revision:0},workspace_ops:[{tool:'read',args:{path:'x'},result:'y'}]}]}],tool_calls:1,implementations:implementation('return { lookup = function() return "a" end }'),simulation_program:lua('return { lookup = function() return "a" end }')},failure:null,usage:null}},
+  { id:'job-a', status:'done', started_at:Date.now()-1000, finished_at:Date.now()-500, budget:{max_steps_per_trace:3,max_tokens:20}, put:{id:'safe-put',template:'Never cancel without confirmation.',tools:[]}, attributes:{put_model:'alpha',put_thinking:'low',prompt_hash:'a',campaign:'one',simulation_backend:'lua',step_budget:'3',token_budget:'20'}, grades:{}, scenario:{world:'world <img src=x onerror=alert(1)>',input_domain:{},user_message:'hello'}, progress:{}, result:{trace:{execution, turns:[{model_output:'not a final answer',tool_exchanges:[{call:{name:'lookup',args:{q:'<script>bad()</script>'}},response:'<b>response is text</b>',lua_execution:{outcome:'computed',program_revision:0},workspace_ops:[{tool:'read',args:{path:'x'},result:'y'}]}]}],tool_calls:1,implementations:implementation('return { lookup = function() return "a" end }'),simulation_program:lua('return { lookup = function() return "a" end }')},failure:null,usage:null}},
   { id:'job-b', status:'done', started_at:Date.now()-2000, finished_at:Date.now()-1000, budget:{max_steps_per_trace:9,max_tokens:90}, put:{id:'other',tools:[]}, attributes:{put_model:'beta',put_thinking:'high',prompt_hash:'b',campaign:'two',simulation_backend:'llm',step_budget:'9',token_budget:'90'}, grades:{}, scenario:{world:'other',input_domain:{},user_message:'hi'}, progress:{}, result:{trace:{execution:{...execution,stop_reason:'final_completion'},turns:[],tool_calls:0,implementations:implementation('return { lookup = function() return "b" end }'),simulation_program:lua('return { lookup = function() return "b" end }')},failure:null,usage:null}},
   { id:'job-c', status:'done', started_at:Date.now()-3000, finished_at:Date.now()-2000, budget:{max_steps_per_trace:12,max_tokens:120000}, put:{id:'',template:'',design_goals:'',tools:[]}, put_model:'workflow',
     workflow:{lua_source:workflowSource, params:{query:'orders'}, limits:{max_agent_invocations:8,max_direct_tool_calls:64}},
@@ -71,7 +71,9 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   await page.locator('#job-row-job-a').click(); const card=page.locator('#job-job-a'); await card.getByRole('heading',{name:'safe-put'}).waitFor();
   ok((await card.textContent()).includes('simulation_backend') && (await card.textContent()).includes('step_budget'),'reserved provenance attributes render read-only');
   ok((await card.textContent()).includes('capped (step_budget) — done does not mean a final answer'),'capped execution warning visible'); ok((await card.textContent()).includes('executed, fidelity unverified'),'computed provenance is explicitly unverified'); ok((await card.textContent()).includes('tool request that could not be simulated'),'unrendered tool request is named, not merely implied by counters');
-  ok((await card.textContent()).includes('Task') && (await card.textContent()).includes('Returned output'),'detail hierarchy starts with task and returned output on legacy jobs');
+  ok((await card.textContent()).includes('Inputs') && (await card.textContent()).includes('Returned output'),'detail hierarchy starts with inputs and returned output on legacy jobs');
+  ok(await card.locator('.investigation-inputs').getByRole('heading',{name:'Prompt',exact:true}).isVisible(),'legacy prompt has an explicit visible heading');
+  ok(await card.locator('.prompt-text').isVisible() && await card.locator('.prompt-text').textContent()==='Never cancel without confirmation.','legacy prompt is visible without opening disclosures');
   // XSS payloads are text, never nodes.
   ok(await page.locator('script').filter({hasText:'bad()'}).count()===0,'tool payload did not create a script node'); ok(await page.locator('img').count()===0,'scenario payload did not create an image node');
   await card.getByText('compare tool simulation code with another investigation', {exact:true}).click(); ok(await card.getByLabel('comparison investigation').inputValue()==='job-b','source comparison includes filtered-out investigations'); ok((await card.locator('.source-compare').textContent()).includes('return "b"'),'comparison renders selected other source');
@@ -93,10 +95,16 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   const wfCard = page.locator('#job-job-c'); await wfCard.getByRole('heading',{name:'flow-a'}).waitFor();
   const wfText = await wfCard.textContent();
   ok((await wfCard.locator('.detail-summary').textContent()).includes('cost unavailable'),'a known simulator price is not shown as the unknown whole-run cost');
-  const sectionOrder = ['Task', 'Returned output', 'Run steps', 'Your assessment', 'Configuration and exports'];
+  const sectionOrder = ['Inputs', 'Returned output', 'Run steps', 'Your assessment', 'Configuration and exports'];
   let lastPos = -1;
   for (const label of sectionOrder) { const pos = wfText.indexOf(label); ok(pos > lastPos, `section order includes ${label}`); lastPos = pos; }
-  ok(wfText.includes('User request') && wfText.includes('Chosen input values'),'task section surfaces the user request and nearby resolved inputs');
+  ok(wfText.includes('User request') && wfText.includes('Chosen input values'),'inputs section surfaces the user request and nearby resolved inputs');
+  const promptTexts = wfCard.locator('.investigation-inputs .prompt-text');
+  ok(JSON.stringify(await promptTexts.allTextContents())===JSON.stringify(['You are the planner.','You are the verifier.']),'inputs show each exact stage prompt in order');
+  ok(await promptTexts.nth(0).isVisible() && await promptTexts.nth(1).isVisible(),'stage prompts are visible before expanding execution steps');
+  const inputsBox = await wfCard.locator('.investigation-inputs').boundingBox(), outputBox = await wfCard.locator('.returned-output').boundingBox();
+  ok(inputsBox.y + inputsBox.height <= outputBox.y,'prompt inputs physically precede the returned output');
+  ok(await wfCard.locator('.investigation-inputs').getByText('Workflow program · source and parameters',{exact:true}).count()===1,'the submitted program is grouped with inputs');
   const returned = wfCard.locator('.returned-output');
   ok(await returned.isVisible() && (await returned.textContent()).includes('PROGRAM OVERRIDE'),'actual program output is visible without opening any disclosure');
   ok(!(await returned.textContent()).includes('VERDICT TEXT'),'returned output never substitutes the last stage answer');
@@ -107,7 +115,7 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   ok(await wfCard.locator('.workflow-stage').first().getByText('PLAN TEXT',{exact:true}).count()===1,'a stage final answer is not repeated after its conversation');
   ok(wfText.includes('PLAN TEXT') && wfText.includes('VERDICT TEXT'),'complete stage outputs remain available');
   ok(wfText.includes('Input, instructions and settings'),'exact per-stage handoff details are in a disclosure');
-  ok(wfText.includes('run_agent') && wfText.includes('Workflow program'),'submitted workflow program is rendered in configuration');
+  ok(wfText.includes('run_agent') && wfText.includes('Workflow program'),'submitted workflow program is available with its inputs');
   ok(!(await wfCard.locator('.summary-item .label').allTextContents()).includes('PUT') && (await wfCard.locator('.summary-item .label').allTextContents()).includes('workflow'),'a custom workflow shows a workflow summary, not a misleading single PUT model');
   ok(wfText.includes('orchestration 30ms'),'orchestration timing is shown when recorded');
   await wfCard.getByText('raw investigation JSON · complete job API representation',{exact:true}).click();
@@ -132,6 +140,14 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   ok(liveTextDetail.includes('Returned output') && liveTextDetail.includes('running'),'a live workflow shows an explicit running returned-output state');
   ok(await liveCard.locator('.returned-output').getAttribute('data-output-state')==='running','an intermediate stage answer is not a returned program value');
   ok(!(await liveCard.locator('.returned-output').textContent()).includes('partial'),'intermediate output is absent from the application result');
+
+  // Before an agent starts, arbitrary params must not be guessed to be a prompt.
+  const pending = jobs.find(j=>j.id==='job-e');
+  pending.progress.workflow.invocations=[]; pending.progress.turns=[];
+  pending.workflow.params={prompt:'UNUSED PARAMETER, NOT AN AGENT PROMPT'};
+  await page.reload(); await liveCard.locator('.prompt-inputs').waitFor();
+  ok(await liveCard.locator('.prompt-text').count()===0,'unstarted custom programs do not invent prompts from params');
+  ok((await liveCard.locator('.prompt-inputs').textContent()).includes('as the program starts each agent'),'dynamic prompt availability is explicit');
 
   // Submission path: request JSON editor prefilled with a workflow example.
   await page.goto(`http://127.0.0.1:${port}/`);
