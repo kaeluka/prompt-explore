@@ -1,0 +1,84 @@
+Here is an executable orchestration Lua program and a matching investigation request that:
+
+- Directly calls the scenario tool `read_file` with `{path="config.json"}`.
+- If the tool call returns an error, returns that error immediately.
+- Otherwise, calls the agent with the file content as input.
+- Retries the agent up to 2 more times (3 attempts total) if the agent returns no final output.
+- Accepts arbitrary model configuration parameters in `workflow.params.model` and `workflow.params.prompt`.
+- Uses documented ctx.run_agent and ctx.call_tool contracts.
+- Shares the investigation-wide budget across all calls.
+
+```lua
+-- Lua orchestration program
+return function(params, ctx)
+  -- Call the scenario tool read_file directly
+  local file = ctx.call_tool("read_file", {path = "config.json"})
+  if file.error then
+    -- Return error immediately if reading failed
+    return {error = file.error}
+  end
+
+  -- Retry loop: up to 3 attempts
+  for attempt = 1, 3 do
+    local agent_result = ctx.run_agent{
+      name = "review-" .. attempt,
+      prompt = params.prompt,
+      model = params.model,
+      input = file.content
+    }
+    if agent_result.output ~= nil then
+      return agent_result.output
+    end
+  end
+
+  -- If no output after retries, indicate no delivery
+  return {delivered = false}
+end
+```
+
+---
+
+Example investigation request JSON:
+
+```json
+{
+  "scenario_id": "<registered scenario id>",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    },
+    "reason": "Test reading config.json and retrying agent up to twice if no output"
+  },
+  "workflow": {
+    "lua_source": "return function(params, ctx)\n  local file = ctx.call_tool(\"read_file\", {path = \"config.json\"})\n  if file.error then\n    return {error = file.error}\n  end\n  for attempt = 1, 3 do\n    local agent_result = ctx.run_agent{\n      name = \"review-\" .. attempt,\n      prompt = params.prompt,\n      model = params.model,\n      input = file.content\n    }\n    if agent_result.output ~= nil then\n      return agent_result.output\n    end\n  end\n  return {delivered = false}\nend",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "prompt": "Review this configuration."
+    }
+  }
+}
+```
+
+---
+
+### Limits and Evidence on a Failed Call
+
+- **Limits:**
+  - The investigation-wide budget (`max_steps_per_trace` and `max_tokens`) applies cumulatively across all `ctx.run_agent` calls and direct `ctx.call_tool` calls.
+  - Each `ctx.run_agent` call consumes steps and tokens from the shared budget.
+  - The orchestration Lua program has sandbox limits (`max_instructions`, `max_duration_ms`, etc.) defined in the workflow limits (default or overridden).
+  - If the budget is exceeded or a runtime error occurs, the workflow stops and partial evidence is retained.
+
+- **Evidence that survives a failed call:**
+  - All successful tool calls and agent invocations completed before failure remain in the evidence trace.
+  - The last failed invocation's `failure` field records the error.
+  - The `execution.unrendered_call` field identifies the tool call whose response could not be rendered if failure occurred inside a tool batch.
+  - The `progress.turns` array contains all completed PUT model turns and their tool exchanges.
+  - The `workflow.invocations` array records each `ctx.run_agent` call with prompt, model, output, failure, and usage.
+  - The `workflow.tool_calls` array records all direct `ctx.call_tool` calls and their responses.
+  - The `execution.stop_reason` indicates why the run stopped (`runtime_failure`, `step_budget`, etc.).
+  - Partial outputs and usage counts are preserved for inspection.
+  - The caller can read the full evidence at `GET /api/investigations/{id}/evidence` to judge the failure cause and partial results.
+
+This orchestration and request follow the documented API contracts and affordances for direct tool calls, agent calls, retries, budgets, and evidence retention.

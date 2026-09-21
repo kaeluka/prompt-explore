@@ -1,0 +1,21 @@
+{
+  "scenario_id": "<registered scenario id>",
+  "investigation": {
+    "reason": "Compare a two-stage decomposition with a single-agent baseline against the same scenario and resolved inputs.",
+    "budget": {"max_steps_per_trace": 12, "max_tokens": 10000}
+  },
+  "workflow": {
+    "lua_source": "return function(params, ctx)\n  local extraction = ctx.run_agent { name = 'extract', prompt = params.prompts.extract, model = params.models.extract, input = ctx.input, controls = {temperature = 0, max_tokens = 1000} }\n  if extraction.output == nil then return {delivered = false} end\n  local review = ctx.run_agent { name = 'review', prompt = params.prompts.review, model = params.models.review, input = extraction.output, tools = {}, controls = {temperature = 0, max_tokens = 1000} }\n  return {answer = review.output, findings = extraction.output}\nend",
+    "params": {
+      "prompts": {
+        "extract": "Use the available tools to gather the facts needed to answer the user's request. Return exact facts and their sources, not a recommendation.",
+        "review": "Review the supplied facts and give a concise answer. Distinguish recommendations from actions already performed; do not invent missing evidence."
+      },
+      "models": {
+        "extract": "open_router::openai/gpt-4.1-nano",
+        "review": "open_router::openai/gpt-4.1-mini"
+      }
+    }
+  },
+  "attributes": {"variant": "extract-review"}
+}

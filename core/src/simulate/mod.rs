@@ -8,6 +8,7 @@ pub mod lua;
 pub mod runner;
 pub mod simulator;
 pub mod transcript;
+pub mod workflow;
 pub mod workspace;
 
 pub use engine::{ScenarioRuntime, SimEngine, template_variables};
@@ -19,6 +20,7 @@ pub use simulator::{
     DEFAULT_SIMULATOR_TEMPERATURE, SimulatorOptions, ToolSimulator,
 };
 pub use transcript::render_transcript;
+pub(crate) use workflow::run_workflow;
 pub use workspace::{
     Workspace, WorkspaceError, WorkspaceToolLimits, unpack_zip, unpack_zip_with_limits,
 };

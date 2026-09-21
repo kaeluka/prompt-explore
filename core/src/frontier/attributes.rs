@@ -27,6 +27,7 @@ pub const IMMUTABLE_ATTRIBUTE_NAMES: &[&str] = &[
     "simulation_backend",
     "step_budget",
     "token_budget",
+    "workflow_hash",
 ];
 
 pub fn valid_attribute_name(name: &str) -> bool {
@@ -158,6 +159,14 @@ pub fn prompt_hash(prompt: &PromptUnderTest) -> String {
     stable_hash_hex(&canonical_json(&value))
 }
 
+/// Content identity of caller-authored orchestration: source, opaque parameters
+/// and resource limits. Canonical JSON means object key order is immaterial.
+pub fn workflow_hash(workflow: &crate::model::workflow::WorkflowProgram) -> String {
+    stable_hash_hex(&canonical_json(
+        &serde_json::to_value(workflow).expect("workflow serializes"),
+    ))
+}
+
 /// SHA-256 hex encoding used for stable group ids, colors, and content attributes.
 pub fn stable_hash_hex(input: &str) -> String {
     let mut hash = Sha256::new();
@@ -226,6 +235,17 @@ fn canonical_object(object: &Map<String, Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_identity_includes_parameters_and_limits() {
+        let a = crate::model::workflow::WorkflowProgram::default();
+        let mut b = a.clone();
+        b.params = json!({"model": "another-model"});
+        assert_ne!(workflow_hash(&a), workflow_hash(&b));
+        b = a.clone();
+        b.limits.max_agent_invocations += 1;
+        assert_ne!(workflow_hash(&a), workflow_hash(&b));
+    }
 
     #[test]
     fn attribute_policy_is_shared_by_create_and_patch() {

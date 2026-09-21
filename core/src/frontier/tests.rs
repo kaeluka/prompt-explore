@@ -9,6 +9,7 @@ fn elapsed_axes_are_measured_without_usage_or_caller_grades() {
     snapshot.timing = Some(crate::model::simulation::RunTiming {
         elapsed_ms: 240,
         resolving_inputs_ms: 10,
+        orchestration_ms: 80,
         put_loop_ms: 150,
     });
     for (name, expected) in [

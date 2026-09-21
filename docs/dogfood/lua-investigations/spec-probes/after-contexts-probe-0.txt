@@ -1,0 +1,30 @@
+The API documentation indicates that to compare a prompt with an extract-then-review approach in one investigation per candidate, you should use the `POST /api/investigations` endpoint with a workflow Lua program that calls `ctx.run_agent` twice: first for extraction, then for review. The scenario should be pre-registered, and the model specified as `open_router::openai/gpt-4.1-nano`.
+
+Here's the exact JSON payload for such an investigation, assuming the scenario `scn-example` is already registered, and the input is provided via `ctx.input`. The workflow Lua program performs the two-stage process:
+
+```json
+{
+  "scenario_id": "scn-example",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "workflow": {
+    "lua_source": "return function(p,ctx) local a=ctx.run_agent{name='extract',prompt=p.extract,model=p.model,input=ctx.input}; if a.output==nil then return {delivered=false} end; local b=ctx.run_agent{name='review',prompt=p.review,model=p.model,input=a.output,tools={}}; return b.output end",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "extract": "Gather exact facts using the tools.",
+      "review": "Review these facts and answer without inventing facts or actions."
+    }
+  },
+  "attributes": {
+    "variant": "extract-review"
+  }
+}
+```
+
+To read its output and handoff evidence, you should poll the investigation via `GET /api/investigations/{id}` and then access the `/api/investigations/{id}/evidence` endpoint. The evidence will include the full conversation trace, the two agent turns, and the final output, which you can analyze for the extract and review stages.
+
+If unsupported, I will inform you accordingly; otherwise, this JSON provides the complete request structure for your scenario.

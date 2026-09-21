@@ -1,0 +1,25 @@
+{
+  "scenario_id": "scn-b1ce3fe0869f",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "resolved_inputs": {},
+  "put": {
+    "id": "baseline",
+    "template": "Use read_invoice to inspect the invoice. Identify any duplicate payment and recommend what to do, without claiming action was performed. Keep under 100 words.",
+    "design_goals": "Accurate duplicate detection, no false refund claims."
+  },
+  "put_model": "open_router::openai/gpt-4.1-nano",
+  "conversation_controls": {
+    "put_temperature": 0,
+    "put_max_tokens": 500
+  },
+  "attributes": {
+    "label": "legacy-single",
+    "variant": "legacy-single",
+    "campaign": "lua-workflow-dogfood"
+  }
+}

@@ -1,8 +1,13 @@
 //! An HTTP representation of existing evidence, not a summary or a verdict.
 use super::*;
 
-/// Preferred agent reading surface. One complete conversation without duplicated
-/// terminal progress. Read every `turns[].tool_exchanges[].response`: this is what
+/// Preferred agent reading surface: complete execution without duplicate data.
+/// This endpoint has NO `progress` or `result` wrapper. Use TOP-LEVEL `turns`
+/// and `workflow.invocations` / `workflow.tool_calls`, including on failed or
+/// running jobs. `progress.turns` belongs to GET /api/investigations/{id}, NOT
+/// this /evidence endpoint. Invocation turn_start/turn_end index the top-level
+/// turns array; invocations do not contain nested turns arrays.
+/// Read every `turns[].tool_exchanges[].response`: this is what
 /// the PUT actually observed. `workspace_ops` only shows what the simulator
 /// consulted; `lua_execution.outcome=computed` only says code ran, not that the
 /// reply was faithful. Compare replies with `scenario.world` AND `put.tools`.
@@ -36,6 +41,12 @@ pub(super) struct InvestigationEvidence {
     execution: RunExecution,
     reason: Option<String>,
     put: PromptUnderTest,
+    /// Submitted custom orchestration, retained even if execution never started.
+    workflow_program: Option<prompt_explore::model::workflow::WorkflowProgram>,
+    /// Complete orchestration evidence: source/params/output, exact agent
+    /// inputs and turn ranges, and direct tool calls with responses/provenance.
+    /// Read this output rather than assuming the last agent turn was delivered.
+    workflow: Option<prompt_explore::model::workflow::WorkflowEvidence>,
     scenario: Scenario,
     put_model: String,
     sim_model: String,
@@ -67,6 +78,12 @@ pub(super) struct InvestigationEvidence {
 
 impl From<JobView> for InvestigationEvidence {
     fn from(job: JobView) -> Self {
+        let workflow = job
+            .result
+            .as_ref()
+            .and_then(|r| r.trace.as_ref())
+            .and_then(|trace| trace.workflow.clone())
+            .or_else(|| job.progress.workflow.clone());
         let (execution, turns, resolved_inputs, implementations, final_world_state, failure, usage) =
             match job.result {
                 Some(result) => match result.trace {
@@ -109,6 +126,8 @@ impl From<JobView> for InvestigationEvidence {
             execution,
             reason: job.reason,
             put: job.put,
+            workflow_program: job.workflow,
+            workflow,
             scenario: job.scenario,
             put_model: job.put_model,
             sim_model: job.sim_model,

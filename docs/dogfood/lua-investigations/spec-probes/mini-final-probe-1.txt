@@ -1,0 +1,86 @@
+Here is an executable orchestration Lua program and a matching investigation request that:
+
+- Directly calls the scenario's `read_file` tool to read `config.json`.
+- Calls an agent with the file content as input.
+- Retries the agent up to 2 times if the agent returns no final output.
+- Accepts arbitrary model configurations via workflow params.
+
+```lua
+-- Lua orchestration program
+return function(p, ctx)
+  -- Call the scenario tool 'read_file' to get config.json content
+  local file = ctx.call_tool('read_file', {path = 'config.json'})
+  if file.error then
+    -- Return error immediately if reading failed
+    return {error = file.error}
+  end
+
+  -- Retry agent up to 3 times (initial + 2 retries)
+  for attempt = 1, 3 do
+    local agent_result = ctx.run_agent{
+      name = 'review-' .. attempt,
+      prompt = p.prompt,
+      model = p.model,
+      input = file.content,
+      controls = p.controls
+    }
+    if agent_result.output ~= nil then
+      return agent_result.output
+    end
+  end
+
+  -- If no output after retries, indicate no delivery
+  return {delivered = false}
+end
+```
+
+---
+
+Example investigation request JSON:
+
+```json
+{
+  "scenario_id": "<registered scenario id>",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    },
+    "reason": "Test reading config.json and retrying agent up to twice if no output"
+  },
+  "workflow": {
+    "lua_source": "return function(p, ctx)\n  local file = ctx.call_tool('read_file', {path = 'config.json'})\n  if file.error then\n    return {error = file.error}\n  end\n  for attempt = 1, 3 do\n    local agent_result = ctx.run_agent{\n      name = 'review-' .. attempt,\n      prompt = p.prompt,\n      model = p.model,\n      input = file.content,\n      controls = p.controls\n    }\n    if agent_result.output ~= nil then\n      return agent_result.output\n    end\n  end\n  return {delivered = false}\nend",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "prompt": "Review this configuration carefully.",
+      "controls": {
+        "temperature": 0.7,
+        "max_tokens": 500
+      }
+    }
+  }
+}
+```
+
+---
+
+### Explanation of limits and evidence surviving a failed call
+
+- **Limits:**
+  - The investigation-wide budget (`max_steps_per_trace` and `max_tokens`) applies cumulatively across all `ctx.run_agent` calls and direct `ctx.call_tool` calls.
+  - Each `ctx.run_agent` call consumes steps and tokens from the shared budget.
+  - The orchestration Lua program itself is subject to sandbox limits defined in `WorkflowLimits` (e.g., max instructions, max duration, max memory).
+  - The scenario's simulator settings govern the `read_file` tool behavior and simulator model usage.
+
+- **Evidence surviving a failed call:**
+  - If the `read_file` tool call fails (e.g., file not found), the error is returned immediately and recorded in the investigation evidence.
+  - If any `ctx.run_agent` call fails (e.g., no final output, runtime error), partial evidence of successful exchanges and tool calls up to that point is retained.
+  - The investigation's `progress.execution.unrendered_call` field records the tool request that failed without a response if the failure occurs inside a tool batch.
+  - The full trace of all successful agent turns and tool exchanges before failure is preserved.
+  - The `workflow.invocations` array records each agent invocation with its prompt, model, tokens used, and stop reason.
+  - The `workflow.tool_calls` array records all direct tool calls and their responses or errors.
+  - The caller can inspect these evidence fields to understand what happened before failure.
+  - The investigation's `result.failure` field contains failure diagnostics if the run failed before producing a trace.
+  - The caller can PATCH grades and assessments referencing specific turns and exchanges in the evidence.
+
+This orchestration and request use only documented affordances: `ctx.call_tool(name, args)`, `ctx.run_agent(opts)`, and the investigation request schema with `workflow.lua_source` and `workflow.params`.

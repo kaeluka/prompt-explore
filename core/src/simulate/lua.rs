@@ -5,7 +5,12 @@
 //! filesystem, network, clock, or entropy access.
 
 use std::{
-    cell::RefCell, collections::HashSet, error::Error as StdError, fmt, rc::Rc, time::Instant,
+    cell::RefCell,
+    collections::HashSet,
+    error::Error as StdError,
+    fmt,
+    rc::Rc,
+    time::{Duration, Instant},
 };
 
 use mlua::{
@@ -127,7 +132,7 @@ pub fn execute(
     }
 }
 
-fn clip(value: &str, max_bytes: usize) -> String {
+pub(crate) fn clip(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_owned();
     }
@@ -166,7 +171,7 @@ impl fmt::Display for FallbackSentinel {
 }
 impl StdError for FallbackSentinel {}
 
-enum RunError {
+pub(crate) enum RunError {
     Fallback(String),
     Failed(String),
 }
@@ -175,32 +180,65 @@ enum RunError {
 /// conversion work prevents a small, aliased Lua graph from expanding into an
 /// unbounded amount of Rust work after the handler has returned.
 #[derive(Clone)]
-struct Budget {
-    deadline: Instant,
-    remaining: Rc<RefCell<u64>>,
+pub(crate) struct Budget {
+    state: Rc<RefCell<BudgetState>>,
+}
+
+struct BudgetState {
+    remaining_instructions: u64,
+    remaining_duration: Duration,
+    running_since: Option<Instant>,
 }
 
 impl Budget {
-    fn new(options: &LuaOptions) -> Self {
+    pub(crate) fn new(options: &LuaOptions) -> Self {
         Self {
-            deadline: Instant::now() + std::time::Duration::from_millis(options.max_duration_ms),
-            remaining: Rc::new(RefCell::new(options.max_instructions)),
+            state: Rc::new(RefCell::new(BudgetState {
+                remaining_instructions: options.max_instructions,
+                remaining_duration: Duration::from_millis(options.max_duration_ms),
+                running_since: Some(Instant::now()),
+            })),
         }
     }
 
-    fn charge(&self) -> mlua::Result<()> {
-        if Instant::now() >= self.deadline {
-            return Err(LuaError::RuntimeError(
-                "Lua execution exceeded duration limit".into(),
-            ));
+    fn tick_duration(state: &mut BudgetState) -> mlua::Result<()> {
+        if let Some(started) = state.running_since {
+            let elapsed = Instant::now().saturating_duration_since(started);
+            if elapsed >= state.remaining_duration {
+                state.remaining_duration = Duration::ZERO;
+                return Err(LuaError::RuntimeError(
+                    "Lua execution exceeded duration limit".into(),
+                ));
+            }
+            state.remaining_duration = state.remaining_duration.saturating_sub(elapsed);
+            state.running_since = Some(Instant::now());
         }
-        let mut remaining = self.remaining.borrow_mut();
-        if *remaining == 0 {
+        Ok(())
+    }
+
+    pub(crate) fn pause(&self) -> mlua::Result<()> {
+        let mut state = self.state.borrow_mut();
+        Self::tick_duration(&mut state)?;
+        state.running_since = None;
+        Ok(())
+    }
+
+    pub(crate) fn resume(&self) {
+        let mut state = self.state.borrow_mut();
+        if state.running_since.is_none() {
+            state.running_since = Some(Instant::now());
+        }
+    }
+
+    pub(crate) fn charge(&self) -> mlua::Result<()> {
+        let mut state = self.state.borrow_mut();
+        Self::tick_duration(&mut state)?;
+        if state.remaining_instructions == 0 {
             return Err(LuaError::RuntimeError(
                 "Lua execution exceeded instruction/conversion limit".into(),
             ));
         }
-        *remaining -= 1;
+        state.remaining_instructions -= 1;
         Ok(())
     }
 }
@@ -315,7 +353,7 @@ fn run(
     }
 }
 
-fn install_budget_hook(lua: &Lua, budget: Budget) {
+pub(crate) fn install_budget_hook(lua: &Lua, budget: Budget) {
     lua.set_hook(HookTriggers::new().every_nth_instruction(1), move |_, _| {
         budget.charge()?;
         Ok(VmState::Continue)
@@ -326,7 +364,7 @@ fn install_budget_hook(lua: &Lua, budget: Budget) {
 /// single budget shared by response and state patch, so their combined result
 /// cannot exceed `max_result_bytes`.
 #[derive(Clone)]
-struct JsonLimits {
+pub(crate) struct JsonLimits {
     max_bytes: usize,
     bytes: Rc<RefCell<usize>>,
     max_depth: usize,
@@ -334,7 +372,7 @@ struct JsonLimits {
 }
 
 impl JsonLimits {
-    fn new(options: &LuaOptions, budget: Budget) -> Self {
+    pub(crate) fn new(options: &LuaOptions, budget: Budget) -> Self {
         Self {
             max_bytes: options.max_result_bytes,
             bytes: Rc::new(RefCell::new(0)),
@@ -343,7 +381,7 @@ impl JsonLimits {
         }
     }
 
-    fn enter(&self, depth: usize) -> mlua::Result<()> {
+    pub(crate) fn enter(&self, depth: usize) -> mlua::Result<()> {
         self.budget.charge()?;
         if depth > self.max_depth {
             return Err(LuaError::RuntimeError(format!(
@@ -354,7 +392,7 @@ impl JsonLimits {
         Ok(())
     }
 
-    fn add(&self, bytes: usize) -> mlua::Result<()> {
+    pub(crate) fn add(&self, bytes: usize) -> mlua::Result<()> {
         self.budget.charge()?;
         let mut used = self.bytes.borrow_mut();
         if bytes > self.max_bytes.saturating_sub(*used) {
@@ -367,21 +405,39 @@ impl JsonLimits {
         Ok(())
     }
 
-    fn finish(&self) -> mlua::Result<()> {
+    pub(crate) fn finish(&self) -> mlua::Result<()> {
         self.budget.charge()
     }
 }
 
-struct JsonBridge {
-    null: Table,
-    array_metatable: Table,
+#[derive(Clone)]
+pub(crate) struct JsonBridge {
+    pub(crate) null: Table,
+    pub(crate) array_metatable: Table,
 }
 
 fn install_sandbox(lua: &Lua) -> Result<JsonBridge, RunError> {
+    let json = install_base_sandbox(lua, false)?;
     let globals = lua.globals();
-    // Load ordinary base/table/string/math helpers, then remove all loading,
-    // host-capability, randomness, and error-catching escape hatches before
-    // any untrusted source runs.
+    let decline = lua
+        .create_function(|_, reason: Option<String>| -> mlua::Result<()> {
+            Err(LuaError::external(FallbackSentinel(
+                reason.unwrap_or_else(|| "not specialized".into()),
+            )))
+        })
+        .map_err(classify_lua_error)?;
+    globals
+        .set("PleaseSimulateException", decline)
+        .map_err(classify_lua_error)?;
+    Ok(json)
+}
+
+pub(crate) fn install_workflow_sandbox(lua: &Lua) -> Result<JsonBridge, RunError> {
+    install_base_sandbox(lua, true)
+}
+
+fn install_base_sandbox(lua: &Lua, keep_pcall: bool) -> Result<JsonBridge, RunError> {
+    let globals = lua.globals();
     for name in [
         "io",
         "os",
@@ -391,22 +447,29 @@ fn install_sandbox(lua: &Lua) -> Result<JsonBridge, RunError> {
         "load",
         "loadfile",
         "dofile",
-        "pcall",
-        "xpcall",
-        "coroutine",
         "collectgarbage",
         "print",
         "warn",
         "rawset",
         "setmetatable",
-        // Do not expose the shared json.array metatable (or string metatable):
-        // guest-installed __gc/__index hooks could outlive normal execution.
         "getmetatable",
         "utf8",
     ] {
         globals
             .set(name, LuaValue::Nil)
             .map_err(classify_lua_error)?;
+    }
+    if !keep_pcall {
+        globals
+            .set("coroutine", LuaValue::Nil)
+            .map_err(classify_lua_error)?;
+    }
+    if !keep_pcall {
+        for name in ["pcall", "xpcall"] {
+            globals
+                .set(name, LuaValue::Nil)
+                .map_err(classify_lua_error)?;
+        }
     }
     let string: Table = globals.get("string").map_err(classify_lua_error)?;
     string
@@ -439,17 +502,6 @@ fn install_sandbox(lua: &Lua) -> Result<JsonBridge, RunError> {
     json.set("null", null.clone()).map_err(classify_lua_error)?;
     json.set("array", array).map_err(classify_lua_error)?;
     globals.set("json", json).map_err(classify_lua_error)?;
-
-    let decline = lua
-        .create_function(|_, reason: Option<String>| -> mlua::Result<()> {
-            Err(LuaError::external(FallbackSentinel(
-                reason.unwrap_or_else(|| "not specialized".into()),
-            )))
-        })
-        .map_err(classify_lua_error)?;
-    globals
-        .set("PleaseSimulateException", decline)
-        .map_err(classify_lua_error)?;
     Ok(JsonBridge {
         null,
         array_metatable,
@@ -638,7 +690,7 @@ fn json_value_size(value: &Value, depth: usize, max_depth: usize) -> mlua::Resul
     })
 }
 
-fn json_to_lua(
+pub(crate) fn json_to_lua(
     lua: &Lua,
     value: &Value,
     json: &JsonBridge,
@@ -694,7 +746,7 @@ fn json_to_lua(
     })
 }
 
-fn json_map_to_lua(
+pub(crate) fn json_map_to_lua(
     lua: &Lua,
     values: &Map<String, Value>,
     json: &JsonBridge,
@@ -718,7 +770,7 @@ fn json_map_to_lua(
     Ok(LuaValue::Table(table))
 }
 
-fn lua_to_json(
+pub(crate) fn lua_to_json(
     value: LuaValue,
     json: &JsonBridge,
     limits: &JsonLimits,
@@ -885,7 +937,7 @@ fn lua_to_json_inner(
     }
 }
 
-fn classify_lua_error(error: LuaError) -> RunError {
+pub(crate) fn classify_lua_error(error: LuaError) -> RunError {
     for value in error.chain() {
         if let Some(sentinel) = value.downcast_ref::<FallbackSentinel>() {
             return RunError::Fallback(sentinel.0.clone());

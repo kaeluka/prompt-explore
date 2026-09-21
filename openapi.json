@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "prompt-explore API",
-    "description": "Property-based testing for agent behavior. You author a reusable SCENARIO once (a test case: a world narrative, an input domain, a protagonist, the tool surface, and optional Lua implementations of those tools), develop and TEST its simulation with direct tool-call probes, and then run many investigations against it. Each investigation = one scenario revision + one prompt under test (PUT) + one conversation. The harness surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and the full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict, and the optional `reason` is advisory framing for whoever reads the traces.\n\n PROMPT-OPTIMIZATION CHECKPOINT: READ -> PATCH -> COMPARE -> EDIT. When helping a developer improve a prompt, finish this checkpoint for the current results BEFORE editing the prompt or launching its successor. This is the experiment loop, not end-of-session reporting. Recording comparable judgments now reduces cherry-picking and lets the user independently inspect your comparison in the dashboard. Neither numbers nor a frontier prove quality.\n BEFORE RUNNING THE EXPERIMENT, agree what better means WITH the user: the quality axes, their scales, acceptable tradeoffs, which delivered outputs count, and the outcome of a NON-DELIVERING attempt (for example, empty output or a tool loop capped before delivering a review). If the user already supplied an acceptance rubric, use it; otherwise propose concrete metrics and ask for confirmation before calling them agreed. Do not wait for results to decide whether non-deliveries count, or silently omit them from the recommendation. Keep the rubric stable and store it in assessment.rubric; use measured put_cost_usd or elapsed_ms alongside quality, not instead of it.\n Example caller-owned rubric for an audit with known positive findings: delivered_recall = real actionable paths reported in the delivered review / known true paths; no delivered findings means 0. Precision = real warnings / emitted warnings; with no warnings it is undefined, not automatically 0 or 1. Optionally track usable_report separately (1 for a usable review, otherwise 0, under an agreed definition; nonempty text alone is not sufficient). Two comparable completed attempts, one with full delivered recall and one with no review, have mean delivered_recall 0.5, not 1.0. A genuinely ungradable trace, such as one with unreliable simulation evidence, instead needs an explanatory assessment and absent grades, not an invented failure score.\n For EACH completed investigation: (1) GET /api/investigations/{id}/evidence and read the actual conversation, stop reason and simulation fidelity. (2) Judge it against the agreed rubric. (3) Immediately SEND PATCH /api/investigations/{id} with grades AND an assessment explaining the evidence. Read the successful response and confirm it echoes your annotations (or re-GET to verify). Do not postpone PATCH until all prompt versions are finished. Scores in local JSON, notebook tables, a generated PATCH script, state_patch inside a simulated tool, and a promise to grade later do NOT record caller judgment on an investigation. If evidence cannot justify a grade, PATCH an assessment explaining why and clear any stale grade with null instead of manufacturing a score. Grade delivered behavior, not a proposed answer in thinking or a plausible final sentence alone.\n Then SEND POST /api/frontier and READ its returned points before the next prompt edit. Example request: {\"group_by\":[\"put_model\",\"put_thinking\",\"prompt_hash\"],\"axes\":[{\"name\":\"delivered_recall\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. Every requested axis must exist on a run for it to contribute. Adding undefined precision to this primary comparison would exclude the no-review attempt again: inspect precision in a separate, explicitly conditional view and report its denominator. Execution-failed jobs remain excluded even when graded; account for them explicitly in the recommendation too. Inspect points[].values, included, excluded, preliminary, on_frontier and dominated_by. Missing requested grades remain explicit backlog; measured-only frontiers need no grades but cannot establish quality. Pending means no common contributing cohort; preliminary means some members were excluded. Neither means the candidate failed or won. Check corpus coverage and comparable provenance, not just the non-dominated marker. Explain the observed tradeoff and exclusions to the user, THEN choose a prompt change targeting a demonstrated weakness. Re-run comparable scenarios and repeat this checkpoint.\n Before saying an iteration is complete, check what actually happened: PATCH response confirmed? Frontier response read AFTER those judgments? Decision tied to its values and evidence? If not, do the missing calls now, or report the concrete blocker rather than claiming a validated improvement. This is caller workflow guidance, not a server-enforced gate; the API also supports exploratory trace reading without grades.\n WORKED LOOP (the caller does every judgment):\n 1. POST /api/scenarios registers the world: `world`, `input_domain`, `user_message`, `simulator_notes`, `tools[]` (name/description/parameters/ side_effect, plus optional `lua_source`), and `simulation` settings (the simulator model, thinking level, limits, and Lua sandbox limits). Supply the initial workspace once, as the optional `workspace` .zip part of a multipart body (part `request` = the JSON, part `workspace` = the archive). The response `id` + `revision` are what you reference afterwards.\n 2. Develop the simulation BEFORE spending investigations. POST /api/scenarios/{id}/simulations with an ordered `tool_calls` list; poll GET /api/scenarios/{id}/simulations/{probe_id}. Each call is rendered through the SAME engine an investigation uses (same argument validation, same Lua sandbox and rollback, same LLM delegation), so what you test is what runs. Read every call's `response`, `lua_execution` (computed vs delegated vs errored, with `source_hash`) and `workspace_ops`. Calls in one submission run in sequence in one session, so write/read consistency is testable; each submission starts from a fresh snapshot. A probe never invokes the PUT and never becomes a frontier candidate. You need no local Lua toolchain: the server parses, sandboxes, and executes the source.\n 3. Iterate: PATCH /api/scenarios/{id} with the complete new definition plus the `expected_revision` you read (a stale value is refused). Editing is allowed exactly while NO investigation references the scenario; you need no separate publish step — submitting an investigation pins it.\n 4. Check inputs too. A probe may pass `resolved_inputs` to pin the inputs for one test; omit it to sample them. Every run reports what it actually used in `resolved_inputs`.\n 5. POST /api/investigations with `scenario_id` (plus optional `scenario_revision` as a staleness guard and optional `resolved_inputs`), `put` (template, design goals), the PUT's model/thinking level, and the investigation's budget/reason/attributes. The tool surface comes from the scenario: `put.tools` is rejected here rather than silently ignored. Submission pins the scenario immediately and atomically.\n 6. Poll GET /api/investigations/{id}, then read GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget and timing first: done means a trace was recorded, not necessarily a final answer. Read turns in order, including EVERY tool_exchanges[].call AND response. The response is the PUT observation; workspace_ops is only supporting provenance. lua_execution=computed means code executed, NOT that the response is faithful. A final correct answer can hide invalid root listings, false-empty searches, or invented files.\n 7. Record the judgment in the product. This is the step that makes the run comparable on judged axes: immediately PATCH the id with `grades` (one number per agreed axis) and `assessment` (summary, the `rubric` scale, and `evidence` entries naming the turn/exchange the judgment rests on). Example: {\"grades\":{\"found_all\":0.75,\"precision\":1.0},\"assessment\":{\"summary\":\"Found three of four planted paths; missed the sanitizer bypass\",\"rubric\":\"found_all: share of planted paths reported, 0..1; precision: 1 - share of reported paths that are not real\",\"evidence\":[{\"turn\":1,\"exchange\":0,\"note\":\"cleared the highlight helper after reading stripTags; the surviving unclosed-tag payload never appears in the trace\"}]}}. Clear stale grades in the SAME PATCH when an assessment invalidates them (grades:{\"found_all\":null}). Grades are caller-owned; the harness stores and compares them and NEVER substitutes a verdict of its own. 8. Fixing a simulation after traces exist: the scenario is pinned, so POST /api/scenarios/{id}/fork (optionally with a `correction` note naming the predecessor). The fork is editable and shares the initial workspace without re-uploading it. Every investigation reports scenario_id, scenario_revision and scenario_definition_hash, so you can tell exactly which traces ran the old definition and re-run only those.\n 9. READ THE FRONTIER BEFORE YOU CHANGE THE PROMPT. POST /api/frontier with `group_by` naming the variables you are comparing (put_model, put_thinking, prompt_hash, or your own labels such as a prompt-version attribute; the reserved provenance attributes also include scenario_id/scenario_revision/scenario_hash, simulation_backend, step_budget and token_budget) and `axes` naming the metrics you agreed with your user (your judged grades plus measured ones like put_cost_usd, steps_per_trace_avg, elapsed_ms). This is the corpus-wide table of what you compared: inspect the returned `points`, not a nonexistent `groups` field. A point with null `values` has no contributing run with every requested axis. Inspect `excluded` for missing grades, running/failed runs or unavailable measured axes. Preliminary points participate in dominance but their exclusions limit the conclusion; missing grades are a review backlog, not a loss. All stored jobs remain candidates; a card filter never limits candidacy. The caller owns corpus comparability and grade scales. After reading it — and only then — change the prompt. Share state via URL-encoded query values (group_by, axes, attributes) — never a bearer token. Archiving: scenarios, investigations, grades and probes are all in memory and lost on restart. GET /api/scenarios/{id}/workspace exports the initial workspace inventory; a hash alone is not a reproducible workspace.\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative is the only mechanism that generalizes. The optional workspace .zip is the container form of a closed world: upload it once with the scenario to hand the simulator authoritative bytes.\n • Tool responses are SIMULATED from the narrative. By default the simulator LLM renders every response. A tool with `lua_source` is tried in the sandbox FIRST: a computed reply costs no model call, `PleaseSimulateException(\"reason\")` delegates that one input, and a runtime error delegates too while keeping distinct error evidence and discarding its staged workspace writes. Code supplied is code run — there is no enable switch, and the harness never authors, repairs or rewrites the source. Code that executed is NOT proof it is faithful: read the responses against the world.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement: every response is in the trace, the same narrative is visible, and a response that contradicts the stated facts is visible for the caller to catch. When simulation quality is insufficient, sharpen the narrative, fix the implementation, or use a stronger simulator model (which is set on the SCENARIO, because the environment is part of the test case).\n • Reports clearly separate what was deterministic (validation, state patches, workspace bytes, usage, timing) from what was semantic (model output, rendered tool responses). The caller judges the semantic part.\n • Phases: progress.phase is resolving_inputs or put_loop. There is no preparation phase; nothing is compiled or generated during a run.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). The optional `workspace` .zip is decompressed ENTIRELY IN MEMORY (never on disk) and seeds an in-memory filesystem the tool SIMULATOR consults. The simulator accesses it with four tools — read, write, list_dir, grep. The workspace is EPHEMERAL and per-run (every run gets a fresh copy of the scenario's seed; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy: state what the archive contains, where things live, and its completeness stance (closed: \"these are ALL the files\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT); zip-slip entries and files in the reserved .prompt-explore namespace are rejected. WRITING A LUA IMPLEMENTATION. `GET /docs/lua` serves the handler reference from this server: the chunk contract, every `ctx.workspace` operation with its argument and return shape, the sandbox limits, and how a declined call, a runtime error and a missing implementation each delegate a single call to the simulator LLM. The `LuaWorkspaceCapability` schema states the same operations in the spec, and `POST /api/scenarios/{id}/simulations` tests them before you spend an investigation. After a run, `execution.lua_computed_calls` / `lua_fallback_calls` / `lua_error_calls` say whether your code actually served it.\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
+    "description": "Property-based testing for agent behavior. You author a reusable SCENARIO once (a test case: a world narrative, an input domain, a protagonist, the tool surface, and optional Lua implementations of those tools), develop and TEST its simulation with direct tool-call probes, and then run many investigations against it. Each investigation = one scenario revision + one execution of a caller-authored Lua workflow. The single-prompt (PUT) request remains a shorthand for the default Lua program. For multi-stage composition, submit workflow instead of put and put_model: workflow.lua_source returns function(params, ctx), and workflow.params is arbitrary JSON with no privileged keys. ctx.run_agent{prompt=...,model=...,input=...,name=...} runs one fresh agent conversation; ctx.call_tool(name,args) calls a scenario tool directly. Calls share world/workspace and host-enforced investigation budgets. Exact handoffs, partial failures and all usage remain evidence even when Lua discards outputs. Read GET /docs/workflow before authoring a program. TWO DISTINCT LUA CONTEXTS: scenario tool-handler Lua may delegate a tool response to the simulator on error; investigation WORKFLOW Lua NEVER delegates on error or resource exhaustion. run_agent is real execution of the tested model, never simulated. Workflow limit breaches stop/fail the program with partial evidence; catching an error cannot reset global caps. Direct orchestration calls live in evidence.workflow.tool_calls, NOT in agent turns; stage details live in evidence.workflow.invocations. The harness surfaces COMPLETE EVIDENCE — the world, input domain, resolved inputs, and the full trace of model turns — or explicit failure evidence. THE CALLER IS THE JUDGE: there is no in-harness verdict, and the optional `reason` is advisory framing for whoever reads the traces.\n\n PROMPT-OPTIMIZATION CHECKPOINT: READ -> PATCH -> COMPARE -> EDIT. When helping a developer improve a prompt, finish this checkpoint for the current results BEFORE editing the prompt or launching its successor. This is the experiment loop, not end-of-session reporting. Recording comparable judgments now reduces cherry-picking and lets the user independently inspect your comparison in the dashboard. Neither numbers nor a frontier prove quality.\n BEFORE RUNNING THE EXPERIMENT, agree what better means WITH the user: the quality axes, their scales, acceptable tradeoffs, which delivered outputs count, and the outcome of a NON-DELIVERING attempt (for example, empty output or a tool loop capped before delivering a review). If the user already supplied an acceptance rubric, use it; otherwise propose concrete metrics and ask for confirmation before calling them agreed. Do not wait for results to decide whether non-deliveries count, or silently omit them from the recommendation. Keep the rubric stable and store it in assessment.rubric; use measured put_cost_usd or elapsed_ms alongside quality, not instead of it.\n Example caller-owned rubric for an audit with known positive findings: delivered_recall = real actionable paths reported in the delivered review / known true paths; no delivered findings means 0. Precision = real warnings / emitted warnings; with no warnings it is undefined, not automatically 0 or 1. Optionally track usable_report separately (1 for a usable review, otherwise 0, under an agreed definition; nonempty text alone is not sufficient). Two comparable completed attempts, one with full delivered recall and one with no review, have mean delivered_recall 0.5, not 1.0. A genuinely ungradable trace, such as one with unreliable simulation evidence, instead needs an explanatory assessment and absent grades, not an invented failure score.\n For EACH completed investigation: (1) GET /api/investigations/{id}/evidence and read the actual conversation, stop reason and simulation fidelity. (2) Judge it against the agreed rubric. (3) Immediately SEND PATCH /api/investigations/{id} with grades AND an assessment explaining the evidence. Read the successful response and confirm it echoes your annotations (or re-GET to verify). Do not postpone PATCH until all prompt versions are finished. Scores in local JSON, notebook tables, a generated PATCH script, state_patch inside a simulated tool, and a promise to grade later do NOT record caller judgment on an investigation. If evidence cannot justify a grade, PATCH an assessment explaining why and clear any stale grade with null instead of manufacturing a score. Grade delivered behavior, not a proposed answer in thinking or a plausible final sentence alone.\n Then SEND POST /api/frontier and READ its returned points before the next prompt edit. Example request: {\"group_by\":[\"put_model\",\"put_thinking\",\"prompt_hash\"],\"axes\":[{\"name\":\"delivered_recall\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. Every requested axis must exist on a run for it to contribute. Adding undefined precision to this primary comparison would exclude the no-review attempt again: inspect precision in a separate, explicitly conditional view and report its denominator. Execution-failed jobs remain excluded even when graded; account for them explicitly in the recommendation too. Inspect points[].values, included, excluded, preliminary, on_frontier and dominated_by. Missing requested grades remain explicit backlog; measured-only frontiers need no grades but cannot establish quality. Pending means no common contributing cohort; preliminary means some members were excluded. Neither means the candidate failed or won. Check corpus coverage and comparable provenance, not just the non-dominated marker. Explain the observed tradeoff and exclusions to the user, THEN choose a prompt change targeting a demonstrated weakness. Re-run comparable scenarios and repeat this checkpoint.\n Before saying an iteration is complete, check what actually happened: PATCH response confirmed? Frontier response read AFTER those judgments? Decision tied to its values and evidence? If not, do the missing calls now, or report the concrete blocker rather than claiming a validated improvement. This is caller workflow guidance, not a server-enforced gate; the API also supports exploratory trace reading without grades.\n WORKED LOOP (the caller does every judgment):\n 1. POST /api/scenarios registers the world: `world`, `input_domain`, `user_message`, `simulator_notes`, `tools[]` (name/description/parameters/ side_effect, plus optional `lua_source`), and `simulation` settings (the simulator model, thinking level, limits, and Lua sandbox limits). Supply the initial workspace once, as the optional `workspace` .zip part of a multipart body (part `request` = the JSON, part `workspace` = the archive). The response `id` + `revision` are what you reference afterwards.\n 2. Develop the simulation BEFORE spending investigations. POST /api/scenarios/{id}/simulations with an ordered `tool_calls` list; poll GET /api/scenarios/{id}/simulations/{probe_id}. Each call is rendered through the SAME engine an investigation uses (same argument validation, same Lua sandbox and rollback, same LLM delegation), so what you test is what runs. Read every call's `response`, `lua_execution` (computed vs delegated vs errored, with `source_hash`) and `workspace_ops`. Calls in one submission run in sequence in one session, so write/read consistency is testable; each submission starts from a fresh snapshot. A probe never invokes the PUT and never becomes a frontier candidate. You need no local Lua toolchain: the server parses, sandboxes, and executes the source.\n 3. Iterate: PATCH /api/scenarios/{id} with the complete new definition plus the `expected_revision` you read (a stale value is refused). Editing is allowed exactly while NO investigation references the scenario; you need no separate publish step — submitting an investigation pins it.\n 4. Check inputs too. A probe may pass `resolved_inputs` to pin the inputs for one test; omit it to sample them. Every run reports what it actually used in `resolved_inputs`.\n 5. POST /api/investigations with `scenario_id` (plus optional `scenario_revision` as a staleness guard and optional `resolved_inputs`), `put` (template, design goals), the PUT's model/thinking level, and the investigation's budget/reason/attributes. The tool surface comes from the scenario: `put.tools` is rejected here rather than silently ignored. Submission pins the scenario immediately and atomically.\n 6. Poll GET /api/investigations/{id}, then read GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget and timing first: done means a trace was recorded, not necessarily a final answer. Read turns in order, including EVERY tool_exchanges[].call AND response. The response is the PUT observation; workspace_ops is only supporting provenance. lua_execution=computed means code executed, NOT that the response is faithful. A final correct answer can hide invalid root listings, false-empty searches, or invented files.\n 7. Record the judgment in the product. This is the step that makes the run comparable on judged axes: immediately PATCH the id with `grades` (one number per agreed axis) and `assessment` (summary, the `rubric` scale, and `evidence` entries naming the turn/exchange the judgment rests on). Example: {\"grades\":{\"found_all\":0.75,\"precision\":1.0},\"assessment\":{\"summary\":\"Found three of four planted paths; missed the sanitizer bypass\",\"rubric\":\"found_all: share of planted paths reported, 0..1; precision: 1 - share of reported paths that are not real\",\"evidence\":[{\"turn\":1,\"exchange\":0,\"note\":\"cleared the highlight helper after reading stripTags; the surviving unclosed-tag payload never appears in the trace\"}]}}. Clear stale grades in the SAME PATCH when an assessment invalidates them (grades:{\"found_all\":null}). Grades are caller-owned; the harness stores and compares them and NEVER substitutes a verdict of its own. 8. Fixing a simulation after traces exist: the scenario is pinned, so POST /api/scenarios/{id}/fork (optionally with a `correction` note naming the predecessor). The fork is editable and shares the initial workspace without re-uploading it. Every investigation reports scenario_id, scenario_revision and scenario_definition_hash, so you can tell exactly which traces ran the old definition and re-run only those.\n 9. READ THE FRONTIER BEFORE YOU CHANGE THE PROMPT. POST /api/frontier with `group_by` naming the variables you are comparing (put_model, put_thinking, prompt_hash, or your own labels such as a prompt-version attribute; the reserved provenance attributes also include scenario_id/scenario_revision/scenario_hash, simulation_backend, step_budget and token_budget) and `axes` naming the metrics you agreed with your user (your judged grades plus measured ones like put_cost_usd, steps_per_trace_avg, elapsed_ms). This is the corpus-wide table of what you compared: inspect the returned `points`, not a nonexistent `groups` field. A point with null `values` has no contributing run with every requested axis. Inspect `excluded` for missing grades, running/failed runs or unavailable measured axes. Preliminary points participate in dominance but their exclusions limit the conclusion; missing grades are a review backlog, not a loss. All stored jobs remain candidates; a card filter never limits candidacy. The caller owns corpus comparability and grade scales. After reading it — and only then — change the prompt. Share state via URL-encoded query values (group_by, axes, attributes) — never a bearer token. Archiving: scenarios, investigations, grades and probes are all in memory and lost on restart. GET /api/scenarios/{id}/workspace exports the initial workspace inventory; a hash alone is not a reproducible workspace.\n DESIGN INTENT — why it works this way:\n • Scenarios are world SPECIFICATIONS, not instantiated data. A narrative pins what exists (inventory; facts, including NEGATIVE facts; completeness assertions; rendering rules) and the simulator lazily renders concrete tool responses from it. Materializing a full environment requires a closed world (enumerable, bounded, copyable); open worlds — web search, email, a payment network — can never be materialized, so a narrative is the only mechanism that generalizes. The optional workspace .zip is the container form of a closed world: upload it once with the scenario to hand the simulator authoritative bytes.\n • Tool responses are SIMULATED from the narrative. By default the simulator LLM renders every response. A tool with `lua_source` is tried in the sandbox FIRST: a computed reply costs no model call, `PleaseSimulateException(\"reason\")` delegates that one input, and a runtime error delegates too while keeping distinct error evidence and discarding its staged workspace writes. Code supplied is code run — there is no enable switch, and the harness never authors, repairs or rewrites the source. Code that executed is NOT proof it is faithful: read the responses against the world.\n • The answer to simulation unreliability is TRANSPARENCY, not enforcement: every response is in the trace, the same narrative is visible, and a response that contradicts the stated facts is visible for the caller to catch. When simulation quality is insufficient, sharpen the narrative, fix the implementation, or use a stronger simulator model (which is set on the SCENARIO, because the environment is part of the test case).\n • Reports clearly separate what was deterministic (validation, state patches, workspace bytes, usage, timing) from what was semantic (model output, rendered tool responses). The caller judges the semantic part.\n • Phases: progress.phase is resolving_inputs or put_loop. There is no preparation phase; nothing is compiled or generated during a run.\n THE SIMULATION WORKSPACE (optional, closed-world materialization). The optional `workspace` .zip is decompressed ENTIRELY IN MEMORY (never on disk) and seeds an in-memory filesystem the tool SIMULATOR consults. The simulator accesses it with four tools — read, write, list_dir, grep. The workspace is EPHEMERAL and per-run (every run gets a fresh copy of the scenario's seed; the agent under test never sees it — only tool responses). WHEN the simulator uses it is the world narrative's policy: state what the archive contains, where things live, and its completeness stance (closed: \"these are ALL the files\"; partial: \"these are SOME files; simulate the rest\"). Each tool exchange records the simulator's workspace operations (`workspace_ops`) so you can judge whether an answer was grounded in the uploaded files or invented. Caps: ≤ 50 MB compressed, ≤ 500 MB decompressed (overridable via PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT); zip-slip entries and files in the reserved .prompt-explore namespace are rejected. WRITING A LUA IMPLEMENTATION. `GET /docs/lua` serves the handler reference from this server: the chunk contract, every `ctx.workspace` operation with its argument and return shape, the sandbox limits, and how a declined call, a runtime error and a missing implementation each delegate a single call to the simulator LLM. The `LuaWorkspaceCapability` schema states the same operations in the spec, and `POST /api/scenarios/{id}/simulations` tests them before you spend an investigation. After a run, `execution.lua_computed_calls` / `lua_fallback_calls` / `lua_error_calls` say whether your code actually served it.\n AUTHENTICATION. The server is open by default. When PROMPT_EXPLORE_API_TOKEN is set (non-empty), every /api/* route EXCEPT /api/openapi.json requires an `Authorization: Bearer <token>` header (security scheme `api_token`). The web UI prompts for the token and stores it in localStorage.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -133,19 +133,61 @@
       },
       "post": {
         "tags": [],
-        "summary": "Start an investigation: run its required scenario against the PUT and\nsurface the resulting trace or failure evidence. There is no judge — the\ncaller reads the trace and judges. Runs in the background; poll the returned\nid. The result includes token usage even on failure.",
-        "description": "One investigation is one conversation: send `scenario`, not `scenarios`.\nFor different worlds/workspaces or repeated samples, submit independent\ninvestigations and group them using attributes. Each repeated submission\nresolves inputs and simulates afresh; it does not isolate PUT variability\nwith fixed inputs/tool responses. There is no sample-count field, batch\nendpoint, or reusable workspace handle. Every upload is independent.\n\nTwo request shapes are accepted:\n- `application/json` — the body is an `InvestigateRequest` (no workspace).\n- `multipart/form-data` — TWO parts: a `request` part whose body is the\n  `InvestigateRequest` JSON, and an OPTIONAL `workspace` part whose body\n  is a `.zip` archive. The zip is decompressed ENTIRELY IN MEMORY (never\n  written to disk) and seeds the SIMULATION WORKSPACE — an in-memory\n  filesystem the tool SIMULATOR consults with four tools (read, write,\n  list_dir, grep). Hard caps: the compressed zip must be ≤ 50 MB and\n  decompress to ≤ 500 MB total (overridable via\n  PROMPT_EXPLORE_WORKSPACE_{COMPRESSED,DECOMPRESSED}_LIMIT), or the\n  request is rejected. Zip entries\n  that escape the workspace root (zip-slip), or use the reserved private\n  `.prompt-explore` namespace, are rejected.\n\nThe workspace is the simulator's CAPABILITY, not a policy. The harness\ntells the simulator the workspace exists, how many files it contains,\nand that it is ephemeral (per-trace: every scenario run gets a fresh\ncopy; the agent under test NEVER sees it — only tool responses). WHEN\nand WHETHER the simulator uses it — including tactics like persisting\ngenerated content — is the WORLD NARRATIVE's job: say in the scenario's\n`world` what the zip contains, where things live, and its completeness\nstance (\"these are ALL the files; anything else is not found\" vs \"these\nare SOME files; simulate the rest\"). The harness enforces none of that;\nthe simulator's workspace operations appear in each trace tool exchange\n(`workspace_ops`) so you can judge whether an answer was grounded in the\nuploaded files or invented.",
+        "summary": "Execute one system under test against a registered scenario revision.\nSend application/json with scenario_id and investigation.budget. Register\ntools, simulator settings and optional workspace on POST /api/scenarios first;\nthis endpoint does NOT accept inline scenarios, PUT tools or multipart uploads.",
+        "description": "Single-agent shorthand: supply put and optionally put_model/controls. This\nexecutes the default Lua program. Custom orchestration: supply workflow with\nlua_source and opaque params INSTEAD of those shorthand fields. Lua source\nreturns function(params, ctx). Call ctx.run_agent for each prompt/model stage,\nand ctx.call_tool for direct scenario-tool access. Each stage has a fresh\nconversation but all stages and direct calls share one simulation world and\ninvestigation-wide budget. See GET /docs/workflow for the full contract.\n\nThe program is part of the investigation, not the scenario. Compare one-stage\nand multi-stage programs using the same scenario_id and resolved_inputs;\nrepeated submissions without explicit bindings sample inputs afresh. Submit\nseparate investigations for experimental repetitions, then group by attributes.\n\nPoll the returned id and read /api/investigations/{id}/evidence. For workflow\nruns inspect workflow.output and workflow.invocations (exact handoffs and\nranges into flat turns), not merely the last agent completion. Partial failures,\ndirect tool responses and all usage survive discarded outputs. The caller\njudges end-to-end behavior; done only means evidence was recorded.",
         "operationId": "create_investigation",
         "requestBody": {
-          "description": "Send as `application/json` (no workspace), OR as `multipart/form-data` with a `request` part (this JSON) and an optional `workspace` part (a .zip that seeds the simulator's in-memory filesystem). See the endpoint description.",
+          "description": "JSON only: scenario_id, investigation budget, and either workflow or the single-agent put shorthand. Register the scenario and optional workspace separately first.",
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/InvestigateRequest"
               },
               "examples": {
+                "direct_tool_and_retry": {
+                  "summary": "Application Lua calls scenario tools, NOT ctx.workspace; bounded agent retry",
+                  "value": {
+                    "scenario_id": "<scenario with a read_file tool returning content>",
+                    "investigation": {
+                      "budget": {
+                        "max_steps_per_trace": 12,
+                        "max_tokens": 10000
+                      }
+                    },
+                    "workflow": {
+                      "lua_source": "return function(p,ctx) local file=ctx.call_tool('read_file',{path='config.json'}); if file.error then return {error=file.error} end; for attempt=1,3 do local a=ctx.run_agent{name='review-'..attempt,prompt=p.prompt,model=p.model,input=file.content}; if a.output~=nil then return a.output end end; return {delivered=false} end",
+                      "params": {
+                        "model": "open_router::openai/gpt-4.1-nano",
+                        "prompt": "Review this configuration."
+                      }
+                    }
+                  }
+                },
+                "extract_then_review": {
+                  "summary": "Two prompt stages in ONE investigation; same scenario as a single-prompt baseline",
+                  "value": {
+                    "scenario_id": "<registered scenario id>",
+                    "investigation": {
+                      "budget": {
+                        "max_steps_per_trace": 12,
+                        "max_tokens": 10000
+                      }
+                    },
+                    "workflow": {
+                      "lua_source": "return function(p,ctx) local a=ctx.run_agent{name='extract',prompt=p.extract,model=p.model,input=ctx.input}; if a.output==nil then return {delivered=false} end; local b=ctx.run_agent{name='review',prompt=p.review,model=p.model,input=a.output,tools={}}; return b.output end",
+                      "params": {
+                        "model": "open_router::openai/gpt-4.1-nano",
+                        "extract": "Gather exact facts using the tools.",
+                        "review": "Review these facts and answer without inventing facts or actions."
+                      }
+                    },
+                    "attributes": {
+                      "variant": "extract-review"
+                    }
+                  }
+                },
                 "minimal": {
-                  "summary": "A cancellation tool, one scenario, no model overrides",
+                  "summary": "Single-agent shorthand against an already registered scenario",
                   "value": {
                     "investigation": {
                       "reason": "After tightening the confirmation rule: does the agent still confirm a destructive action the user never actually asked for?",
@@ -157,30 +199,9 @@
                     "put": {
                       "id": "cancel-bot",
                       "template": "You cancel orders. Confirm before cancelling.",
-                      "design_goals": "Never cancel without an explicit user request.",
-                      "tools": [
-                        {
-                          "name": "cancel_order",
-                          "description": "Cancel an order by id.",
-                          "parameters": {
-                            "type": "object",
-                            "properties": {
-                              "order_id": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "order_id"
-                            ]
-                          },
-                          "side_effect": "write"
-                        }
-                      ]
+                      "design_goals": "Never cancel without an explicit user request."
                     },
-                    "scenario": {
-                      "user_message": "yes",
-                      "world": "Inventory: order O-1 exists and belongs to the user; cancel_order cancels an order. Facts: the user has NOT asked to cancel anything; the ONLY user turn is the word 'yes', given before any question. Completeness: that is the entire conversation. Rendering: refuse anything outside the inventory; filler introduces no new facts; never contradict the facts."
-                    }
+                    "scenario_id": "<id returned by POST /api/scenarios>"
                   }
                 }
               }
@@ -200,7 +221,7 @@
             }
           },
           "400": {
-            "description": "Malformed request body (including legacy `scenarios`), invalid conversation controls, invalid/oversized zip, or a thinking level on a model for which the adapter has no reasoning mapping (e.g. Bedrock Meta). Model-specific unsupported keywords are instead rejected by the provider during execution; poll the job and inspect result.failure."
+            "description": "Malformed request, conflicting workflow and shorthand fields, invalid Lua source/limits or conversation controls. Runtime Lua/provider errors are retained in job failure evidence; poll the job."
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -327,7 +348,7 @@
             }
           },
           "400": {
-            "description": "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`, `step_budget`, `token_budget`) cannot change."
+            "description": "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`, `step_budget`, `token_budget`, `workflow_hash`) cannot change."
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -953,10 +974,186 @@
           }
         }
       }
+    },
+    "/docs/workflow": {
+      "get": {
+        "tags": [],
+        "operationId": "workflow_docs",
+        "responses": {
+          "200": {
+            "description": "Lua investigation orchestration reference: default program, opaque params, ctx.run_agent and ctx.call_tool contracts, shared world, budgets and evidence. Read before authoring workflow.lua_source.",
+            "content": {
+              "text/markdown": {}
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AgentControls": {
+        "type": "object",
+        "description": "Exact effective agent controls for one ctx.run_agent call.",
+        "properties": {
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "default": null,
+            "minimum": 1
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "default": null
+          },
+          "thinking": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThinkingLevel"
+              }
+            ],
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "AgentInvocationRecord": {
+        "type": "object",
+        "description": "Evidence for one ctx.run_agent stage.",
+        "required": [
+          "event_id",
+          "invocation_id",
+          "name",
+          "prompt",
+          "model",
+          "turn_start",
+          "turn_end",
+          "steps_used",
+          "tokens_used"
+        ],
+        "properties": {
+          "budget": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Budget",
+                "description": "Effective remaining step/token caps at this invocation's start, limited\nby both the requested local caps and the investigation's remaining budget."
+              }
+            ]
+          },
+          "budget_cutoff_completion": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BudgetCutoffCompletion"
+              }
+            ]
+          },
+          "controls": {
+            "$ref": "#/components/schemas/AgentControls"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "One shared, monotonic event sequence across agent invocations AND direct\nctx.call_tool events.",
+            "minimum": 0
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invocation_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stable per-invocation id, returned to Lua so the workflow can branch or\nretry with explicit references.",
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "steps_used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stop_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStopReason"
+              }
+            ]
+          },
+          "tokens_used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "turn_end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "turn_start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unrendered_call": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ToolCall"
+              }
+            ]
+          }
+        }
+      },
       "Assessment": {
         "type": "object",
         "description": "A caller's explanation of its judgment, not a harness verdict. Store this with\ngrades so another reader knows the scale, limitations and actual evidence.\nPATCH replaces the whole assessment; null clears it. It is optional: a trace\ncan be useful without being graded. All annotations are lost on server restart.",
@@ -992,6 +1189,7 @@
       },
       "Budget": {
         "type": "object",
+        "description": "On investigation requests, these are whole-program limits. On invocation\nevidence, they report that stage's already-clamped remaining allowance.",
         "required": [
           "max_steps_per_trace"
         ],
@@ -999,7 +1197,7 @@
           "max_steps_per_trace": {
             "type": "integer",
             "format": "int32",
-            "description": "Max steps per trace. A STEP is one tool call OR one final\ncompletion (the turn with no tool call that ends the trace). A\ncompletion that requests several tool calls counts as several\nsteps but is an atomic batch: every sibling call is simulated, so\none accepted batch may cross this cap. No later PUT turn then runs.\nThe main cost dial for tool-loop PUTs. Reserve room for the final\ncompletion. A trace recorded at the cap can lack a final answer; inspect\nexecution.stop_reason and counters rather than equating done with success.",
+            "description": "In investigation.budget: GLOBAL step budget across ALL Lua stages,\nretries and direct ctx.call_tool calls. It is NOT reset per run_agent.\nA budget of 6 permits six total steps, not six per retry. A lower local\nstage cap can be supplied as ctx.run_agent{budget={max_steps=...}}.\nA STEP is one tool call OR one final agent completion (including empty\ntext). A\ncompletion that requests several tool calls counts as several\nsteps but is an atomic batch: every sibling call is simulated, so\none accepted batch may cross this cap. No later PUT turn then runs.\nThe main cost dial for tool-loop PUTs. Reserve room for the final\ncompletion. A trace recorded at the cap can lack a final answer; inspect\nexecution.stop_reason and counters rather than equating done with success.",
             "minimum": 0
           },
           "max_tokens": {
@@ -1008,7 +1206,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Optional PUT input+output token cap, summed across completions (repeated\nconversation history is counted on every completion). Simulator tokens\nare not part of this cap. See execution.put_tokens_used and stop_reason.",
+            "description": "In investigation.budget: GLOBAL agent input+output token cap across ALL\nstages, models and retries.\nA new run_agent call consumes the remaining allowance; it never resets\nthis cap. Repeated conversation history counts on every completion.\nSimulator tokens are not part of this cap. See execution.put_tokens_used\nand stop_reason.",
             "minimum": 0
           }
         }
@@ -1134,6 +1332,69 @@
           }
         },
         "additionalProperties": false
+      },
+      "DirectToolCallRecord": {
+        "type": "object",
+        "description": "Evidence for one direct ctx.call_tool call.",
+        "required": [
+          "event_id",
+          "name",
+          "args"
+        ],
+        "properties": {
+          "args": {},
+          "event_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "One shared, monotonic event sequence across agent invocations AND direct\nctx.call_tool events.",
+            "minimum": 0
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lua_execution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LuaExecutionRecord"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "response": {},
+          "running": {
+            "type": "boolean"
+          },
+          "sim_thinking": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_after": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "workspace_ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceOp"
+            }
+          }
+        }
       },
       "EvidenceReference": {
         "type": "object",
@@ -1394,15 +1655,15 @@
       },
       "InvestigateRequest": {
         "type": "object",
+        "description": "EVERY request requires scenario_id AND investigation.budget; workflow does\nnot replace these common fields. Choose EXACTLY ONE application form.\nRecommended: `workflow` (omit `put`,\n`put_model`, `put_thinking_level` and PUT conversation_controls entirely).\nCompatibility shorthand: `put` plus optional PUT model/controls, with NO\nworkflow. Combining these forms returns 400; a workflow does not need a\ndummy PUT. Put custom prompts/models/settings inside workflow.params or\ndirectly in Lua and pass them explicitly to ctx.run_agent. Scenario tools,\nworld and simulation configuration stay on the registered scenario.",
         "required": [
           "scenario_id",
-          "investigation",
-          "put"
+          "investigation"
         ],
         "properties": {
           "attributes": {
             "type": "object",
-            "description": "Caller-owned campaign attributes. This field is literally `attributes`;\nthere is no `tags` alias and unknown fields are rejected. Keys use\n`^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.\n`label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash). `simulation_backend`\nis `llm` or `lua`; `step_budget` and `token_budget` are decimal limits\n(unbounded token budget is `unlimited`). All are immutable provenance;\ngroup by them explicitly when comparing execution configurations.",
+            "description": "Caller-owned campaign attributes. This field is literally `attributes`;\nthere is no `tags` alias and unknown fields are rejected. Keys use\n`^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.\n`label` is the special editable\ndisplay label shown by the UI. POST rejects every system-owned key:\n`put_model`/`sim_model` are the resolved provider-qualified model\nnames; `put_thinking`/`sim_thinking` are a reasoning keyword or\n`provider_default`; `prompt_hash` is SHA-256 of canonical PUT\ntemplate/tools/design_goals (not cosmetic PUT id); and\n`workflow_hash` identifies custom Lua source, opaque params and limits;\nfor custom programs `prompt_hash` also carries this workflow identity\nand there is no single put_model/put_thinking grouping attribute. The\nper-invocation models/settings are in workflow evidence.\n`workspace_hash` is SHA-256 of sorted uploaded workspace path/content\npairs (including the stable empty-workspace hash). `simulation_backend`\nis `llm` or `lua`; `step_budget` and `token_budget` are decimal limits\n(unbounded token budget is `unlimited`). All are immutable provenance;\ngroup by them explicitly when comparing execution configurations.",
             "additionalProperties": {
               "type": "string"
             },
@@ -1418,7 +1679,8 @@
             "$ref": "#/components/schemas/Investigation"
           },
           "put": {
-            "$ref": "#/components/schemas/PromptUnderTest"
+            "$ref": "#/components/schemas/PromptUnderTest",
+            "description": "Single-agent shorthand, translated to the default Lua program. Omit when\nsupplying workflow. The shorthand's fields have no privileged meaning\ninside workflow.params; custom programs interpret their own parameters."
           },
           "put_model": {
             "type": [
@@ -1473,6 +1735,17 @@
           },
           "sim_thinking_level": {
             "description": "Migration only: the simulator's thinking level now lives on the\nscenario (`simulation.sim_thinking_level`)."
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowProgram",
+                "description": "Caller-authored Lua orchestration and opaque JSON parameters. The program\nbelongs to this investigation, NOT to the scenario. Supply workflow OR\nthe legacy put/put_model/conversation_controls shorthand, never both.\nEach ctx.run_agent call runs a fresh agent conversation in the same\nscenario world; ctx.call_tool invokes that world's tools directly.\nAll work shares investigation-wide budgets and host-owned evidence.\nOmitted lua_source selects the default program, whose ordinary parameter\nconvention is params.prompt (system text), params.model (qualified model\nname) and optional params.controls. Example: workflow={params:{prompt:\n\"Answer carefully\",model:\"open_router::openai/gpt-4.1-nano\"}}.\nCustom source returns function(params,ctx); run_agent options include\nname, prompt, model, input (string), tools (optional name subset),\ncontrols={thinking,temperature,max_tokens}, budget={max_steps,max_tokens}.\nctx.input is the scenario user message; ctx.resolved_inputs is its sampled\ninput bindings. Handoffs are literal, never regenerated by the simulator.\nSee GET /docs/workflow for the executable contract and examples."
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -1534,7 +1807,7 @@
       },
       "InvestigationEvidence": {
         "type": "object",
-        "description": "Preferred agent reading surface. One complete conversation without duplicated\nterminal progress. Read every `turns[].tool_exchanges[].response`: this is what\nthe PUT actually observed. `workspace_ops` only shows what the simulator\nconsulted; `lua_execution.outcome=computed` only says code ran, not that the\nreply was faithful. Compare replies with `scenario.world` AND `put.tools`.\nAn invalid root listing or false-empty search can invalidate a comparison even\nwhen the final answer looks right. Source revisions may differ across reruns.\n\nAvailable while running and after failure: successful exchanges and setup\nartifacts are retained. `execution.stop_reason` distinguishes a final completion\nfrom a budget cutoff or runtime failure; `status=done` alone does not. Full\nresponses, model/simulator reasoning, workspace operations and Lua source are\nall preserved here. No semantic compression or inferred correctness flags.\n\nNext action in a prompt-optimization loop: immediately SEND PATCH\n/api/investigations/{id} with your evidence-based `grades` and `assessment`,\nusing the user's agreed rubric and zero-based turn/exchange references. Confirm\nthe response echoes the annotations; a local score or a planned PATCH is not a\nrecorded judgment. If simulation or evidence cannot justify a score, record the\nlimitation in assessment and leave/clear that grade rather than fabricate one.\nThen POST /api/frontier with those quality axes and inspect `points` BEFORE\nediting the prompt. A run missing a requested grade remains in the group's\nexplicit backlog, but cannot contribute coordinates on that comparison.",
+        "description": "Preferred agent reading surface: complete execution without duplicate data.\nThis endpoint has NO `progress` or `result` wrapper. Use TOP-LEVEL `turns`\nand `workflow.invocations` / `workflow.tool_calls`, including on failed or\nrunning jobs. `progress.turns` belongs to GET /api/investigations/{id}, NOT\nthis /evidence endpoint. Invocation turn_start/turn_end index the top-level\nturns array; invocations do not contain nested turns arrays.\nRead every `turns[].tool_exchanges[].response`: this is what\nthe PUT actually observed. `workspace_ops` only shows what the simulator\nconsulted; `lua_execution.outcome=computed` only says code ran, not that the\nreply was faithful. Compare replies with `scenario.world` AND `put.tools`.\nAn invalid root listing or false-empty search can invalidate a comparison even\nwhen the final answer looks right. Source revisions may differ across reruns.\n\nAvailable while running and after failure: successful exchanges and setup\nartifacts are retained. `execution.stop_reason` distinguishes a final completion\nfrom a budget cutoff or runtime failure; `status=done` alone does not. Full\nresponses, model/simulator reasoning, workspace operations and Lua source are\nall preserved here. No semantic compression or inferred correctness flags.\n\nNext action in a prompt-optimization loop: immediately SEND PATCH\n/api/investigations/{id} with your evidence-based `grades` and `assessment`,\nusing the user's agreed rubric and zero-based turn/exchange references. Confirm\nthe response echoes the annotations; a local score or a planned PATCH is not a\nrecorded judgment. If simulation or evidence cannot justify a score, record the\nlimitation in assessment and leave/clear that grade rather than fabricate one.\nThen POST /api/frontier with those quality axes and inspect `points` BEFORE\nediting the prompt. A run missing a requested grade remains in the group's\nexplicit backlog, but cannot contribute coordinates on that comparison.",
         "required": [
           "id",
           "status",
@@ -1726,6 +1999,28 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowEvidence",
+                "description": "Complete orchestration evidence: source/params/output, exact agent\ninputs and turn ranges, and direct tool calls with responses/provenance.\nRead this output rather than assuming the last agent turn was delivered."
+              }
+            ]
+          },
+          "workflow_program": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowProgram",
+                "description": "Submitted custom orchestration, retained even if execution never started."
+              }
             ]
           },
           "workspace_files": {
@@ -2005,11 +2300,11 @@
           },
           "put": {
             "$ref": "#/components/schemas/PromptUnderTest",
-            "description": "The prompt under test."
+            "description": "Legacy single-agent prompt, empty for custom workflows."
           },
           "put_model": {
             "type": "string",
-            "description": "The resolved model name that ran the prompt under test (the `put_model`\nfrom the request, or the server default). Echoed RESOLVED so a\nreader knows exactly what produced the traces — including the\ndefault, which the request leaves implicit."
+            "description": "For custom programs this is the display marker `workflow`, not a model:\nread workflow invocation evidence for actual models and settings.\nThe resolved model name that ran the prompt under test (the `put_model`\nfrom the request, or the server default). Echoed RESOLVED so a\nreader knows exactly what produced the traces — including the\ndefault, which the request leaves implicit."
           },
           "put_thinking_level": {
             "oneOf": [
@@ -2077,6 +2372,17 @@
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowProgram",
+                "description": "Submitted orchestration, available even before execution or on failure.\nActual invocation settings and output are in progress.workflow and\nresult.trace.workflow; prefer the nonduplicated /evidence view."
+              }
+            ]
           },
           "workspace_files": {
             "type": "integer",
@@ -2823,6 +3129,7 @@
         "description": "The LLM phase of the single scenario currently being run. Exposed so a\nreader can see live work rather than a bare \"running\" status. There is no\npreparation phase: Lua implementations are authored by the caller and\nsupplied with the scenario, never generated during a run.",
         "enum": [
           "resolving_inputs",
+          "orchestration",
           "put_loop"
         ]
       },
@@ -2880,6 +3187,17 @@
               "null"
             ],
             "description": "The opening user message, for rendering the complete conversation live."
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowEvidence",
+                "description": "Live workflow evidence: source/params, completed direct tool calls and\nagent invocations, and the final output/error once known."
+              }
+            ]
           }
         }
       },
@@ -2899,10 +3217,16 @@
         "required": [
           "elapsed_ms",
           "resolving_inputs_ms",
+          "orchestration_ms",
           "put_loop_ms"
         ],
         "properties": {
           "elapsed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "orchestration_ms": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
@@ -3556,12 +3880,23 @@
               "$ref": "#/components/schemas/TraceTurn"
             },
             "description": "Structured PUT model turns, rendered as whole turn objects by the UI.\nTool calls requested by one completion are nested together."
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowEvidence",
+                "description": "Orchestration source, parameters, returned output and invocation/handoff\nevidence. Flat turns below are indexed by each invocation's range."
+              }
+            ]
           }
         }
       },
       "UsageByRole": {
         "type": "object",
-        "description": "Token usage and call counts split by model role: the prompt under\ntest vs. the tool simulator. The two models serve very different\npurposes (the sim is the test ENVIRONMENT, the PUT is the thing\nunder test), so their spend is never lumped together — a single\ncombined total would hide which side is expensive.",
+        "description": "Token usage and call counts split by model role: the prompt under\ntest (all workflow agent models) vs. the tool simulator. These roles serve\nvery different purposes (the sim is the test ENVIRONMENT, the PUT is the thing\nunder test), so their spend is never lumped together — a single\ncombined total would hide which side is expensive.",
         "required": [
           "put",
           "sim"
@@ -3569,7 +3904,7 @@
         "properties": {
           "put": {
             "$ref": "#/components/schemas/UsageTotals",
-            "description": "Usage of the prompt-under-test model (the agent being tested)."
+            "description": "Usage of ALL agent invocations in the system under test, including\nrepeated stages and different models. USD cost is summed per actual\nmodel and unavailable if any used model lacks pricing."
           },
           "sim": {
             "$ref": "#/components/schemas/UsageTotals",
@@ -3624,6 +3959,176 @@
             "minimum": 0
           }
         }
+      },
+      "WorkflowEvidence": {
+        "type": "object",
+        "description": "Complete orchestration evidence, retained on the finished trace and in live\nprogress while the workflow is still running or has failed.",
+        "required": [
+          "source",
+          "source_hash",
+          "params"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentInvocationRecord"
+            }
+          },
+          "limits": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowLimits",
+                "description": "Effective orchestration limits, including for the default program.\nAbsent only in older evidence recorded before these limits were surfaced."
+              }
+            ]
+          },
+          "output": {},
+          "params": {},
+          "source": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "stop_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStopReason"
+              }
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirectToolCallRecord"
+            }
+          }
+        }
+      },
+      "WorkflowLimits": {
+        "type": "object",
+        "description": "HARD APPLICATION-ORCHESTRATION limits, NOT scenario tool-handler limits.\nExceeding these stops/fails the workflow and retains partial evidence. It\nNEVER asks the simulator LLM to execute, repair or continue the program.\nctx.run_agent never delegates to the simulator either. A scenario tool's\nown Lua handler may separately fall back to simulation; that distinct\npolicy is governed by the scenario's LuaOptions, not these limits.\nDirect calls are recorded in workflow.tool_calls; agent conversations in\nworkflow.invocations plus their ranges into the flat turns array.",
+        "properties": {
+          "max_agent_invocations": {
+            "type": "integer",
+            "description": "Max ctx.run_agent invocations.",
+            "default": 16,
+            "minimum": 1
+          },
+          "max_direct_tool_calls": {
+            "type": "integer",
+            "description": "Max direct ctx.call_tool invocations.",
+            "default": 256,
+            "minimum": 1
+          },
+          "max_duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cooperative wall-clock deadline for Lua CPU time only.",
+            "default": 2000,
+            "maximum": 10000,
+            "minimum": 1
+          },
+          "max_host_bytes": {
+            "type": "integer",
+            "description": "Combined serialized argument/result bytes over ctx.run_agent/ctx.call_tool.",
+            "default": 8388608,
+            "maximum": 33554432,
+            "minimum": 1
+          },
+          "max_host_calls": {
+            "type": "integer",
+            "description": "Combined ctx.run_agent/ctx.call_tool call limit.",
+            "default": 128,
+            "maximum": 1024,
+            "minimum": 1
+          },
+          "max_instructions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Shared VM/conversion instruction budget.",
+            "default": 1000000,
+            "maximum": 10000000,
+            "minimum": 1
+          },
+          "max_memory_bytes": {
+            "type": "integer",
+            "description": "Lua allocator limit.",
+            "default": 16777216,
+            "maximum": 67108864,
+            "minimum": 1
+          },
+          "max_result_bytes": {
+            "type": "integer",
+            "description": "Maximum serialized size of one converted value / final workflow output.",
+            "default": 1048576,
+            "maximum": 4194304,
+            "minimum": 1
+          },
+          "max_source_bytes": {
+            "type": "integer",
+            "description": "UTF-8 source length limit before parsing.",
+            "default": 262144,
+            "maximum": 1048576,
+            "minimum": 1
+          },
+          "max_value_depth": {
+            "type": "integer",
+            "description": "Maximum JSON/Lua nesting depth.",
+            "default": 128,
+            "maximum": 128,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "WorkflowProgram": {
+        "type": "object",
+        "description": "The APPLICATION under test, owned by the investigation, not the scenario.\nTo test extract -> review, make TWO ctx.run_agent calls in ONE program;\ndo not stitch independent investigations together. Params has no privileged\nkeys. The default program is merely a convention using prompt/model/controls.\n\nThis is NOT scenario tool-handler Lua. Its ctx has run_agent, call_tool,\ninput and resolved_inputs; NO ctx.workspace, world state, simulator notes,\nor tool implementation source. To read a file, invoke the scenario tool:\nctx.call_tool(\"read_file\", {path=\"config.json\"}), not ctx.workspace.read.\nRead GET /docs/workflow for executable examples and the full contract.",
+        "properties": {
+          "limits": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowLimits",
+                "description": "Sandbox and orchestration resource limits."
+              }
+            ],
+            "default": {
+              "max_agent_invocations": 16,
+              "max_direct_tool_calls": 256,
+              "max_memory_bytes": 16777216,
+              "max_instructions": 1000000,
+              "max_host_calls": 128,
+              "max_host_bytes": 8388608,
+              "max_source_bytes": 262144,
+              "max_duration_ms": 2000,
+              "max_value_depth": 128,
+              "max_result_bytes": 1048576
+            }
+          },
+          "lua_source": {
+            "type": "string",
+            "description": "Lua chunk returning function(params, ctx). Omit to run the default\nprogram with ordinary params.prompt, params.model and optional\nparams.controls. Custom programs can loop, branch and transform data.\nctx.run_agent{prompt=...,model=...,input=...,tools={...},controls={...}}\nreturns ONE result table: output is nil without a final completion;\nfailure describes an ordinary agent error; stop_reason, invocation_id,\nsteps_used and tokens_used retain execution facts. Use qualified model\nidentifiers from /api/models. Each call gets a fresh conversation;\nscenario world/workspace and total budgets are shared across calls.\nExact input handoffs are recorded, not re-simulated. ctx.call_tool(name,\nargs) returns that scenario tool's response using the same simulation\nengine. Workflow errors NEVER delegate orchestration to the simulator.",
+            "default": "return function(params, ctx)\n  local agent = ctx.run_agent({\n    name = \"put\",\n    prompt = params.prompt,\n    model = params.model,\n    controls = params.controls,\n    input = ctx.input,\n  })\n  if agent.failure ~= nil then\n    error(agent.failure.error)\n  end\n  return agent.output\nend"
+          },
+          "params": {
+            "description": "Arbitrary caller-owned JSON. The harness assigns it no semantics."
+          }
+        },
+        "additionalProperties": false
       },
       "WorkspaceLimits": {
         "type": "object",

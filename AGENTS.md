@@ -5,9 +5,10 @@ Guidance for AI agents (and humans) working in this repository.
 ## What this is
 
 **prompt-explore** — property-based testing for agent behavior. A user
-supplies one scenario (an author-supplied world narrative) and a prompt under
-test (PUT) per investigation; the tool runs one conversation in that world and
-returns the complete evidence — the world, the input domain, the resolved
+supplies one scenario (an author-supplied world narrative) and a system under
+test per investigation. That system is a Lua orchestration program, with a
+single-prompt shorthand using the default program. The tool executes it in that
+world and returns the complete evidence — the world, the input domain, the resolved
 inputs, and the full trace of model turns. **The caller is the judge:** there
 is no in-harness verdict. The user may also state a free-form `reason`
 for the run (what it aims to accomplish, what changed compared to runs
@@ -153,9 +154,11 @@ All investigations in memory are candidates; there is no selection/filter list.
 `POST /api/frontier` groups by attribute names (default: `put_model`, `put_thinking`,
 `prompt_hash`) and averages requested axes over completed investigations with
 EVERY requested value. All coordinates use the same cohort, equally weighted
-per investigation. Each investigation runs exactly one conversation: singular
-`scenario`, `result.trace` or `result.failure`, and flat `progress`. Repetition
-means separate investigations, not an embedded batch or `samples` control.
+per investigation. Each investigation runs one orchestration program against a
+singular `scenario`, with `result.trace` or `result.failure`, and flat `progress`.
+Agent invocations are stages inside that execution, not independent investigations:
+workflow evidence names their ranges in the flat turns array. Experimental
+repetition means separate investigations, not an embedded batch or `samples` control.
 Failed conversations retain partial progress evidence. Workspace reuse and a
 multi-submit convenience are deferred; do not reintroduce nested trace arrays.
 List attribute filters affect browsing only, never frontier candidacy.
@@ -186,7 +189,7 @@ comparability and grading; the harness does only grouping and arithmetic.
 ## Evidence-first workflow
 
 Prefer `GET /api/investigations/{id}/evidence` when reading/grading: it contains
-one full conversation, actual tool responses and provenance, without duplicated
+the complete execution, actual tool responses and provenance, without duplicated
 terminal progress. `workspace_ops` is supporting provenance; Lua `computed` means
 executed, not faithful. Do not infer fidelity from either or from a plausible final
 answer. Caller-owned `assessment` records summary/rubric/evidence references beside
@@ -200,6 +203,24 @@ System `simulation_backend`, `step_budget`, `token_budget` attributes help expli
 comparisons; defaults do not infer an experiment's intended cohort. Catalog
 availability does not verify generation or balance; no hidden charged readiness probe.
 See `docs/design/evidence-first.md`.
+
+## Lua investigation orchestration (experimental)
+
+The program belongs to the investigation, NEVER the scenario. Every investigation
+uses Lua, including the default single-agent program. Free-form JSON `params` has
+no privileged keys: the program chooses what to pass to `ctx.run_agent` and
+`ctx.call_tool`. Each agent gets a fresh conversation; all calls share the one
+scenario simulation session/world/workspace. Direct orchestration tool calls use
+the same engine and retain the same provenance as agent tool calls.
+
+The host owns immutable evidence, whole-investigation budgets, accounting and
+sandbox limits. Lua cannot erase charged work or bypass exhaustion using `pcall`.
+Lua errors never invoke a simulator fallback for orchestration. Scenario tool
+handler fallback remains unchanged. Application Lua sees no world truth or tool
+implementation source. `workflow.output`, not the last agent completion, is the
+application's returned value. Source/params and exact stage inputs/settings/turn
+ranges are evidence. Per-model usage must be priced separately; do not apply a
+nominal model's price to tokens from multiple models. See `docs/workflow-api.md`.
 
 ## Lua tool implementations (caller-authored)
 

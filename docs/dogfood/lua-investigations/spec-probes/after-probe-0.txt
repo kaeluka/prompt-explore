@@ -1,0 +1,55 @@
+The API documentation specifies that to compare prompts and review outputs, I should conduct investigations against a registered scenario, using the `POST /api/investigations` endpoint. The scenario `scn-example` has a `read_file` tool, and I need to compare one prompt with an extract, then review the output and handoff evidence.
+
+Since the process involves two stages per candidate, I will prepare two investigation JSON payloads, each representing one candidate. The investigation will specify the scenario ID, the model (using `open_router::openai/gpt-4.1-nano`), and the prompt details.
+
+Here's the exact JSON for the two-stage candidate investigation:
+
+```json
+{
+  "scenario_id": "scn-example",
+  "investigation": {
+    "reason": "Compare prompt with extract and review output for candidate 1",
+    "budget": {
+      "max_steps_per_trace": 6,
+      "max_tokens": null
+    }
+  },
+  "put": {
+    "id": "candidate-1",
+    "template": "Extract the key points from the document: {{document}}",
+    "design_goals": "Accurately identify main points without hallucination."
+  },
+  "put_model": "open_router::openai/gpt-4.1-nano"
+}
+```
+
+And for the second candidate:
+
+```json
+{
+  "scenario_id": "scn-example",
+  "investigation": {
+    "reason": "Compare prompt with extract and review output for candidate 2",
+    "budget": {
+      "max_steps_per_trace": 6,
+      "max_tokens": null
+    }
+  },
+  "put": {
+    "id": "candidate-2",
+    "template": "Summarize the document: {{document}}",
+    "design_goals": "Provide a concise summary capturing all critical information."
+  },
+  "put_model": "open_router::openai/gpt-4.1-nano"
+}
+```
+
+To read the output and handoff evidence, I will poll each investigation's evidence endpoint:
+
+```
+GET /api/investigations/{investigation_id}/evidence
+```
+
+This will return the complete conversation, including the model's responses, tool calls, and any Lua execution details, which I will analyze to compare the outputs and review the handoff evidence.
+
+Please specify the investigation IDs once the investigations are created, or I can proceed to create these investigations and provide the full response JSONs if needed.

@@ -1,0 +1,66 @@
+Certainly. Based on the documentation, I will craft a Lua-based workflow that:
+
+1. Reads `config.json` using the scenario's `read_file` tool.
+2. Calls an agent with the content of `config.json`.
+3. Retries the agent up to two times if it returns no final output (`output` is nil).
+
+The orchestration will be a Lua function that:
+
+- Calls `ctx.call_tool('read_file', {path='config.json'})`.
+- Checks if the response has an error; if so, returns immediately.
+- Runs a loop up to 3 attempts (initial + 2 retries):
+  - Calls `ctx.run_agent` with the `config.json` content.
+  - If the agent's output is not nil, returns it.
+- If all attempts fail to produce output, returns a failure indicator.
+
+The request will specify the model, prompt, and controls as inputs.
+
+**Executable orchestration (Lua source):**
+
+```lua
+return function(p, ctx)
+  local file = ctx.call_tool('read_file', {path='config.json'})
+  if file.error then
+    return {error=file.error}
+  end
+  local content = file.content
+  for attempt=1,3 do
+    local agent = ctx.run_agent{
+      prompt=p.prompt,
+      model=p.model,
+      input=content
+    }
+    if agent.output ~= nil then
+      return agent.output
+    end
+  end
+  return {delivered=false}
+end
+```
+
+**Request example:**
+
+```json
+{
+  "workflow": {
+    "lua_source": "<above Lua source>",
+    "params": {
+      "model": "open_router::gpt-4.1-nano",
+      "prompt": "Review the configuration."
+    }
+  }
+}
+```
+
+**Limits and evidence:**
+
+- The `max_steps_per_trace` limit applies to each attempt, controlling the total number of steps (agent calls + final completion). Since the loop retries twice, the total steps are at most 3 times the per-attempt limit.
+- The `max_tokens` limit applies to each agent call; the content of `config.json` is included in the input tokens count.
+- The `workspace_max_read_lines`, `workspace_max_grep_matches`, `workspace_max_line_len`, and `workspace_max_output_bytes` limits govern the workspace operations during `read_file`. These are set at the scenario level and are shared across attempts.
+- Evidence that survives a failed call includes:
+  - The scenario's `read_file` tool response, including any error.
+  - The agent's attempts, including the inputs used and whether output was produced.
+  - The overall workflow's resource usage and timing, which are recorded regardless of success or failure.
+- The `attributes` and `grades` are not explicitly set here; the caller can PATCH them after inspecting the evidence.
+
+Would you like me to prepare the JSON request payload with specific model/configuration details?

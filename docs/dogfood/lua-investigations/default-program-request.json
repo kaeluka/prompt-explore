@@ -1,0 +1,25 @@
+{
+  "scenario_id": "scn-b1ce3fe0869f",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "resolved_inputs": {},
+  "workflow": {
+    "params": {
+      "prompt": "Use read_invoice to inspect INV-7. Identify the duplicate payment and recommend an action; do not claim it happened. Keep under 100 words.",
+      "model": "open_router::openai/gpt-4.1-nano",
+      "controls": {
+        "temperature": 0,
+        "max_tokens": 500
+      }
+    }
+  },
+  "attributes": {
+    "label": "default-program",
+    "variant": "default-program",
+    "campaign": "lua-workflow-dogfood"
+  }
+}

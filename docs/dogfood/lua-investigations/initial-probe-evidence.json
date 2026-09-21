@@ -1,0 +1,122 @@
+{
+  "id": "75b4680f-1f33-4040-9855-f1bfb37819e3",
+  "scenario_id": "scn-467b2e6e956b",
+  "scenario_revision": 1,
+  "scenario_hash": "d5e811b71bca05ce317e865b5e948e2b5039b73920fc51cb39d8c1c2978f97c0",
+  "status": "done",
+  "stop_reason": "completed",
+  "started_at": 1790013293020,
+  "finished_at": 1790013294813,
+  "resolved_inputs": {},
+  "calls": [
+    {
+      "request": {
+        "name": "read_invoice",
+        "args": {
+          "id": "INV-7"
+        }
+      },
+      "response": {
+        "currency": "USD",
+        "payments": [
+          {
+            "status": "settled",
+            "id": "PAY-1",
+            "amount": 25
+          },
+          {
+            "status": "settled",
+            "id": "PAY-2",
+            "amount": 25
+          }
+        ],
+        "refunded": false,
+        "invoice": "INV-7",
+        "total": 25
+      },
+      "lua_execution": {
+        "tool": "read_invoice",
+        "source_hash": "ae18ecdc1bce1808ffb4f17e212d3f3e11c8390a71c1672ca7bb7e8897aee981",
+        "outcome": "computed"
+      },
+      "elapsed_ms": 6
+    },
+    {
+      "request": {
+        "name": "write_note",
+        "args": {
+          "text": "shared-note-probe"
+        }
+      },
+      "response": {
+        "path": "notes.txt",
+        "bytes": 17,
+        "ok": true
+      },
+      "state_after": {},
+      "lua_execution": {
+        "tool": "write_note",
+        "source_hash": "24ba2c24b28f0e9d112f64a2a48737e7c4930922f1b13415bd8da6b5f36c11e7",
+        "outcome": "error",
+        "detail": "write tool result is missing state_patch",
+        "discarded_workspace_ops": [
+          {
+            "tool": "write",
+            "args": {
+              "content": "shared-note-probe",
+              "path": "notes.txt"
+            },
+            "result": {
+              "path": "notes.txt",
+              "bytes": 17,
+              "ok": true
+            }
+          }
+        ]
+      },
+      "elapsed_ms": 1786
+    },
+    {
+      "request": {
+        "name": "read_note",
+        "args": {}
+      },
+      "response": {
+        "error": "not found",
+        "path": "notes.txt"
+      },
+      "lua_execution": {
+        "tool": "read_note",
+        "source_hash": "5e80b945ddfd35e6c8ae252ef0f7f598f1fce8d51069b402d9f98b271746f2b8",
+        "outcome": "computed"
+      },
+      "workspace_ops": [
+        {
+          "tool": "read",
+          "args": {
+            "path": "notes.txt"
+          },
+          "result": {
+            "path": "notes.txt",
+            "error": "not found"
+          }
+        }
+      ],
+      "elapsed_ms": 0
+    }
+  ],
+  "error": null,
+  "lua_computed_calls": 2,
+  "lua_fallback_calls": 0,
+  "lua_error_calls": 1,
+  "reason": null,
+  "usage": {
+    "input_tokens": 1884,
+    "cache_read_tokens": 0,
+    "output_tokens": 23,
+    "llm_calls": 1,
+    "tool_calls": 0,
+    "cost_usd": 0.0001976
+  },
+  "cost_usd": 0.0001976
+}

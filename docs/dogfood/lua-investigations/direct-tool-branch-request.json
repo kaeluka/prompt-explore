@@ -1,0 +1,22 @@
+{
+  "scenario_id": "scn-b1ce3fe0869f",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "resolved_inputs": {},
+  "workflow": {
+    "lua_source": "return function(params,ctx)\n local invoice=ctx.call_tool(\"read_invoice\",{id=\"INV-7\"})\n if #invoice.payments==2 then\n  ctx.call_tool(\"write_note\",{text=params.note})\n  return ctx.run_agent{name=\"read-shared-note\",prompt=\"Call read_note and report its exact content. Never claim a refund was executed.\",model=params.model,input=ctx.input,tools={\"read_note\"},controls={temperature=0,max_tokens=500}}.output\n end\n return \"No duplicate candidate\"\nend",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "note": "PAY-2 duplicates PAY-1 for INV-7. Recommend refunding USD 25; no refund has happened."
+    }
+  },
+  "attributes": {
+    "label": "direct-tool-branch",
+    "variant": "direct-tool-branch",
+    "campaign": "lua-workflow-dogfood"
+  }
+}

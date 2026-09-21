@@ -1,0 +1,69 @@
+Here's an executable Lua orchestration program that reads `config.json` via the scenario's `read_file` tool, then calls an agent, and retries up to two times if the agent does not produce a final output. It uses the documented `ctx.call_tool` and `ctx.run_agent` functions, with no workspace or additional limits specified beyond the default.
+
+```lua
+return function(p, ctx)
+  -- Read config.json from the scenario's file system
+  local file = ctx.call_tool('read_file', {path='config.json'})
+  if file.error then
+    error(file.error)
+  end
+
+  -- Retry the agent call up to 2 times if no final output
+  for attempt=1,3 do
+    local agent = ctx.run_agent{
+      prompt=p.prompt,
+      model=p.model,
+      input=file.content
+    }
+    if agent.failure ~= nil then
+      error(agent.failure.error)
+    end
+    if agent.output ~= nil then
+      return agent.output
+    end
+  end
+
+  -- If all retries fail, return a failure indicator
+  return {delivered=false}
+end
+```
+
+**Request example:**
+
+```json
+{
+  "scenario_id": "<your scenario id>",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "put": {
+    "id": "config-reader",
+    "template": "Read configuration and process.",
+    "design_goals": "Verify config reading and agent retry logic."
+  },
+  "attributes": {
+    "variant": "read-and-retry"
+  },
+  "workflow": {
+    "lua_source": "<above code>",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "prompt": "Please review the configuration."
+    }
+  }
+}
+```
+
+**Limits and evidence that survive a failed call:**
+
+- The overall investigation's `budget` (max steps and tokens) remains in effect; exceeding it stops the run.
+- The `scenario` and its `world` specification are pinned and survive the failure.
+- The `resolved_inputs` used in the run are recorded and can be inspected.
+- The `trace` and `turns` are preserved if the run completes successfully; if the run fails, no trace is produced, but partial evidence such as the last attempted exchanges may be available.
+- The `grades` and `assessment` are not set unless explicitly patched after inspection; a failed run does not produce these.
+- The `workspace` state is not affected by the failure; the initial workspace remains unchanged.
+
+Let me know if you'd like me to prepare the full API request payload or further details.

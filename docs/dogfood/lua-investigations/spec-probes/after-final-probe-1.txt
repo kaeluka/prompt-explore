@@ -1,0 +1,62 @@
+Here's an executable Lua orchestration program that reads `config.json` via the scenario's `read_file` tool, then calls an agent, and retries up to two times if the agent's output is nil. It uses the documented `ctx.call_tool` and `ctx.run_agent` functions, with no workspace or additional controls, and respects the host's resource limits.
+
+```lua
+return function(p, ctx)
+  -- Read config.json from scenario's file system
+  local file = ctx.call_tool('read_file', {path='config.json'})
+  if file.error then
+    error(file.error)
+  end
+
+  -- Retry calling the agent up to 3 times if output is nil
+  for attempt=1,3 do
+    local agent = ctx.run_agent({
+      name='retry-agent-'..attempt,
+      prompt=p.prompt,
+      model=p.model,
+      input=file.content
+    })
+    if agent.failure ~= nil then
+      error(agent.failure.error)
+    end
+    if agent.output ~= nil then
+      return agent.output
+    end
+  end
+  -- Return a default response if all retries fail
+  return {delivered=false}
+end
+```
+
+**Request example:**
+
+```json
+{
+  "scenario_id": "<registered scenario id>",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": null
+    }
+  },
+  "workflow": {
+    "lua_source": "<above program>",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "prompt": "Review the configuration."
+    }
+  }
+}
+```
+
+---
+
+**Limits and evidence considerations:**
+
+- **Resource limits:** The host enforces resource caps such as `max_host_bytes`, `max_host_calls`, `max_instructions`, and `max_duration_ms`. The Lua code itself is simple and should stay within these bounds, but if the `read_file` or `run_agent` calls exceed limits, they will delegate to the simulator LLM, and the evidence will show `lua_execution.outcome` as `"fallback"` or `"error"` accordingly.
+
+- **Surviving evidence:** The `progress` object in the investigation will contain the sequence of turns, including the initial `read_file` tool call and each `run_agent` invocation. If a retry fails to produce output, the last attempt's `agent.output` will be null, and the overall trace will show the number of attempts and the failure reason. The `usage` data will include token counts and costs for each call, and the `stop_reason` will indicate whether the run completed successfully or was cut off by resource limits or errors.
+
+- **Failed call evidence:** Even if the agent's output is nil after retries, the entire sequence of tool calls and agent invocations is preserved in the trace. The `lua_execution` records will show whether the code was executed successfully or delegated, and the `workspace_ops` will document any workspace interactions. The `failure` field in the final `investigation` will contain error messages if the `read_file` or `run_agent` calls encountered issues, and the `stop_reason` will specify whether the run was terminated due to resource limits or runtime errors.
+
+Let me know if you'd like me to prepare the full JSON request with specific scenario ID and parameters.

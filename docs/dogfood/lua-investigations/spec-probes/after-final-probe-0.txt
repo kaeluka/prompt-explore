@@ -1,0 +1,34 @@
+The API documentation indicates that to compare a prompt with an extract-then-review approach in one investigation per candidate, I should submit an investigation with a workflow Lua program that calls `ctx.run_agent` twice: first for extraction, then for review. The model used is `open_router::openai/gpt-4.1-nano`. 
+
+Here's the exact POST investigation JSON for the two-stage candidate:
+
+```json
+{
+  "scenario_id": "scn-example",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "workflow": {
+    "lua_source": "return function(p,ctx) local a=ctx.run_agent{name='extract',prompt=p.extract,model=p.model,input=ctx.input}; if a.output==nil then return {delivered=false} end; local b=ctx.run_agent{name='review',prompt=p.review,model=p.model,input=a.output,tools={}}; return b.output end",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "extract": "Gather exact facts using the tools.",
+      "review": "Review these facts and answer without inventing facts or actions."
+    }
+  },
+  "attributes": {
+    "variant": "extract-review"
+  }
+}
+```
+
+To read its output and handoff evidence, you should poll the investigation's evidence endpoint:
+
+```
+GET /api/investigations/{id}/evidence
+```
+
+This will return a detailed object containing the entire conversation trace, including the two agent invocations, their prompts, responses, and any tool calls or Lua executions. The evidence includes the `workflow` field with the source, parameters, and the final output, which is the review's response. The `workflow.invocations` array contains the two stages: extraction and review, with their respective details and responses, serving as the handoff evidence.

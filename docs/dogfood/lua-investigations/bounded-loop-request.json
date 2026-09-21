@@ -1,0 +1,21 @@
+{
+  "scenario_id": "scn-b1ce3fe0869f",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "resolved_inputs": {},
+  "workflow": {
+    "lua_source": "return function(params,ctx)\n for attempt=1,2 do\n  local a=ctx.run_agent{name=\"attempt-\"..attempt,prompt=\"You MUST call read_invoice for INV-7 before answering. Then identify the duplicate payment. Do not claim a refund happened.\",model=params.model,input=ctx.input,tools={\"read_invoice\"},controls={temperature=0,max_tokens=500},budget={max_steps=attempt==1 and 1 or 3}}\n  if a.stop_reason==\"final_completion\" then return {attempts=attempt,answer=a.output} end\n end\n return {delivered=false}\nend",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano"
+    }
+  },
+  "attributes": {
+    "label": "bounded-loop",
+    "variant": "bounded-loop",
+    "campaign": "lua-workflow-dogfood"
+  }
+}

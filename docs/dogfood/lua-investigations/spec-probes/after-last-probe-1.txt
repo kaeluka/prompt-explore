@@ -1,0 +1,80 @@
+Certainly. Based on the documentation, I will craft a Lua-based workflow that:
+
+1. Reads `config.json` using the scenario's `read_file` tool.
+2. Calls an agent with the content of `config.json`.
+3. Retries the agent up to two times if it returns no final output (`output` is nil).
+
+The workflow will be a Lua function that performs these steps, respecting the documented affordances: `ctx.call_tool`, `ctx.run_agent`, and the retry logic.
+
+Here's the executable Lua orchestration:
+
+```lua
+return function(p, ctx)
+  local file = ctx.call_tool('read_file', {path='config.json'})
+  if file.error then
+    error(file.error)
+  end
+  local attempts = 0
+  local max_attempts = 3
+  local agent_output = nil
+  while attempts < max_attempts do
+    local agent = ctx.run_agent({
+      prompt = p.prompt,
+      model = p.model,
+      input = file.content
+    })
+    if agent.failure ~= nil then
+      error(agent.failure.error)
+    end
+    if agent.output ~= nil then
+      agent_output = agent.output
+      break
+    end
+    attempts = attempts + 1
+  end
+  if agent_output == nil then
+    return {delivered=false}
+  else
+    return agent_output
+  end
+end
+```
+
+**Request example:**
+
+```json
+{
+  "scenario_id": "<your scenario id>",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "workflow": {
+    "lua_source": "<above Lua code>",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "prompt": "Review the configuration."
+    }
+  }
+}
+```
+
+---
+
+### Explanation of limits and evidence:
+
+- **Limits:**
+  - The total number of agent invocations (`ctx.run_agent`) is capped at 3 attempts, as per `max_attempts`.
+  - The overall `max_steps_per_trace` and `max_tokens` are set in the `investigation.budget`, controlling the maximum steps and tokens for the entire trace.
+  - The retry loop is within the Lua code, so the number of retries is limited to 2 retries (attempts 1 and 2), with the third attempt being the final.
+
+- **Evidence that survives a failed call:**
+  - The `progress` object in the investigation's evidence retains all turns and the scenario world state up to the point of failure.
+  - The `failure` object records the error encountered during the run.
+  - The `workspace_ops` (if any) during the last attempt are preserved, showing what workspace interactions occurred.
+  - The `attributes` and `grades` are not affected by the failure; they are set via PATCH requests after inspection.
+  - The `scenario` and `world` specifications are immutable and remain as evidence of the test case.
+
+This orchestration and request adhere strictly to the documented affordances and are suitable for the described retry logic.

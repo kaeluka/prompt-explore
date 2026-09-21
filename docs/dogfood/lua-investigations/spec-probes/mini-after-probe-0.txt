@@ -1,0 +1,49 @@
+The API supports multi-stage composition investigations with a workflow Lua program. The scenario "scn-example" has a read_file tool, so the workflow can call that tool directly.
+
+Here is the exact POST /api/investigations JSON body for the two-stage candidate "extract then review" against scenario "scn-example" using model "open_router::openai/gpt-4.1-nano":
+
+```json
+{
+  "scenario_id": "scn-example",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "workflow": {
+    "lua_source": "return function(p,ctx) local file=ctx.call_tool('read_file',{path='config.json'}); if file.error then return {error=file.error} end; for attempt=1,3 do local a=ctx.run_agent{name='review-'..attempt,prompt=p.prompt,model=p.model,input=file.content}; if a.output~=nil then return a.output end end; return {delivered=false} end",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "prompt": "Review this configuration."
+    }
+  }
+}
+```
+
+Note: The above Lua source calls the scenario tool "read_file" with argument `{path='config.json'}`, then runs the agent up to 3 times with the prompt and model supplied in params, passing the file content as input. It returns the first non-nil output or `{delivered=false}` if none.
+
+---
+
+### How to read the output and handoff evidence:
+
+1. After POSTing the investigation, you receive an investigation `id`.
+2. Poll GET `/api/investigations/{id}/evidence` to get the full conversation trace.
+3. In the returned JSON:
+   - `workflow.output` contains the final output of the workflow Lua program.
+   - `workflow.invocations` is an array of `AgentInvocationRecord` objects, each representing one `ctx.run_agent` call with details:
+     - `name` (e.g. "review-1", "review-2", ...)
+     - `prompt`, `model`, `input`
+     - `output` (agent completion text)
+     - `stop_reason`, `steps_used`, `tokens_used`
+   - `workflow.tool_calls` is an array of `DirectToolCallRecord` objects representing direct calls to scenario tools (e.g. the `read_file` call), including:
+     - `name` (tool name)
+     - `args` (arguments passed)
+     - `response` (tool response)
+     - `lua_execution` (if Lua implementation was attempted)
+     - `workspace_ops` (workspace operations performed)
+4. Use this evidence to verify the exact handoff from the tool call to the agent calls, inspect the file content read, and the agent's reasoning and output.
+
+---
+
+If you want me to generate the exact POST request with headers or help with polling and interpreting the evidence, please ask!

@@ -63,6 +63,8 @@ pub enum RunPhase {
     /// The simulator is choosing concrete values from the input domain.
     #[default]
     ResolvingInputs,
+    /// The workflow Lua program is orchestrating between agent invocations.
+    Orchestration,
     /// The prompt under test is executing its conversation/tool loop.
     PutLoop,
 }
@@ -87,6 +89,7 @@ pub enum RunStopReason {
 pub struct RunTiming {
     pub elapsed_ms: u64,
     pub resolving_inputs_ms: u64,
+    pub orchestration_ms: u64,
     pub put_loop_ms: u64,
 }
 
@@ -170,6 +173,10 @@ pub struct RunProgress {
     /// rendered exchanges; no failed exchange is invented.
     #[serde(default)]
     pub turns: Vec<TraceTurn>,
+    /// Live workflow evidence: source/params, completed direct tool calls and
+    /// agent invocations, and the final output/error once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<crate::model::workflow::WorkflowEvidence>,
     /// The opening user message, for rendering the complete conversation live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_message: Option<String>,
@@ -199,6 +206,7 @@ impl RunProgress {
         self.execution = RunExecution::default();
         self.implementations.clear();
         self.turns.clear();
+        self.workflow = None;
         self.user_message = user_message;
         self.resolved_inputs.clear();
         self.usage = None;
@@ -277,6 +285,13 @@ impl RunProgress {
                     .execution
                     .timing
                     .resolving_inputs_ms
+                    .saturating_add(phase_ms)
+            }
+            RunPhase::Orchestration => {
+                self.execution.timing.orchestration_ms = self
+                    .execution
+                    .timing
+                    .orchestration_ms
                     .saturating_add(phase_ms)
             }
             RunPhase::PutLoop => {
@@ -486,6 +501,9 @@ pub struct Trace {
     /// trace is reproducible: the exact input that produced it.
     #[serde(default)]
     pub resolved_inputs: HashMap<String, Value>,
+    /// Workflow source/params/output and per-invocation/direct-tool evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<crate::model::workflow::WorkflowEvidence>,
 }
 
 impl Trace {

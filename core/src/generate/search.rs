@@ -8,7 +8,8 @@ use crate::llm::LlmClient;
 use crate::model::input::{Investigation, PromptUnderTest};
 use crate::model::output::RunFailure;
 use crate::model::simulation::{RunProgress, RunStopReason, Trace};
-use crate::simulate::{Runner, RunnerOptions, ScenarioRuntime};
+use crate::model::workflow::WorkflowProgram;
+use crate::simulate::{RunnerOptions, ScenarioRuntime, run_workflow};
 
 /// One LLM client + model name, reused across runner roles.
 #[derive(Clone)]
@@ -53,19 +54,59 @@ impl Investigator {
         resolved_inputs: Option<&std::collections::HashMap<String, serde_json::Value>>,
         progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
     ) -> InvestigateOutcome {
-        // Keep progress even for standalone callers: the runner returns its
-        // execution evidence in the successful Trace, while this handle lets
-        // failure and panic paths retain the same evidence until finalization.
+        self.run_workflow_internal(
+            investigation,
+            put,
+            runtime,
+            resolved_inputs,
+            progress,
+            &WorkflowProgram {
+                lua_source: crate::model::workflow::DEFAULT_WORKFLOW_LUA.into(),
+                params: serde_json::Value::Null,
+                limits: Default::default(),
+            },
+            true,
+        )
+        .await
+    }
+
+    pub async fn investigate_workflow(
+        &self,
+        investigation: &Investigation,
+        put: &PromptUnderTest,
+        runtime: &ScenarioRuntime,
+        resolved_inputs: Option<&std::collections::HashMap<String, serde_json::Value>>,
+        progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
+        workflow: &WorkflowProgram,
+    ) -> InvestigateOutcome {
+        self.run_workflow_internal(
+            investigation,
+            put,
+            runtime,
+            resolved_inputs,
+            progress,
+            workflow,
+            false,
+        )
+        .await
+    }
+
+    async fn run_workflow_internal(
+        &self,
+        investigation: &Investigation,
+        put: &PromptUnderTest,
+        runtime: &ScenarioRuntime,
+        resolved_inputs: Option<&std::collections::HashMap<String, serde_json::Value>>,
+        progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
+        workflow: &WorkflowProgram,
+        legacy_mode: bool,
+    ) -> InvestigateOutcome {
         let progress =
             progress.unwrap_or_else(|| Arc::new(std::sync::Mutex::new(RunProgress::default())));
         if let Ok(mut current) = progress.lock() {
             current.initialize(runtime.scenario.user_message.clone());
         }
 
-        // Keep this one conversation in its own task so a panic in a client or
-        // runner is returned as ordinary failure evidence rather than escaping
-        // the server's job task and leaving it permanently running. This is not
-        // batch orchestration: exactly one task and one scenario are awaited.
         let put_role = self.runner_put.clone();
         let sim_role = self.runner_sim.clone();
         let runner_options = self.runner_options.clone();
@@ -74,25 +115,25 @@ impl Investigator {
         let budget = investigation.budget.clone();
         let task_progress = progress.clone();
         let task_inputs = resolved_inputs.cloned();
-        let task = tokio::spawn(async move {
-            let runner = Runner::new(
-                put_role.client,
-                put_role.model,
-                put_role.thinking_level,
-                sim_role.client,
-                sim_role.model,
-                sim_role.thinking_level,
+        let workflow = workflow.clone();
+        // Lua is local to this blocking thread, but async clients must keep
+        // using the caller's long-lived runtime. A disposable per-workflow
+        // runtime kills shared HTTP pool connection drivers when one run ends,
+        // breaking concurrent investigations that reuse those connections.
+        let handle = tokio::runtime::Handle::current();
+        let task = tokio::task::spawn_blocking(move || {
+            handle.block_on(run_workflow(
+                put_role,
+                sim_role,
                 runner_options,
-            );
-            runner
-                .run(
-                    &put,
-                    &task_runtime,
-                    &budget,
-                    task_inputs.as_ref(),
-                    Some(task_progress),
-                )
-                .await
+                budget,
+                put,
+                task_runtime,
+                task_inputs,
+                task_progress,
+                workflow,
+                legacy_mode,
+            ))
         });
 
         match task.await {
@@ -101,22 +142,23 @@ impl Investigator {
                 failure: None,
             },
             Ok(Err(error)) => {
-                finish_failure(&progress);
+                finish_failure(&progress, &error.error);
                 InvestigateOutcome {
                     trace: None,
                     failure: Some(RunFailure {
-                        stage: "runner".into(),
-                        error: error.to_string(),
+                        stage: error.stage.into(),
+                        error: error.error,
                     }),
                 }
             }
             Err(join_error) => {
-                finish_failure(&progress);
+                let error = format!("task panicked: {join_error}");
+                finish_failure(&progress, &error);
                 InvestigateOutcome {
                     trace: None,
                     failure: Some(RunFailure {
                         stage: "runner".into(),
-                        error: format!("task panicked: {join_error}"),
+                        error,
                     }),
                 }
             }
@@ -124,8 +166,38 @@ impl Investigator {
     }
 }
 
-fn finish_failure(progress: &Arc<std::sync::Mutex<RunProgress>>) {
+fn finish_failure(progress: &Arc<std::sync::Mutex<RunProgress>>, error: &str) {
     if let Ok(mut progress) = progress.lock() {
-        progress.finish(RunStopReason::RuntimeFailure);
+        let reason = progress
+            .workflow
+            .as_ref()
+            .and_then(|workflow| workflow.stop_reason)
+            .filter(|reason| {
+                matches!(
+                    reason,
+                    RunStopReason::StepBudget | RunStopReason::TokenBudget
+                )
+            })
+            .unwrap_or(RunStopReason::RuntimeFailure);
+        let turn_end = progress.turns.len();
+        if let Some(workflow) = &mut progress.workflow {
+            workflow.error = Some(error.into());
+            workflow.stop_reason = Some(reason);
+            for invocation in &mut workflow.invocations {
+                if invocation.running {
+                    invocation.running = false;
+                    invocation.stop_reason = Some(RunStopReason::RuntimeFailure);
+                    invocation.failure = Some(error.into());
+                    invocation.turn_end = turn_end;
+                }
+            }
+            for call in &mut workflow.tool_calls {
+                if call.running {
+                    call.running = false;
+                    call.failure = Some(error.into());
+                }
+            }
+        }
+        progress.finish(reason);
     }
 }

@@ -257,4 +257,26 @@ async fn investigate_captures_runner_task_panics_as_failure_evidence() {
         progress.execution.stop_reason,
         Some(RunStopReason::RuntimeFailure)
     );
+    let workflow = progress
+        .workflow
+        .as_ref()
+        .expect("workflow evidence kept live");
+    assert_eq!(workflow.invocations.len(), 1);
+    let invocation = &workflow.invocations[0];
+    assert!(
+        !invocation.running,
+        "a panicked invocation is no longer running"
+    );
+    assert_eq!(invocation.stop_reason, Some(RunStopReason::RuntimeFailure));
+    assert!(
+        invocation
+            .failure
+            .as_ref()
+            .unwrap()
+            .contains("deliberate PUT panic")
+    );
+    assert_eq!(invocation.name, "put");
+    assert_eq!(invocation.model, "put");
+    assert_eq!(invocation.input.as_deref(), Some("Hello"));
+    assert_eq!(invocation.prompt, "Answer the user.");
 }

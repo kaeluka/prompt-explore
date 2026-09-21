@@ -140,6 +140,24 @@
   .execution { margin: .4rem 0; padding: .35rem .5rem; border-left: 2px solid var(--border); background: var(--panel-2); font-size: .78rem; }
   .execution.capped { border-left-color: var(--amber); }
   .execution.failure { border-left-color: var(--red); }
+  /* Workflow orchestration is distinct from one PUT completion: the program's
+     returned value and each agent stage get their own border hue. */
+  .execution.workflow-output { border-left-color: var(--accent); }
+  .workflow-stage { border-color: var(--sim-border); }
+  .workflow-stage .workflow-invocation-output { margin-top: .35rem; }
+  .run-event > summary { cursor: pointer; list-style: none; }
+  .run-event > summary::before { content: '▸'; color: var(--text-dim); margin-right: .4rem; }
+  .run-event[open] > summary::before { content: '▾'; }
+  .run-event > summary::-webkit-details-marker { display: none; }
+  .returned-value { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30rem; overflow: auto; scrollbar-gutter: stable; color: var(--text); }
+  .returned-fields { margin: .35rem 0 0; }
+  .returned-fields dt { font-weight: 600; margin: .65rem 0 .25rem; }
+  .returned-fields dd { margin: 0; }
+  .workflow-direct { border-left-color: var(--workspace); }
+  .workflow-direct .bubble.put { background: var(--workspace-soft); border-color: var(--workspace-border); }
+  .composer { border-top: 1px solid var(--border); padding-top: .45rem; margin: .65rem 0; }
+  .composer > summary { font-weight: 600; }
+  .composer textarea { min-height: 16rem; }
   .filter-row { display:grid; grid-template-columns:minmax(10em,1fr) minmax(12em,2fr) auto; gap:.4rem; align-items:center; margin:.25rem 0; }
   .source-compare { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; margin-top:.35rem; }
   @media (max-width: 600px) { .source-compare { grid-template-columns:1fr; } .filter-row { grid-template-columns:1fr auto; } .filter-row input { grid-column:1; } }
@@ -309,10 +327,12 @@ const fmtUsage = u => u ? `${u.input_tokens.toLocaleString()} in${u.cache_read_t
 // bubbles so `put`/`sim` are recognizable across the card.
 const roleLine = (label, u, cls) => u ? html`<div class="meta usage-line"><span class=${`uchip ${cls}`}>${label}</span>${fmtUsage(u)}</div>` : null;
 const pretty = v => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
+const renderValue = v => typeof v === 'string' ? v : pretty(v);
 const fmtAxisVal = v => v == null ? '—' : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : +v.toFixed(3);
 const relTime = ms => { const s=(Date.now()-ms)/1000; if(s<60) return `${Math.floor(s)}s ago`; if(s<3600) return `${Math.floor(s/60)}m ago`; return `${Math.floor(s/3600)}h ago`; };
 const phaseLabel = p => ({
   resolving_inputs: 'resolving input variables',
+  orchestration: 'orchestrating workflow',
   put_loop: 'running PUT tool loop',
 })[p] || p;
 
@@ -385,7 +405,7 @@ function TurnView({ turn, index }) {
     ? `${exchanges.length} tool call${exchanges.length === 1 ? '' : 's'}${exchanges.length > 1 ? ' · same completion' : ''}`
     : 'text completion';
   return html`<div class="turn">
-    <div class="turn-head"><span class="uchip put">PUT turn ${index + 1}</span><span class="meta">${kind}</span></div>
+    <div class="turn-head"><span class="uchip put">Agent turn ${index + 1}</span><span class="meta">${kind}</span></div>
     ${turn.thinking && turn.thinking.trim()
       ? html`<${Thinking} side="put" role="PUT" text=${turn.thinking} />`
       : null}
@@ -394,6 +414,89 @@ function TurnView({ turn, index }) {
       : null}
     ${exchanges.map((exchange, i) => html`<${ExchangeView} key=${i} exchange=${exchange} index=${i} total=${exchanges.length} />`)}
   </div>`;
+}
+
+// The Lua workflow's returned value is NOT a final answer and need not equal the
+// last agent completion: it is whatever JSON the program returned. Render it as
+// its own artifact before any per-stage completions.
+function WorkflowOutput({ output, error, stopReason }) {
+  const hasOutput = output !== undefined;
+  return html`<div class=${`execution workflow-output${error ? ' failure' : ''}`}>
+    <b>workflow output</b> <span class="meta">· value returned by the Lua program — not necessarily the last agent completion</span>
+    ${stopReason ? html`<span class="mono"> · stop ${String(stopReason).replaceAll('_', ' ')}</span>` : null}
+    ${error ? html`<div class="note">workflow error: <${ClipText} text=${error} /></div>` : null}
+    ${hasOutput
+      ? html`<pre class="step">${pretty(output)}</pre>`
+      : html`<div class="meta">no workflow output recorded${error ? ' — the program failed' : ''}.</div>`}
+  </div>`;
+}
+
+// One ctx.run_agent conversation. Its exact effective handoff (prompt, input,
+// model, tools, controls) and its turn range in the flat trace are evidence:
+// the reader can see what each stage received and produced, and where the
+// handoff to the next stage happened.
+function InvocationStage({ invocation, turns, index, total }) {
+  const recordedRange = invocationTurnRange(invocation);
+  const range = recordedRange && invocation.running ? [recordedRange[0], (turns || []).length] : recordedRange;
+  const stageTurns = range ? (turns || []).slice(range[0], range[1]) : [];
+  const name = invocation.name || `agent ${index + 1}`;
+  const tools = invocation.tools || [];
+  const controls = invocation.controls || {};
+  return html`<details class="turn workflow-stage run-event">
+    <summary class="turn-head"><span class="uchip put">Agent ${index + 1}${total > 1 ? ` / ${total}` : ''}</span><span>${name}</span><span class="meta">${shortModel(invocation.model)}</span>${invocation.running ? html`<span class="badge running">running</span>` : invocation.failure ? html`<span class="badge failed">failed</span>` : invocation.stop_reason ? html`<span class="badge ${invocation.stop_reason === 'final_completion' ? 'completed' : 'partial'}">${stopLabel(invocation.stop_reason)}</span>` : null}</summary>
+    <div class="meta">model <span class="mono">${shortModel(invocation.model)}</span>${range ? (range[1] > range[0] ? ` · flat turns ${range[0]}–${range[1] - 1}` : ' · flat turns none') : ' · turn range not recorded'} · steps ${invocation.steps_used ?? '—'} · tokens ${invocation.tokens_used ?? '—'}${invocation.stop_reason ? ` · stop ${String(invocation.stop_reason).replaceAll('_', ' ')}` : ''}</div>
+    <details><summary class="meta">Input, instructions and settings</summary>
+      ${invocation.prompt ? html`<div style="margin-top:.3rem"><b class="meta">Instructions to this agent</b><div class="body" style="white-space:pre-wrap;word-break:break-word;font-size:.78rem">${invocation.prompt}</div></div>` : null}
+      ${invocation.input ? html`<div style="margin-top:.3rem"><b class="meta">Input to this stage</b><div class="body" style="white-space:pre-wrap;word-break:break-word;font-size:.78rem">${invocation.input}</div></div>` : null}
+      <div class="meta" style="margin-top:.3rem">tools: <span class="mono">${tools.length ? tools.join(', ') : '(none exposed)'}</span></div>
+      <div class="meta">controls: <span class="mono">${pretty(controls)}</span></div>
+      ${invocation.budget ? html`<div class="meta">effective stage budget: <span class="mono">${pretty(invocation.budget)}</span></div>` : null}
+    </details>
+    ${invocation.failure ? html`<div class="note">invocation failed: <${ClipText} text=${invocation.failure} /></div>` : null}
+    ${invocation.budget_cutoff_completion ? html`<details><summary class="meta">charged completion excluded by this stage's token cap</summary><pre class="step">${pretty(invocation.budget_cutoff_completion)}</pre></details>` : null}
+    ${invocation.unrendered_call ? html`<details><summary class="meta">tool request with no response</summary><pre class="step">${pretty(invocation.unrendered_call)}</pre></details>` : null}
+    ${stageTurns.map((turn, i) => html`<${TurnView} key=${i} turn=${turn} index=${(range ? range[0] : 0) + i} />`)}
+    <details><summary class="meta">raw invocation evidence JSON</summary><pre class="step">${pretty(invocation)}</pre></details>
+    ${invocation.output != null && !stageTurns.some(turn => turn.model_output === invocation.output && !(turn.tool_exchanges || []).length) ? html`<div class="workflow-invocation-output"><div class="meta">Stage output</div><${Bubble} side="put" role=${name} body=${invocation.output} /></div>` : null}
+  </details>`;
+}
+
+// A ctx.call_tool call is orchestration, not a PUT turn: the program asked the
+// world directly and got a rendered response. Show request, response, and the
+// same provenance a PUT tool exchange carries.
+function DirectToolCallView({ call, index, total }) {
+  const name = call.name || '(unnamed tool)';
+  const args = typeof call.args === 'string' ? call.args : pretty(call.args);
+  const response = typeof call.response === 'string' ? call.response : pretty(call.response);
+  const lua = call.lua_execution;
+  return html`<details class="exchange evidence-primary workflow-direct run-event">
+    <summary class="exchange-head">Program tool call ${index + 1}${total > 1 ? ` of ${total}` : ''} · <span class="mono">${name}</span><span class=${`badge ${call.running ? 'running' : call.failure ? 'failed' : 'completed'}`}>${call.running ? 'running' : call.failure ? 'failed' : 'finished'}</span></summary>
+    <${Bubble} side="put" role="program tool call · exact arguments" tool=${true} body=${`${name}(${args})`} />
+    ${call.running ? html`<div class="meta">tool call running — no response yet</div>` : call.failure
+      ? html`<div class="note">program tool call failed: <${ClipText} text=${call.failure} /></div>`
+      : html`<${Bubble} side="sim" role="world response · rendered by the same engine" tool=${true} body=${response} />`}
+    ${lua ? html`<${LuaExecutionProvenance} execution=${lua} />` : null}
+    ${call.state_after != null ? html`<details><summary class="meta">world state after this call</summary><pre class="step">${pretty(call.state_after)}</pre></details>` : null}
+    ${(call.workspace_ops && call.workspace_ops.length) || (lua && lua.discarded_workspace_ops && lua.discarded_workspace_ops.length) || (call.sim_thinking && call.sim_thinking.trim()) ? html`<details><summary class="meta">secondary simulator provenance</summary>
+      ${call.workspace_ops && call.workspace_ops.length ? html`<${WsOps} ops=${call.workspace_ops} />` : null}
+      ${lua && lua.discarded_workspace_ops && lua.discarded_workspace_ops.length ? html`<${WsOps} ops=${lua.discarded_workspace_ops} rolledBack=${true} label="Lua workspace operations (not real world mutations)" />` : null}
+      ${call.sim_thinking && call.sim_thinking.trim() ? html`<${Thinking} side="sim" role="SIM" text=${call.sim_thinking} />` : null}
+    </details>` : null}
+    <details><summary class="meta">raw direct call evidence JSON</summary><pre class="step">${pretty(call)}</pre></details>
+  </details>`;
+}
+
+// Exact program revision and parameters the orchestration actually ran, plus
+// the raw evidence object for readers who want every field.
+function WorkflowEvidenceMeta({ workflow }) {
+  const hash = workflow.source_hash || '';
+  return html`<details class="lua-program">
+    <summary>workflow orchestration · source, params, and raw evidence</summary>
+    <div class="lua-provenance"><span class="uchip sim">orchestration Lua · ${hash.slice(0, 8) || 'unhashed'}</span>${workflow.stop_reason ? html`<span>stop ${String(workflow.stop_reason).replaceAll('_', ' ')}</span>` : null}${workflow.error ? html`<span class="note">· failed</span>` : null}</div>
+    ${workflow.params !== undefined && workflow.params !== null ? html`<details><summary class="meta">params passed to the program</summary><pre class="step">${pretty(workflow.params)}</pre></details>` : null}
+    ${workflow.source ? html`<${SourceCode} source=${workflow.source} />` : null}
+    <details><summary class="meta">raw workflow evidence JSON</summary><pre class="raw-json">${pretty(workflow)}</pre></details>
+  </details>`;
 }
 
 function copySource(source) {
@@ -433,7 +536,7 @@ function Implementations({ implementations }) {
   const list = Array.isArray(implementations) ? implementations : [];
   if (!list.length) return null;
   return html`<details class="lua-program">
-    <summary>SIM · supplied Lua · ${list.length} tool${list.length === 1 ? '' : 's'} implemented</summary>
+    <summary>Tool simulation code · ${list.length} implementation${list.length === 1 ? '' : 's'}</summary>
     ${list.map((implementation, index) => html`<div class="lua-revision" key=${index}>
       <div class="lua-revision-meta"><span class="mono">${implementation.tool}</span> · <span class="mono">${(implementation.source_hash || '').slice(0, 8)}</span></div>
       <${SourceCode} source=${implementation.source} />
@@ -464,9 +567,37 @@ function Chat({ s }) {
     out.push(html`<div class="bubble sim" key="ri"><div class="role">SIM</div><div class="body">${rows}</div></div>`);
   }
   if (s.user_message && s.user_message.trim()) out.push(html`<${Bubble} key="u" side="sim" role="USER" body=${s.user_message} />`);
-  (s.turns || []).forEach((turn, i) => {
-    out.push(html`<${TurnView} key=${'turn'+i} turn=${turn} index=${i} />`);
-  });
+  if (s.workflow) {
+    out.push(html`<${WorkflowOutput} key="wf-output" output=${s.workflow.output} error=${s.workflow.error} stopReason=${s.workflow.stop_reason} />`);
+    const invocations = s.workflow.invocations || [];
+    const turns = s.turns || [];
+    const direct = s.workflow.tool_calls || [];
+    const events = [
+      ...invocations.map((value, i) => ({ value, i, kind: 'agent' })),
+      ...direct.map((value, i) => ({ value, i, kind: 'tool' })),
+    ];
+    if (events.every(event => Number.isInteger(event.value.event_id))) {
+      events.sort((a, b) => a.value.event_id - b.value.event_id);
+      events.forEach(event => out.push(event.kind === 'agent'
+        ? html`<${InvocationStage} key=${'event'+event.value.event_id} invocation=${event.value} turns=${turns} index=${event.i} total=${invocations.length} />`
+        : html`<details class="lua-program" key=${'event'+event.value.event_id}><summary>workflow direct tool calls · event ${event.value.event_id} · ${event.value.name}</summary><${DirectToolCallView} call=${event.value} index=${event.i} total=${direct.length} /></details>`));
+    } else {
+      invocations.forEach((invocation, i) => out.push(html`<${InvocationStage} key=${'stage'+i} invocation=${invocation} turns=${turns} index=${i} total=${invocations.length} />`));
+      if (direct.length) out.push(html`<details class="lua-program" key="wf-direct"><summary>workflow direct tool calls · ${direct.length} <span class="meta">(ctx.call_tool, not PUT turns)</span></summary>${direct.map((call, i) => html`<${DirectToolCallView} key=${i} call=${call} index=${i} total=${direct.length} />`)}</details>`);
+    }
+    // Turns whose index is not named by any recorded invocation range are still
+    // evidence. Surface them rather than losing them when the server adds a
+    // stage kind the UI does not yet attribute.
+    const covered = new Set();
+    invocations.forEach(invocation => { const range = invocationTurnRange(invocation); if (range) for (let t = range[0]; t < range[1]; t++) covered.add(t); });
+    const leftovers = turns.map((turn, i) => ({ turn, i })).filter(x => !covered.has(x.i));
+    if (leftovers.length) out.push(html`<details key="wf-leftover"><summary class="meta">flat turns not attributed to a stage · ${leftovers.length}</summary>${leftovers.map(x => html`<${TurnView} key=${x.i} turn=${x.turn} index=${x.i} />`)}</details>`);
+    out.push(html`<${WorkflowEvidenceMeta} key="wf-meta" workflow=${s.workflow} />`);
+  } else {
+    (s.turns || []).forEach((turn, i) => {
+      out.push(html`<${TurnView} key=${'turn'+i} turn=${turn} index=${i} />`);
+    });
+  }
   return html`<div class="chat">${out.length ? out : html`<span class="meta">(no messages yet)</span>`}</div>`;
 }
 
@@ -497,7 +628,7 @@ function ExecutionSummary({ execution, budget }) {
   return html`<div class=${`execution${capped ? ' capped' : ''}${failed ? ' failure' : ''}`}>
     <b>execution:</b> ${reason === 'final_completion' ? 'final completion' : capped ? `capped (${reason}) — done does not mean a final answer` : reason}
     <span class="mono"> · steps ${execution.steps_used ?? '—'} / ${budget?.max_steps_per_trace ?? '—'} · PUT tokens ${execution.put_tokens_used ?? '—'} / ${budget && budget.max_tokens == null ? 'unlimited' : budget?.max_tokens ?? '—'}</span>
-    <div class="meta">timing: elapsed ${ms(timing.elapsed_ms)} · input resolution ${ms(timing.resolving_inputs_ms)} · PUT loop ${ms(timing.put_loop_ms)}</div>
+    <div class="meta">timing: elapsed ${ms(timing.elapsed_ms)} · input resolution ${ms(timing.resolving_inputs_ms)}${timing.orchestration_ms > 0 ? ` · orchestration ${ms(timing.orchestration_ms)}` : ''} · PUT loop ${ms(timing.put_loop_ms)}</div>
     ${execution.budget_cutoff_completion ? html`<details open><summary>completion received at token cutoff — not accepted; tools were NOT executed</summary><pre class="step">${pretty(execution.budget_cutoff_completion)}</pre></details>` : null}
     ${execution.unrendered_call ? html`<details open><summary>tool request that could not be simulated — it has NO response; its siblings above are real</summary><pre class="step">${pretty(execution.unrendered_call)}</pre></details>` : null}
   </div>`;
@@ -519,7 +650,7 @@ function ConversationPanel({ scenario, progress, trace, failure, budget }) {
     ${failure ? html`<div class="note" style="margin:0.35rem 0"><b>${failure.stage}:</b> <${ClipText} text=${failure.error} /></div>` : null}
     <${ExecutionSummary} execution=${(trace && trace.execution) || (progress && progress.execution)} budget=${budget} />
     <details>
-      <summary>conversation · ${turns.length} PUT turn(s) · ${toolCallCount} tool call(s)</summary>
+      <summary>conversation · ${turns.length} PUT turn(s) · ${toolCallCount} tool call(s)${evidence.workflow ? ` · ${(evidence.workflow.invocations || []).length} workflow stage(s) · ${(evidence.workflow.tool_calls || []).length} direct call(s)` : ''}</summary>
       <${Chat} s=${evidence} />
     </details>
     ${trace && trace.final_world_state != null ? html`<details><summary>final world state</summary><pre class="step">${pretty(trace.final_world_state)}</pre></details>` : null}
@@ -549,12 +680,243 @@ function PutPanel({ put }) {
     </details>`;
 }
 
+// The submitted orchestration program (JobView.workflow) is caller-owned and
+// visible even before execution or on failure; the evidence endpoint also
+// returns it as workflow_program. It is NOT the scenario's tool Lua.
+function WorkflowProgramPanel({ program, evidence }) {
+  if (!program && !evidence) return null;
+  const source = (program && program.lua_source) || (evidence && evidence.source) || '';
+  const hash = (evidence && evidence.source_hash) || '';
+  return html`<details style="margin-top:0.4rem">
+    <summary class="meta">${program ? 'Workflow program' : 'Default program'} · source and parameters</summary>
+    <div class="meta">A custom workflow always runs this program in the sandbox. Each <span class="mono">ctx.run_agent</span> is a fresh agent conversation; each <span class="mono">ctx.call_tool</span> asks the scenario world directly. The returned value is the workflow output, not automatically a final answer.</div>
+    ${(evidence?.limits || program?.limits) ? html`<details><summary class="meta">Orchestration limits</summary><pre class="step">${pretty(evidence?.limits || program?.limits)}</pre></details>` : null}
+    ${program && program.params !== undefined && program.params !== null ? html`<details><summary class="meta">params</summary><pre class="step">${pretty(program.params)}</pre></details>` : null}
+    ${source ? html`<${SourceCode} source=${source} />` : html`<div class="meta">Submitted source is not in this view.</div>`}
+    ${hash ? html`<div class="meta mono">source sha256 ${hash}</div>` : null}
+    ${program ? html`<details><summary class="meta">raw submitted program JSON</summary><pre class="raw-json">${pretty(program)}</pre></details>` : null}
+    ${evidence ? html`<details><summary class="meta">workflow execution evidence JSON</summary><pre class="raw-json">${pretty(evidence)}</pre></details>` : null}
+  </details>`;
+}
+
+// Workflow request examples rendered as raw JSON. There is no structured form
+// for arbitrary `workflow.params` or Lua source; the request JSON is the
+// editor, so params and source pass through verbatim.
+const WORKFLOW_LUA_EXAMPLE = `return function(params, ctx)
+  local facts = ctx.run_agent({ name = "extract", prompt = params.extract, model = params.model, input = ctx.input })
+  if facts.output == nil then return {delivered = false} end
+  local review = ctx.run_agent({ name = "review", prompt = params.review, model = params.model, input = facts.output, tools = {} })
+  return { findings = facts.output, answer = review.output }
+end`;
+const WORKFLOW_REQUEST_EXAMPLE = JSON.stringify({
+  scenario_id: '<scenario-id>',
+  investigation: { reason: 'two-stage orchestration: extract, then review', budget: { max_steps_per_trace: 12, max_tokens: 12000 } },
+  workflow: {
+    lua_source: WORKFLOW_LUA_EXAMPLE,
+    params: { model: 'open_router::openai/gpt-4.1-nano', extract: 'Use the tools to gather the facts needed for the request. Return exact findings and sources.', review: 'Review the supplied facts and answer concisely. Do not invent facts or claim actions were taken.' },
+    limits: { max_agent_invocations: 8, max_direct_tool_calls: 64 },
+  },
+  attributes: { label: 'two-stage audit' },
+}, null, 2);
+const SINGLE_AGENT_REQUEST_EXAMPLE = JSON.stringify({
+  scenario_id: '<scenario-id>',
+  investigation: { reason: 'baseline single-agent run', budget: { max_steps_per_trace: 10, max_tokens: 10000 } },
+  put: { id: 'support-agent', template: 'You are a careful support agent. Resolve the request and cite the evidence you used.', design_goals: 'Resolve correctly without inventing facts.' },
+  put_model: 'open_router::openai/gpt-4.1-nano',
+  attributes: { label: 'baseline' },
+}, null, 2);
+
+// Ergonomic submission path for investigations: a request JSON editor seeded
+// with a custom-workflow example (and the legacy shorthand). An optional
+// scenario picker inserts a known scenario_id without forcing a form for the
+// open-ended workflow params/source.
+function InvestigationComposer({ token }) {
+  const [body, setBody] = useState(() => localStorage.getItem('pe_new_request') || WORKFLOW_REQUEST_EXAMPLE);
+  const [scenarios, setScenarios] = useState([]);
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { try { localStorage.setItem('pe_new_request', body); } catch {} }, [body]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch('/api/scenarios', { headers: authHeaders(token) });
+        if (!r.ok) return;
+        const list = await r.json();
+        if (Array.isArray(list)) setScenarios(list);
+      } catch {}
+    })();
+  }, [token]);
+  const useExample = value => { setBody(value); setMsg(null); };
+  const pickScenario = id => {
+    if (!id) return;
+    try { const parsed = JSON.parse(body); parsed.scenario_id = id; setBody(JSON.stringify(parsed, null, 2)); setMsg(null); }
+    catch { setMsg({ err: 'request JSON must be valid before a scenario can be inserted' }); }
+  };
+  const submit = async () => {
+    setMsg(null);
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (e) { setMsg({ err: `request is not valid JSON: ${e.message}` }); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(API(), { method: 'POST', headers: { ...authHeaders(token), 'content-type': 'application/json' }, body: JSON.stringify(parsed) });
+      const res = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg({ err: (res.problems || []).map(p => p.detail).join(' · ') || res.error || `HTTP ${r.status}` }); return; }
+      setMsg({ ok: `accepted ${res.id} — it will appear in the list on the next refresh` });
+    } catch (e) { setMsg({ err: `request failed: ${e.message || e}` }); } finally { setBusy(false); }
+  };
+  return html`<details class="composer">
+    <summary>New investigation <span class="meta">(POST /api/investigations)</span></summary>
+    <div class="meta">Submit a custom Lua workflow, or the legacy single-agent shorthand, as request JSON. Lua source and params pass through verbatim; the server validates every field.</div>
+    <div class="grow" style="margin:.4rem 0">
+      <select aria-label="insert scenario id" value="" onChange=${e => pickScenario(e.target.value)}>
+        <option value="">insert scenario id…</option>
+        ${scenarios.map(s => html`<option value=${s.id}>${s.label || s.id.slice(0, 8)} · r${s.revision}</option>`)}
+      </select>
+      <button class="toggle" onClick=${() => useExample(WORKFLOW_REQUEST_EXAMPLE)}>workflow example</button>
+      <button class="toggle" onClick=${() => useExample(SINGLE_AGENT_REQUEST_EXAMPLE)}>single-agent example</button>
+    </div>
+    <textarea aria-label="investigation request JSON" class="mono" value=${body} onInput=${e => setBody(e.target.value)}></textarea>
+    <div class="grow" style="margin-top:.35rem"><button disabled=${busy} onClick=${submit}>submit investigation</button>${msg?.ok ? html`<span class="meta" style="color:var(--green)">✓ ${msg.ok}</span>` : null}${msg?.err ? html`<span class="note">${msg.err}</span>` : null}</div>
+  </details>`;
+}
+
 function ResultLine({ j }) {
   const r = j.result; if (!r) return null;
+  const wf = workflowEvidence(j);
   return html`<div style="margin-top:0.5rem">
     <span class="badge ${r.failure ? 'failed' : 'job-done'}">${r.failure ? 'failed' : r.trace ? 'trace captured (inspect stop reason)' : 'finished (inspect stop reason)'}</span>
-    <span class="meta"> ${r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
+    <span class="meta"> ${wf ? `${(wf.invocations || []).length} workflow stage(s) · ${(wf.tool_calls || []).length} direct tool call(s) — output is the program's return value` : r.trace ? `${(r.trace.turns || []).length} PUT turn(s)` : 'no terminal trace'}</span>
     ${(r.usage || j.progress?.usage) ? html`<div style="margin-top:0.2rem">${roleLine('put', (r.usage || j.progress?.usage).put, 'put')}${roleLine('sim', (r.usage || j.progress?.usage).sim, 'sim')}</div>` : null}
+  </div>`;
+}
+
+function TaskPanel({ scenario, progress, trace }) {
+  const evidence = trace
+    ? { ...trace, user_message: scenario && scenario.user_message }
+    : { ...(progress || {}), user_message: (progress && progress.user_message) || (scenario && scenario.user_message) };
+  const ri = evidence.resolved_inputs || {};
+  const rows = Object.entries(ri).map(([k, v], i) => {
+    const isObj = v !== null && typeof v === 'object';
+    const shown = isObj ? JSON.stringify(v, null, 2) : String(v);
+    const body = (!isObj || shown.length <= 80)
+      ? html`<span>${shown}</span>`
+      : html`<details><summary class="mono" style="cursor:pointer;color:var(--text-dim)">${shown.split('\n')[0].slice(0,70)}…</summary><pre class="step" style="max-height:12em;overflow:auto;margin:0.3rem 0">${shown}</pre></details>`;
+    return html`<div key=${'ri'+i} style="display:flex;gap:0.4rem;padding:0.15rem 0;border-bottom:1px solid var(--border)"><span class="mono" style="color:var(--text-dim);flex-shrink:0">${k} →</span><span style="word-break:break-word">${body}</span></div>`;
+  });
+  return html`<div>
+    ${evidence.user_message && evidence.user_message.trim() ? html`<div class="bubble sim"><div class="role">User request</div><div class="body">${evidence.user_message}</div></div>` : html`<div class="meta">No opening user message</div>`}
+    ${Object.keys(ri).length ? html`<details style="margin-top:.45rem"><summary>Chosen input values · ${Object.keys(ri).length}</summary><div class="body">${rows}</div></details>` : Object.keys(scenario?.input_domain || {}).length ? html`<div class="meta">Input values not recorded</div>` : null}
+    ${scenario ? html`<details style="margin-top:.45rem"><summary>Test world and input domain</summary>
+      <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${scenario.world || '(no world)'}</div>
+      ${scenario.input_domain ? html`<details><summary class="meta">input domain</summary><pre class="step">${pretty(scenario.input_domain)}</pre></details>` : null}
+      ${scenario.simulator_notes ? html`<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${scenario.simulator_notes}</div>` : null}
+    </details>` : null}
+  </div>`;
+}
+
+function ReturnedValue({ value }) {
+  const text = v => typeof v === 'string' ? (v === '' ? '(empty string)' : v) : pretty(v);
+  if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
+    return html`<dl class="returned-fields">${Object.entries(value).map(([key, v]) => html`<div key=${key}><dt>${key}</dt><dd class="returned-value">${text(v)}</dd></div>`)}</dl>`;
+  }
+  return html`<div class="returned-value">${text(value)}</div>`;
+}
+
+function ReturnedOutputPanel({ j }) {
+  const trace = j.result && j.result.trace;
+  const wf = workflowEvidence(j);
+  const execution = terminalExecution(j);
+  const failure = j.result && j.result.failure;
+  const finalTurn = trace && trace.turns && trace.turns.length ? trace.turns[trace.turns.length - 1] : null;
+  let value;
+  let note = '';
+  let state = 'partial';
+  let label = 'no returned output';
+  if (wf) {
+    if (Object.prototype.hasOwnProperty.call(wf, 'output')) {
+      value = wf.output;
+      state = 'completed';
+      label = 'Program output';
+    } else if (wf.error || failure) {
+      state = 'failed';
+      label = 'workflow failed';
+      note = wf.error || failure.error || 'workflow failed';
+    } else if (execution && (execution.stop_reason === 'step_budget' || execution.stop_reason === 'token_budget')) {
+      state = 'partial';
+      label = 'cut off';
+      note = 'The run reached its limit without returning an output.';
+    } else if (j.status === 'running') {
+      state = 'running';
+      label = 'running';
+      note = 'The program is still running. No output has been returned yet.';
+    } else {
+      state = 'partial';
+      label = 'no output';
+      note = 'The program finished without returning a value.';
+    }
+  } else if (execution && execution.stop_reason === 'final_completion' && finalTurn && !(finalTurn.tool_exchanges || []).length) {
+    value = finalTurn.model_output;
+    state = 'completed';
+    label = 'final response';
+  } else if (execution && (execution.stop_reason === 'step_budget' || execution.stop_reason === 'token_budget')) {
+    state = 'partial';
+    label = 'cut off';
+    note = 'no final response before budget cutoff';
+  } else if (failure) {
+    state = 'failed';
+    label = 'failed';
+    note = failure.error;
+  } else if (j.status === 'running') {
+    state = 'running';
+    label = 'running';
+    note = 'final response not available yet';
+  } else {
+    state = 'partial';
+    label = 'no output';
+    note = 'no final response recorded';
+  }
+  const hasValue = value !== undefined;
+  const error = failure?.error || wf?.error;
+  if (error) state = 'failed';
+  const usage = jobUsage(j);
+  return html`<div class="returned-output" data-output-state=${state}>
+    ${error ? html`<div class="note"><b>Execution failed:</b> <${ClipText} text=${error} /></div>` : null}
+    <div class=${`execution ${state}`}>
+      <span class="meta">${error && hasValue ? 'Recorded output' : label}</span>
+      ${hasValue ? html`<${ReturnedValue} value=${value} />` : !error ? html`<div class="meta" style="margin-top:.35rem">${note}</div>` : null}
+    </div>
+    <details><summary>Timing, limits and usage</summary>
+      <${ExecutionSummary} execution=${execution} budget=${j.budget} />
+      ${usage ? html`<div>${roleLine('Agent models', usage.put, 'put')}${roleLine('Tool simulation', usage.sim, 'sim')}</div>` : null}
+    </details>
+  </div>`;
+}
+
+function RunStepsPanel({ j }) {
+  const trace = j.result && j.result.trace;
+  const progress = j.progress || {};
+  const evidence = trace ? { ...trace, user_message: progress.user_message || (j.scenario && j.scenario.user_message) } : { ...progress, user_message: progress.user_message || (j.scenario && j.scenario.user_message) };
+  const wf = workflowEvidence(j);
+  const turns = evidence.turns || [];
+  const events = wf ? workflowEvents(wf) : [];
+  const ordered = events.length ? events : [];
+  let agentIndex = 0;
+  let toolIndex = 0;
+  const agentTotal = ordered.filter(e => e.kind === 'agent').length || 1;
+  const toolTotal = ordered.filter(e => e.kind === 'tool').length || 1;
+  const covered = new Set();
+  (wf?.invocations || []).forEach(invocation => {
+    const range = invocationTurnRange(invocation);
+    if (range) for (let t = range[0]; t < (invocation.running ? turns.length : range[1]); t++) covered.add(t);
+  });
+  const unassigned = ordered.length ? turns.map((turn, i) => ({turn, i})).filter(({i}) => !covered.has(i)) : [];
+  const standaloneTurns = turns.length ? html`<details class="legacy-conversation"><summary>Agent conversation · ${turns.length} turns</summary>${turns.map((turn, i) => html`<${TurnView} key=${'turn'+i} turn=${turn} index=${i} />`)}</details>` : html`<div class="meta">${j.status === 'running' ? 'Waiting for a step to start…' : 'No agent or tool calls were recorded.'}</div>`;
+  return html`<div>
+    ${wf ? (ordered.length ? ordered.map((event, i) => event.kind === 'agent'
+      ? html`<${InvocationStage} key=${'event'+(event.value.event_id ?? i)} invocation=${event.value} turns=${turns} index=${agentIndex++} total=${agentTotal} />`
+      : html`<${DirectToolCallView} key=${'event'+(event.value.event_id ?? i)} call=${event.value} index=${toolIndex++} total=${toolTotal} />`
+    ) : standaloneTurns) : standaloneTurns}
+    ${unassigned.length ? html`<details><summary>Additional recorded turns · ${unassigned.length}</summary>${unassigned.map(({turn, i}) => html`<${TurnView} key=${i} turn=${turn} index=${i} />`)}</details>` : null}
   </div>`;
 }
 
@@ -572,17 +934,43 @@ const RESERVED_AXES = [
   ['elapsed_ms','lower'], ['resolving_inputs_ms','lower'], ['put_loop_ms','lower'],
 ];
 const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null])[1];
-const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
+const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'workflow_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
 const jobAttributes = j => (j && j.attributes) || {};
 const displayName = j => jobAttributes(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
 const shortModel = value => value ? String(value).split('::').pop().split('/').pop() : '—';
 const terminalExecution = j => j?.result?.trace?.execution || j?.progress?.execution || null;
+const stopLabel = reason => ({ final_completion: 'finished', step_budget: 'step limit reached', token_budget: 'token limit reached', runtime_failure: 'execution failed' }[reason] || String(reason || '').replaceAll('_', ' '));
+const totalUsageCost = usage => Number.isFinite(usage?.put?.cost_usd) && Number.isFinite(usage?.sim?.cost_usd) ? usage.put.cost_usd + usage.sim.cost_usd : null;
 const reviewLabel = j => j?.assessment ? 'assessed' : Object.keys(j?.grades || {}).length ? 'graded' : 'needs review';
 const evidenceCounts = j => {
   const trace = j?.result?.trace, turns = trace?.turns || j?.progress?.turns || [];
   return { turns: turns.length, tools: trace ? trace.tool_calls : turns.reduce((n, t) => n + (t.tool_exchanges || []).length, 0) };
 };
 const jobUsage = j => j?.result?.usage || j?.progress?.usage || null;
+// Live or terminal orchestration evidence. The server puts submitted programs
+// on the job view but execution evidence on progress/result, so read the
+// evidence from either place. A custom workflow is what submitted a program (or
+// resolved to the sentinel `put_model`), never merely "a trace with turns".
+const workflowEvidence = j => (j && j.result && j.result.trace && j.result.trace.workflow) || (j && j.progress && j.progress.workflow) || null;
+const isCustomWorkflow = j => !!(j && (j.workflow || j.put_model === 'workflow' || (workflowEvidence(j) && !(j.put && j.put.template))));
+// An invocation's turn_start is inclusive, turn_end exclusive, into the flat
+// Trace.turns list. Return null when the server did not record a usable range
+// so callers fall back to the flat conversation rather than dropping turns.
+const invocationTurnRange = invocation => {
+  const start = invocation && invocation.turn_start, end = invocation && invocation.turn_end;
+  return Number.isInteger(start) && Number.isInteger(end) && end >= start ? [start, end] : null;
+};
+const workflowEvents = workflow => {
+  const invocations = (workflow && workflow.invocations) || [];
+  const toolCalls = (workflow && workflow.tool_calls) || [];
+  const events = [
+    ...invocations.map((value, i) => ({ kind: 'agent', value, i })),
+    ...toolCalls.map((value, i) => ({ kind: 'tool', value, i })),
+  ];
+  return events.length && events.every(event => Number.isInteger(event.value.event_id))
+    ? [...events].sort((a, b) => a.value.event_id - b.value.event_id)
+    : events;
+};
 // This key deliberately mirrors the frontier request: selected attribute values
 // in order, with absent values kept distinct as null. The server remains the
 // authority for group ids, labels, cohorts, arithmetic, and dominance.
@@ -1043,7 +1431,7 @@ function usePreservedDetails(jobUi) {
 function ControlsPanel({ controls }) {
   if (!controls) return html`<div class="meta">resolved conversation controls unavailable for this older job fixture.</div>`;
   const lua = controls.lua_simulation;
-  return html`<details><summary class="meta">model and simulator controls</summary><div class="step">${pretty(controls)}</div><div class="meta">simulator backend: ${lua == null ? 'LLM-only' : 'Lua experimental'}; source/output remain evidence, not a fidelity judgment.</div></details>`;
+  return html`<details><summary class="meta">Agent defaults and simulation settings</summary><div class="step">${pretty(controls)}</div><div class="meta">simulator backend: ${lua == null ? 'LLM-only' : 'Lua experimental'}; source/output remain evidence, not a fidelity judgment.</div></details>`;
 }
 function EvidenceDownload({ id, token }) {
   const [msg, setMsg] = useState('');
@@ -1099,7 +1487,7 @@ function SourceComparison({ j, jobs }) {
   const selectedId = candidates.some(x => x.id === otherId) ? otherId : candidates[0]?.id || '';
   const mine = currentLuaSource(j), other = currentLuaSource(candidates.find(x => x.id === selectedId));
   if (mine.source == null || !candidates.length) return null;
-  return html`<details><summary>compare Lua source with another investigation</summary><div class="meta">Side-by-side source evidence only; it does not judge fidelity or program equivalence.</div>
+  return html`<details><summary>compare tool simulation code with another investigation</summary><div class="meta">Side-by-side source evidence only; it does not judge fidelity or program equivalence.</div>
     <select aria-label="comparison investigation" value=${selectedId} onChange=${e => setOtherId(e.target.value)}>${candidates.map(x => html`<option value=${x.id}>${displayName(x)} · ${x.id.slice(0,8)}</option>`)}</select>
     <div class="source-compare"><div><b class="meta">this job · supplied Lua · ${mine.path || '—'} · ${mine.revision || '—'}</b><${SourceCode} source=${mine.source} /></div>
       <div><b class="meta">other job · supplied Lua · ${other?.path || '—'} · ${other?.revision || '—'}</b><${SourceCode} source=${other?.source || ''} /></div></div>
@@ -1111,48 +1499,57 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
   const detailRef = usePreservedDetails(jobUi);
   const attributes = jobAttributes(j);
   const putModel = attributes.put_model || j.put_model;
-  const simModel = attributes.sim_model || j.sim_model;
   const putThinking = attributes.put_thinking || j.put_thinking_level;
-  const simThinking = attributes.sim_thinking || j.sim_thinking_level;
   const trace = j.result && j.result.trace;
-  const failure = j.result && j.result.failure;
   const execution = terminalExecution(j);
   const counts = evidenceCounts(j);
   const usage = jobUsage(j);
-  const totalCost = (usage?.put?.cost_usd || 0) + (usage?.sim?.cost_usd || 0);
+  const totalCost = totalUsageCost(usage);
+  const customWorkflow = isCustomWorkflow(j);
+  const wf = workflowEvidence(j);
   return html`<div ref=${detailRef} id=${`job-${j.id}`} class=${`job-detail${leaving ? ' leaving' : ''}`} key=${j.id}>
     <div class="detail-title">
       <button class="toggle" onClick=${onBack}>close detail</button>
-      <div><div class="meta mono">${j.id}</div><h2>${displayName(j)}</h2></div>
+      <div><h2>${displayName(j)}</h2><div class="meta mono">${j.id}</div></div>
       <div class="detail-actions">
         <button class="del" title="delete this investigation (irreversible)" onClick=${() => onDelete(j.id)}>delete</button>
       </div>
     </div>
     <div class="detail-summary">
-      <div class="summary-item"><span class="label">execution</span><span class="value"><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span> ${execution?.stop_reason ? execution.stop_reason.replaceAll('_',' ') : j.phase ? phaseLabel(j.phase) : ''}</span></div>
+      <div class="summary-item"><span class="label">execution</span><span class="value"><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status === 'done' ? 'recorded' : j.status}</span> ${execution?.stop_reason ? stopLabel(execution.stop_reason) : j.phase ? phaseLabel(j.phase) : ''}</span></div>
       <div class="summary-item"><span class="label">review</span><span class=${`value ${reviewLabel(j) === 'needs review' ? 'pending' : ''}`}>${reviewLabel(j)}${Object.keys(j.grades || {}).length ? ` · ${Object.keys(j.grades).length} grade${Object.keys(j.grades).length === 1 ? '' : 's'}` : ''}</span></div>
-      <div class="summary-item"><span class="label">PUT</span><span class="value" title=${putModel || ''}>${shortModel(putModel)}${putThinking ? ` · ${putThinking}` : ''}</span></div>
+      ${customWorkflow
+        ? html`<div class="summary-item"><span class="label">workflow</span><span class="value">${wf ? `${(wf.invocations || []).length} agent stage${(wf.invocations || []).length === 1 ? '' : 's'} · ${(wf.tool_calls || []).length} program tool call${(wf.tool_calls || []).length === 1 ? '' : 's'}` : 'program'}</span></div>`
+        : html`<div class="summary-item"><span class="label">model</span><span class="value" title=${putModel || ''}>${shortModel(putModel)}${putThinking ? ` · ${putThinking}` : ''}</span></div>`}
       <div class="summary-item"><span class="label">scenario</span><span class="value mono">${j.scenario_id ? `${j.scenario_id.slice(0,8)} · r${j.scenario_revision}` : '—'}</span></div>
-      <div class="summary-item"><span class="label">evidence</span><span class="value">${counts.turns} turn${counts.turns===1?'':'s'} · ${counts.tools} tool call${counts.tools===1?'':'s'}${totalCost ? fmtUsd(totalCost) : ''}</span></div>
+      <div class="summary-item"><span class="label">evidence</span><span class="value">${counts.turns} turn${counts.turns===1?'':'s'} · ${counts.tools} tool call${counts.tools===1?'':'s'}${totalCost != null ? fmtUsd(totalCost) : ' · cost unavailable'}</span></div>
     </div>
-    <div class="meta" style="margin:.5rem 0 1rem">${j.reason ? html`<span><b>reason:</b> ${j.reason}</span>` : html`<span>(no reason supplied; the caller remains the judge)</span>`}</div>
+    ${j.reason ? html`<div class="meta" style="margin:.5rem 0 1rem"><b>Purpose:</b> ${j.reason}</div>` : null}
 
-    <section class="detail-section"><div class="panel-head"><h2>Caller review</h2><span class="meta">Assessment and grades are caller-owned, never a harness verdict.</span></div>
+    <section class="detail-section"><div class="panel-head"><h2>Task</h2></div>
+      <${TaskPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} />
+    </section>
+    <section class="detail-section"><div class="panel-head"><h2>Returned output</h2></div>
+      <${ReturnedOutputPanel} j=${j} />
+    </section>
+    <section class="detail-section"><div class="panel-head"><h2>Run steps</h2></div>
+      <${RunStepsPanel} j=${j} />
+    </section>
+    <section class="detail-section"><div class="panel-head"><h2>Your assessment</h2></div>
       <${AssessmentPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
       <${GradesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
     </section>
-    <section class="detail-section"><div class="panel-head"><h2>Execution evidence</h2><span class="meta">Done means trace captured; inspect the stop reason and delivered output.</span></div>
-      <${ResultLine} j=${j} />
-      <${ConversationPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} failure=${failure} budget=${j.budget} />
-      <${EvidenceDownload} id=${j.id} token=${token} />
-    </section>
-    <section class="detail-section"><div class="panel-head"><h2>Configuration and provenance</h2><span class="meta">Complete inputs, controls, attributes, and implementation evidence.</span></div>
-      <${PutPanel} put=${j.put} />
+    <section class="detail-section"><div class="panel-head"><h2>Configuration and exports</h2></div>
+      <${Implementations} implementations=${j.result?.trace?.implementations || j.progress?.implementations} />
+      ${!customWorkflow ? html`<${PutPanel} put=${j.put} />` : null}
+      ${(j.workflow || wf) ? html`<${WorkflowProgramPanel} program=${j.workflow} evidence=${wf} />` : null}
+      ${trace?.final_world_state != null ? html`<details><summary>Final tool state (state patches)</summary><pre class="step">${pretty(trace.final_world_state)}</pre></details>` : null}
       <${ControlsPanel} controls=${j.conversation_controls} />
       <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
       <${SourceComparison} j=${j} jobs=${jobs} />
+      <${EvidenceDownload} id=${j.id} token=${token} />
+      <details><summary>raw investigation JSON · complete job API representation</summary><pre class="raw-json">${pretty(j)}</pre></details>
     </section>
-    <section class="detail-section"><details><summary>raw investigation JSON · complete job API representation</summary><pre class="raw-json">${pretty(j)}</pre></details></section>
   </div>`;
 }
 
@@ -1162,14 +1559,19 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
 function JobRow({ j, onOpen, selected }) {
   const attributes = jobAttributes(j), execution = terminalExecution(j), usage = jobUsage(j), counts = evidenceCounts(j);
   const putModel = attributes.put_model || j.put_model;
-  const cost = (usage?.put?.cost_usd || 0) + (usage?.sim?.cost_usd || 0);
+  const customWorkflow = isCustomWorkflow(j);
+  const wf = workflowEvidence(j);
+  const cost = totalUsageCost(usage);
+  const modelLine = customWorkflow
+    ? `workflow orchestration${wf ? ` · ${(wf.invocations || []).length} stage${(wf.invocations || []).length === 1 ? '' : 's'}` : ''}`
+    : `${shortModel(putModel)}${attributes.put_thinking ? ` · ${attributes.put_thinking}` : ''}`;
   return html`<button id=${`job-row-${j.id}`} class=${`job-row${selected ? ' active' : ''}`} aria-current=${selected ? 'true' : null} onClick=${() => onOpen(j.id)}>
     <span><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span><span class="meta" style="display:block;margin-top:.2rem">${execution?.stop_reason ? execution.stop_reason.replaceAll('_',' ') : j.phase ? phaseLabel(j.phase) : ''}</span></span>
     <span class="primary" title=${j.reason || ''}>
       <strong>${displayName(j)}</strong>
       <span class="row-meta mono">${j.id.slice(0,8)} · ${j.finished_at ? `finished ${relTime(j.finished_at)}` : `started ${relTime(j.started_at)}`}</span>
-      <span class="row-meta">${shortModel(putModel)}${attributes.put_thinking ? ` · ${attributes.put_thinking}` : ''} · <span class="mono">${j.scenario_id ? `${j.scenario_id.slice(0,8)} r${j.scenario_revision}` : 'no scenario'}</span></span>
-      <span class=${`row-meta row-review ${reviewLabel(j) === 'needs review' ? 'pending' : ''}`}>${reviewLabel(j)} · ${cost ? `~$${cost < .01 ? cost.toFixed(4) : cost.toFixed(2)}` : `${counts.turns} turn${counts.turns===1?'':'s'} · ${counts.tools} call${counts.tools===1?'':'s'}`}</span>
+      <span class="row-meta">${modelLine} · <span class="mono">${j.scenario_id ? `${j.scenario_id.slice(0,8)} r${j.scenario_revision}` : 'no scenario'}</span></span>
+      <span class=${`row-meta row-review ${reviewLabel(j) === 'needs review' ? 'pending' : ''}`}>${reviewLabel(j)} · ${cost != null ? `~$${cost < .01 ? cost.toFixed(4) : cost.toFixed(2)}` : `${counts.turns} turn${counts.turns===1?'':'s'} · cost unavailable`}</span>
     </span>
   </button>`;
 }
@@ -1595,6 +1997,7 @@ function App() {
         activeGroupId=${activeGroupId} onActiveGroup=${setActiveGroupId} onGroupActivate=${activateGroup} onOpenJob=${openJob} onPlotChange=${setFrontierPoints} />
     </main>` : activeView === 'investigations' ? html`<main id="jobs">
       <div class="page-head"><div><h2>Investigations</h2><p class="meta">Select an investigation to inspect its complete evidence alongside the campaign list.</p></div></div>
+      <${InvestigationComposer} token=${token} />
       <div class="investigation-layout">
         <aside class="investigation-list-pane">
           <div class="toolbar"><span class="meta">${shownJobs.length} shown · ${jobs.length} total</span><span class="spacer"></span><${BrowsingFilters} jobs=${jobs} filters=${filters} setFilters=${setFilters} /></div>
@@ -1610,7 +2013,7 @@ function App() {
     </main>` : html`<main><${ScenarioPanel} token=${token} /></main>`}
 
     <footer class="meta" style="margin-top:2rem;text-align:center;border-top:1px solid var(--border);padding-top:1rem">
-      Complete API manual: <a class="mono" href="/openapi.json">/openapi.json</a> · Lua reference: <a class="mono" href="/docs/lua">/docs/lua</a> · models: <a class="mono" href="/api/models">/api/models</a>
+      API: <a class="mono" href="/openapi.json">/openapi.json</a> · Workflow Lua: <a class="mono" href="/docs/workflow">/docs/workflow</a> · Tool Lua: <a class="mono" href="/docs/lua">/docs/lua</a> · models: <a class="mono" href="/api/models">/api/models</a>
     </footer>`;
 }
 

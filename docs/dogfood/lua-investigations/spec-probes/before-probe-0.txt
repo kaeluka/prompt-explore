@@ -1,0 +1,109 @@
+The API documentation provided does not specify an endpoint or method for directly comparing prompts or extracting and reviewing outputs in a single investigation. The available endpoints include creating scenarios, running investigations, polling results, and comparing frontiers, but there is no explicit support for a two-stage candidate comparison within a single investigation request.
+
+Given this, the closest approach is to:
+
+1. Create two separate investigations, each with its own prompt (candidate).
+2. Poll each investigation's evidence endpoint to retrieve the full conversation and responses.
+3. Manually compare the outputs and hand off evidence for review.
+
+Since the API does not support a combined or direct comparison in one request, I will provide the exact JSON payloads for creating two investigations (candidates) against the scenario `scn-example` with the model `open_router::openai/gpt-4.1-nano`, and how to read their evidence.
+
+---
+
+### Investigation JSON for Candidate 1
+
+```json
+{
+  "investigation": {
+    "reason": "Candidate 1: initial prompt with extract then review",
+    "budget": {
+      "max_steps_per_trace": 20,
+      "max_tokens": 1024
+    }
+  },
+  "put": {
+    "id": "candidate-1",
+    "template": "Extract the key points from the following text: {{text}}. Then review the extracted points for accuracy.",
+    "design_goals": "Accurately extract key points and review their correctness.",
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read a file from the scenario's workspace",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": ["path"]
+        },
+        "side_effect": "read"
+      }
+    ]
+  },
+  "scenario_id": "scn-example",
+  "scenario_revision": null,
+  "put_model": "open_router::openai/gpt-4.1-nano"
+}
+```
+
+---
+
+### Investigation JSON for Candidate 2
+
+```json
+{
+  "investigation": {
+    "reason": "Candidate 2: alternative prompt with extract then review",
+    "budget": {
+      "max_steps_per_trace": 20,
+      "max_tokens": 1024
+    }
+  },
+  "put": {
+    "id": "candidate-2",
+    "template": "Summarize the main ideas from the following text: {{text}}. Then evaluate the summary for completeness.",
+    "design_goals": "Provide a concise summary and evaluate its completeness.",
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read a file from the scenario's workspace",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": ["path"]
+        },
+        "side_effect": "read"
+      }
+    ]
+  },
+  "scenario_id": "scn-example",
+  "scenario_revision": null,
+  "put_model": "open_router::openai/gpt-4.1-nano"
+}
+```
+
+---
+
+### How to read output and handoff evidence:
+
+1. Poll each investigation via `GET /api/investigations/{id}`.
+2. Check the `status` field; wait until `done`.
+3. Retrieve the full conversation trace via `GET /api/investigations/{id}/evidence`.
+4. Review the `trace.turns` array, focusing on the final turn's `response` field for the model's output.
+5. Use the `assessment` and `grades` fields to record your review and comparison.
+
+---
+
+### Summary:
+- The API does not support a single combined request for prompt comparison.
+- You must create separate investigations for each candidate.
+- Read their evidence separately and compare outputs manually.
+- The evidence endpoint provides the full conversation, responses, and tool interactions for review.
+
+If you need a specific combined or automated comparison, it is unsupported by the current API endpoints.

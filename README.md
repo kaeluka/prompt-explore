@@ -14,9 +14,16 @@ A user of `prompt-explore` can steer the simulator's behaviour by controlling th
 
 The tool is 100% sandboxed, no tool calls can ever reach the outside, no hard drive or IO access to any tools. This makes it easy and secure to run many scenarios in parallel.
 
-## One investigation, one conversation
+## One investigation, one execution
 
-Each investigation runs **one stored scenario** against one prompt under test.
+Each investigation runs **one stored scenario** against a system under test.
+The simple case is one prompt. Experimental Lua orchestration also lets you test
+“what if this prompt became extract → review?” without changing the world:
+provide a `workflow` program and free-form JSON `params`. Lua can call agents,
+call scenario tools directly, transform handoffs, branch and loop. Every call
+shares host-enforced budgets and complete evidence. See the
+[workflow contract and example](docs/workflow-api.md) (served at `/docs/workflow`).
+
 The scenario — world narrative, tool contracts, simulator settings, optional Lua
 implementations and the initial workspace — is registered ONCE
 (`POST /api/scenarios`) and referenced by `scenario_id`, so an upload and a
@@ -34,7 +41,7 @@ credentials needed when the calls are fully implemented in Lua. See
 [caller-authored Lua](docs/lua-simulation.md).
 
 Poll the job for status, then read
-`GET /api/investigations/{id}/evidence`: one complete conversation, without
+`GET /api/investigations/{id}/evidence`: the complete execution, without
 duplicated terminal progress. Inspect **actual tool responses**, not only final
 answers, workspace lookups or Lua `computed` counts. Execution success is not fidelity.
 The original job view still has `result.trace`, `result.failure`, and flat `progress`.
@@ -42,8 +49,8 @@ The original job view still has `result.trace`, `result.failure`, and flat `prog
 `execution.stop_reason` distinguishes a final completion, step/token cutoff, and
 runtime failure. `done` does **not** mean a final answer was produced. Original
 budgets, consumed counters, completion timestamps and monotonic phase timings are
-retained. The observable phases are `resolving_inputs` and `put_loop`: nothing is
-compiled or generated during a run. Tool calls served by supplied Lua are counted
+retained. LLM work is reported as `resolving_inputs` or `put_loop`; orchestration
+between calls is reported separately. No tool implementation is generated during a run. Tool calls served by supplied Lua are counted
 (`execution.lua_computed_calls` / `lua_fallback_calls` / `lua_error_calls`), so
 "my implementation never ran" is visible rather than inferred. Token usage and
 estimated cost are on the list endpoint too (`GET /api/investigations` returns
@@ -193,7 +200,7 @@ information. The UI shows membership and the grading backlog alongside it.
 
 **Aggregation is deliberately simple:** every included investigation has equal
 weight. All requested coordinates use the same complete cohort. Each
-investigation contributes one conversation's measurements and caller grades.
+investigation contributes its whole execution's measurements and caller grades.
 Keep scenarios, budgets, grading scales, and simulator settings comparable;
 the harness surfaces membership but does not judge comparability.
 
@@ -203,7 +210,7 @@ flat `progress`. An inline `scenario`, a per-run workspace upload, `sim_model`,
 `sim_thinking_level`, the simulator keys of `conversation_controls`, and
 `put.tools` are rejected with migration guidance. See
 [reusable scenarios](docs/design/scenarios.md) and
-[the single-conversation contract](docs/design/single-conversation.md).
+[the workflow execution contract](docs/workflow-api.md).
 The former `investigations` selection field on frontier
 requests is replaced by `group_by`; old selection requests are rejected rather
 than silently broadened to all jobs. Groups with missing data now appear in a

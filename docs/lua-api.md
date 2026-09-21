@@ -23,15 +23,18 @@ return function(args, ctx)
 
   return {
     response = { ... },        -- REQUIRED: the value the prompt under test receives
-    state_patch = { ... },     -- optional: world-state updates (write tools only)
+    state_patch = { ... },     -- REQUIRED for write tools; use {} for no state changes
   }
 end
 ```
 
 * `response` is exactly what the prompt under test sees for that call. Shape it
   to match the tool's declared contract; do not leak extra keys.
-* `state_patch` is applied only for a tool the scenario declared as a **write**
-  tool. `null` values delete keys; it is a shallow merge into world state.
+* A **write** tool must return `state_patch`, even when it only changes the
+  workspace: use `state_patch = {}` for no world-state changes. Omitting it is a
+  handler error and rolls back staged workspace writes before simulator fallback.
+  For write tools, `null` values delete keys; the patch is a shallow merge into
+  world state. Read tools must omit the patch or return an empty object.
 * A handler that cannot faithfully render a call should **decline** it:
 
   ```lua

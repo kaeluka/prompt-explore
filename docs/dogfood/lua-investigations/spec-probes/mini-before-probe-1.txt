@@ -1,0 +1,129 @@
+The prompt-explore API supports scenario-based testing with a scenario defining a world, tools, and optionally Lua implementations. The scenario's tools include a read_file tool that can be called by the agent under test. The orchestration you want is caller-authored, meaning you want to simulate the agent calling read_file on config.json, then calling the agent, and retrying the agent at most twice if it returns no final output.
+
+The API does not provide a direct orchestration language or scripting interface for the agent. Instead, you define a scenario with tools (including read_file), then run an investigation with a prompt under test (PUT) that calls those tools. The scenario's simulation environment executes the tool calls either via Lua implementations or the simulator LLM.
+
+To implement your orchestration:
+
+- The scenario defines the read_file tool.
+- The scenario's world narrative includes the file config.json.
+- The prompt under test (PUT) template includes logic to call read_file on config.json, then call the agent, and retry up to twice if no final output is returned.
+- The investigation runs the scenario + PUT.
+- The investigation trace shows the tool calls and responses.
+- If the agent returns no final output, the investigation trace will show the number of steps used, the stop_reason, and any partial turns.
+- The investigation usage includes token usage and call counts split by role (PUT and simulator).
+- If the run fails (e.g. runtime failure or budget cutoff), the failure evidence is included in the investigation result.
+- The investigation evidence includes the full conversation turns, tool exchanges, workspace operations, and Lua execution records if any.
+- The caller judges the run by reading the evidence and PATCHing grades and assessment.
+
+---
+
+### Example scenario definition snippet (JSON):
+
+```json
+{
+  "scenario": {
+    "world": "Inventory: file config.json exists with content '{\"setting\": \"value\"}'. Facts: no other files exist. Completeness: these are all files. Rendering: refuse queries outside inventory.",
+    "input_domain": {},
+    "user_message": "start",
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read the contents of a file by path.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" }
+          },
+          "required": ["path"]
+        },
+        "side_effect": "read"
+      }
+    ]
+  }
+}
+```
+
+### Example prompt under test (PUT):
+
+```json
+{
+  "id": "orchestration-agent",
+  "template": "You are an agent that must read config.json by calling read_file, then respond. Retry up to 2 times if no final output is produced.\n\n{{user_message}}",
+  "design_goals": "Ensure the agent reads config.json before responding. Retry the agent at most twice if it returns no final output.",
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read the contents of a file by path.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"]
+      },
+      "side_effect": "read"
+    }
+  ]
+}
+```
+
+### Example investigation request (JSON):
+
+```json
+{
+  "scenario_id": "<scenario-id>",
+  "put": {
+    "id": "orchestration-agent",
+    "template": "You are an agent that must read config.json by calling read_file, then respond. Retry up to 2 times if no final output is produced.\n\n{{user_message}}",
+    "design_goals": "Ensure the agent reads config.json before responding. Retry the agent at most twice if it returns no final output.",
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read the contents of a file by path.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" }
+          },
+          "required": ["path"]
+        },
+        "side_effect": "read"
+      }
+    ]
+  },
+  "investigation": {
+    "reason": "Test orchestration reading config.json and retrying agent up to twice if no final output.",
+    "budget": {
+      "max_steps_per_trace": 10,
+      "max_tokens": null
+    }
+  },
+  "put_model": "<model-name>",
+  "put_thinking_level": "medium",
+  "attributes": {
+    "campaign": "orchestration-test"
+  },
+  "resolved_inputs": {
+    "user_message": "start"
+  }
+}
+```
+
+---
+
+### Explanation of limits and evidence surviving a failed call:
+
+- **Limits:**
+  - `max_steps_per_trace` limits the total number of steps (tool calls or final completions) the PUT can perform. If the agent retries twice, this counts towards the step budget.
+  - `max_tokens` (optional) limits the total input+output tokens used by the PUT. If omitted, no token cap applies.
+- **Evidence surviving failure:**
+  - If the run fails (e.g. runtime failure, budget cutoff), the investigation's `result.failure` field contains failure evidence.
+  - The partial trace up to failure is available in `progress.turns` and `progress.resolved_inputs`.
+  - The `execution.stop_reason` indicates why the run stopped (e.g. `step_budget`, `runtime_failure`).
+  - The usage counters show tokens and steps used so far.
+  - The full conversation turns and tool exchanges up to failure are preserved.
+  - The caller can read this evidence and judge the run, then PATCH grades and assessment accordingly.
+
+---
+
+If you want me to generate a full example scenario registration request or investigation POST request with concrete values, or Lua implementations for read_file, please ask.

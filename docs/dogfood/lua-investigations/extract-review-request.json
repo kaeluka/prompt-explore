@@ -1,0 +1,28 @@
+{
+  "scenario_id": "scn-b1ce3fe0869f",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "resolved_inputs": {},
+  "workflow": {
+    "lua_source": "return function(params,ctx)\n local a=ctx.run_agent{name=\"extract\",prompt=params.prompts.extract,model=params.models.extract,input=ctx.input,tools={\"read_invoice\"},controls={temperature=0,max_tokens=500}}\n if a.output==nil then error(\"extractor did not deliver\") end\n local b=ctx.run_agent{name=\"review\",prompt=params.prompts.review,model=params.models.review,input=a.output,tools={},controls={temperature=0,max_tokens=500}}\n return {answer=b.output,extraction=a.output}\nend",
+    "params": {
+      "prompts": {
+        "extract": "Read invoice INV-7 with read_invoice. Extract exact payment IDs, amounts, settled status, invoice total and refunded flag. Do not recommend or take actions.",
+        "review": "Review the supplied invoice facts. Identify duplicate payment and recommend next action. Explicitly distinguish recommendation from a refund already executed. Do not use tools. Keep under 100 words."
+      },
+      "models": {
+        "extract": "open_router::openai/gpt-4.1-nano",
+        "review": "open_router::openai/gpt-4.1-mini"
+      }
+    }
+  },
+  "attributes": {
+    "label": "extract-review",
+    "variant": "extract-review",
+    "campaign": "lua-workflow-dogfood"
+  }
+}

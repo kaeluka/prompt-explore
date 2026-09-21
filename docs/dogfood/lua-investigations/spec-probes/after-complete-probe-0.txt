@@ -1,0 +1,33 @@
+The API documentation indicates that to compare a prompt with an extract-then-review approach in one investigation, you should use the `POST /api/investigations` endpoint with a `workflow` Lua program that calls `ctx.run_agent` twice: first for extract, then for review. The scenario should be pre-registered, and the investigation will use the same scenario for both stages.
+
+Here's the exact JSON payload for the investigation, assuming the scenario `scn-example` is registered, and the open_router::openai/gpt-4.1-nano model is used for both stages:
+
+```json
+{
+  "scenario_id": "scn-example",
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 12,
+      "max_tokens": 10000
+    }
+  },
+  "workflow": {
+    "lua_source": "return function(p,ctx) local a=ctx.run_agent{name='extract',prompt=p.extract,model=p.model,input=ctx.input}; if a.output==nil then return {delivered=false} end; local b=ctx.run_agent{name='review',prompt=p.review,model=p.model,input=a.output}; return b.output end",
+    "params": {
+      "model": "open_router::openai/gpt-4.1-nano",
+      "extract": "Gather exact facts using the tools.",
+      "review": "Review these facts and answer without inventing facts or actions."
+    }
+  }
+}
+```
+
+To read its output and handoff evidence, you should:
+
+1. Poll the investigation job via `GET /api/investigations/{id}` until `status` is `done`.
+2. Retrieve the detailed evidence with `GET /api/investigations/{id}/evidence`.
+3. Inspect the `workflow` field in the evidence, which contains the source, parameters, and the sequence of invocations and handoffs.
+4. The `workflow.output` will contain the final review output.
+5. The `workflow.invocations` array will contain the detailed evidence for each agent invocation, including the extract and review stages, with their respective `turns` and `tool_calls`.
+
+If the API does not support such a two-stage extract-then-review in a single investigation, it will be indicated by the absence of the `workflow` Lua program or the inability to specify such a program.

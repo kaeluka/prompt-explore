@@ -1,0 +1,154 @@
+The prompt you want to test is a two-stage candidate: first "extract" then "review" in one investigation per candidate against the same scenario `scn-example`. You want to use the model `open_router::openai/gpt-4.1-nano`.
+
+From the OpenAPI spec, the relevant endpoint to start an investigation is:
+
+POST /api/investigations
+
+with a JSON body of type InvestigateRequest.
+
+The InvestigateRequest requires:
+
+- scenario_id (string): the scenario to run by reference, here "scn-example"
+- investigation (object): with at least a budget (max_steps_per_trace, max_tokens optional)
+- put (PromptUnderTest): the prompt under test, including id, template, design_goals, and tools (the effective tool surface from the scenario, so omit tools here)
+- put_model (string): the model to run the prompt under test, here "open_router::openai/gpt-4.1-nano"
+- put_thinking_level (optional): reasoning level for the PUT runner
+- attributes (optional): caller-owned campaign attributes
+- resolved_inputs (optional): explicit bindings for scenario inputs
+
+Important notes:
+
+- The tool surface comes from the scenario, so do NOT supply tools in the PUT when submitting an investigation (POST rejects a non-empty tools array).
+- The scenario_id pins the scenario, so the investigation runs against that scenario's tool surface and world.
+- Each investigation is one conversation: so to compare two candidates, you submit two separate investigations, each with the same scenario_id but different PUT prompt templates.
+- After submission, poll GET /api/investigations/{id}/evidence to read the complete conversation evidence.
+- Then PATCH /api/investigations/{id} with your grades and assessment referencing the evidence.
+- Then POST /api/frontier with the agreed axes to compare the two candidates.
+
+---
+
+### Example JSON for the two-stage candidate "extract then review"
+
+Assuming the two-stage candidate is a single prompt template that first extracts info then reviews it, you supply the prompt template as a single string with placeholders if any.
+
+Example 1: "extract" prompt candidate
+
+```json
+{
+  "scenario_id": "scn-example",
+  "put_model": "open_router::openai/gpt-4.1-nano",
+  "put": {
+    "id": "extract-stage",
+    "template": "Extract relevant information from the file content:\n{{file_content}}",
+    "design_goals": "Accurately extract key data from the file content for review."
+  },
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 10,
+      "max_tokens": null
+    },
+    "reason": "Test extract stage of the two-stage candidate."
+  }
+}
+```
+
+Example 2: "review" prompt candidate
+
+```json
+{
+  "scenario_id": "scn-example",
+  "put_model": "open_router::openai/gpt-4.1-nano",
+  "put": {
+    "id": "review-stage",
+    "template": "Review the extracted information and provide a summary:\n{{extracted_info}}",
+    "design_goals": "Provide a clear and actionable review of the extracted information."
+  },
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 10,
+      "max_tokens": null
+    },
+    "reason": "Test review stage of the two-stage candidate."
+  }
+}
+```
+
+---
+
+### How to read output and handoff evidence
+
+1. After POST /api/investigations with the above JSON, you get a response with an `id` for each investigation.
+
+2. Poll GET /api/investigations/{id}/evidence to read the full conversation trace, including:
+
+- `turns`: the PUT model turns with `model_output` and `tool_exchanges` (tool calls and responses)
+- `execution.stop_reason`: why the run stopped (final completion, budget cutoff, failure)
+- `resolved_inputs`: the concrete inputs used for placeholders like `file_content` or `extracted_info`
+- `assessment` and `grades`: if you PATCH them later with your judgment
+
+3. Use the evidence to judge the quality of the prompt candidate's behavior.
+
+4. PATCH /api/investigations/{id} with your grades and assessment referencing the evidence (turns and exchanges).
+
+5. POST /api/frontier with the axes you agreed on (e.g. quality metrics and cost) and group_by attributes (e.g. put_model, put_thinking, prompt_hash) to compare the two candidates.
+
+---
+
+### Summary
+
+- Submit two separate POST /api/investigations requests, one per candidate prompt.
+- Use the same scenario_id "scn-example" and put_model "open_router::openai/gpt-4.1-nano".
+- Omit `tools` in the PUT; the scenario defines the tool surface including `read_file`.
+- Poll GET /api/investigations/{id}/evidence to read the full trace.
+- PATCH grades and assessment referencing evidence.
+- POST /api/frontier to compare.
+
+---
+
+If you want me to generate the exact JSON bodies for the two investigations, here they are:
+
+**Investigation 1: extract stage**
+
+```json
+{
+  "scenario_id": "scn-example",
+  "put_model": "open_router::openai/gpt-4.1-nano",
+  "put": {
+    "id": "extract-stage",
+    "template": "Extract relevant information from the file content:\n{{file_content}}",
+    "design_goals": "Accurately extract key data from the file content for review."
+  },
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 10,
+      "max_tokens": null
+    },
+    "reason": "Test extract stage of the two-stage candidate."
+  }
+}
+```
+
+**Investigation 2: review stage**
+
+```json
+{
+  "scenario_id": "scn-example",
+  "put_model": "open_router::openai/gpt-4.1-nano",
+  "put": {
+    "id": "review-stage",
+    "template": "Review the extracted information and provide a summary:\n{{extracted_info}}",
+    "design_goals": "Provide a clear and actionable review of the extracted information."
+  },
+  "investigation": {
+    "budget": {
+      "max_steps_per_trace": 10,
+      "max_tokens": null
+    },
+    "reason": "Test review stage of the two-stage candidate."
+  }
+}
+```
+
+---
+
+If you want me to help with the polling or patching JSON, or the frontier request, just ask.

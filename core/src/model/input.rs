@@ -113,10 +113,16 @@ pub struct Investigation {
     pub budget: Budget,
 }
 
+/// On investigation requests, these are whole-program limits. On invocation
+/// evidence, they report that stage's already-clamped remaining allowance.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Budget {
-    /// Max steps per trace. A STEP is one tool call OR one final
-    /// completion (the turn with no tool call that ends the trace). A
+    /// In investigation.budget: GLOBAL step budget across ALL Lua stages,
+    /// retries and direct ctx.call_tool calls. It is NOT reset per run_agent.
+    /// A budget of 6 permits six total steps, not six per retry. A lower local
+    /// stage cap can be supplied as ctx.run_agent{budget={max_steps=...}}.
+    /// A STEP is one tool call OR one final agent completion (including empty
+    /// text). A
     /// completion that requests several tool calls counts as several
     /// steps but is an atomic batch: every sibling call is simulated, so
     /// one accepted batch may cross this cap. No later PUT turn then runs.
@@ -124,8 +130,11 @@ pub struct Budget {
     /// completion. A trace recorded at the cap can lack a final answer; inspect
     /// execution.stop_reason and counters rather than equating done with success.
     pub max_steps_per_trace: u32,
-    /// Optional PUT input+output token cap, summed across completions (repeated
-    /// conversation history is counted on every completion). Simulator tokens
-    /// are not part of this cap. See execution.put_tokens_used and stop_reason.
+    /// In investigation.budget: GLOBAL agent input+output token cap across ALL
+    /// stages, models and retries.
+    /// A new run_agent call consumes the remaining allowance; it never resets
+    /// this cap. Repeated conversation history counts on every completion.
+    /// Simulator tokens are not part of this cap. See execution.put_tokens_used
+    /// and stop_reason.
     pub max_tokens: Option<u64>,
 }

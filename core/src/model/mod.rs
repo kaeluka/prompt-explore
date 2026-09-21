@@ -14,9 +14,11 @@ pub mod lua;
 pub mod output;
 pub mod scenario;
 pub mod simulation;
+pub mod workflow;
 
 pub use input::*;
 pub use lua::LuaOptions;
 pub use output::*;
 pub use scenario::*;
 pub use simulation::*;
+pub use workflow::*;

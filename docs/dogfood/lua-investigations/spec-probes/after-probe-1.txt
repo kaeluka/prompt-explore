@@ -1,0 +1,108 @@
+Certainly! Based on the API documentation, I will craft a Lua-based workflow that:
+
+1. Reads `config.json` using the `read_file` tool.
+2. Calls an agent with the read content.
+3. Retries the agent call up to two times if it returns no final output (`output` is null or empty).
+
+The orchestration will be a Lua function that:
+
+- Reads the file.
+- Calls the agent.
+- Checks the output.
+- Retries if necessary, up to two times.
+
+The request will specify the scenario, the model configurations, and the Lua source.
+
+---
+
+### Executable Orchestration (Lua source)
+
+```lua
+return function(params, ctx)
+  local max_retries = 2
+  local attempt = 0
+  local agent_output = nil
+  local file_content = nil
+
+  -- Read config.json
+  local read_result = ctx.workspace.read({path="config.json"})
+  if read_result.error then
+    return { response = "Error reading config.json: " .. read_result.error }
+  end
+  file_content = read_result.content
+
+  -- Retry loop for agent call
+  while attempt <= max_retries do
+    local agent = ctx.run_agent({
+      name = "config-reader",
+      prompt = params.prompt,
+      model = params.model,
+      controls = params.controls,
+      input = file_content,
+    })
+
+    if agent.failure then
+      return { response = "Agent call failed: " .. agent.failure }
+    end
+
+    agent_output = agent.output
+    -- Check if output is final (non-empty)
+    if agent_output ~= nil and agent_output ~= "" then
+      break
+    end
+    attempt = attempt + 1
+  end
+
+  if agent_output == nil or agent_output == "" then
+    return { response = "Agent did not produce final output after retries." }
+  end
+
+  return { response = agent_output }
+end
+```
+
+---
+
+### Request JSON
+
+```json
+{
+  "scenario_id": "<your-scenario-id>",
+  "investigation": {
+    "reason": "Read config.json and process with agent, retry up to twice if no output.",
+    "budget": {
+      "max_steps_per_trace": 6,
+      "max_tokens": null
+    }
+  },
+  "workflow": {
+    "lua_source": "<embedded Lua source above>",
+    "params": {
+      "prompt": "Please interpret the configuration and provide a summary.",
+      "model": "zai_coding::glm-5.2",
+      "controls": {
+        "max_tokens": 512,
+        "temperature": 0.0,
+        "thinking": "none"
+      }
+    }
+  }
+}
+```
+
+---
+
+### Explanation of Limits and Evidence
+
+- **Limits:**
+  - `max_steps_per_trace`: 6 steps, covering reading the file, agent call, and retries.
+  - `max_tokens`: 512 for the agent's output, to limit cost and response length.
+  - `max_retries`: 2 retries, as coded in the Lua script.
+
+- **Surviving Evidence:**
+  - The `workspace_ops` will record the `read_file` operation, showing the file path and content.
+  - The agent call's request and response are documented, including any failures.
+  - The final output (or failure message) is stored in the trace, providing evidence of behavior.
+  - Token usage and timing are tracked in `usage` and `timing` fields, useful for cost analysis.
+
+This orchestration adheres strictly to the documented affordances, ensuring transparency and reproducibility of the test scenario.
