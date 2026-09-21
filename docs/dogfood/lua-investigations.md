@@ -163,10 +163,22 @@ it confused original investigation inputs with runtime call arguments, required
 placeholders before calls existed, and grew a wall of repeated prompts in loops.
 
 The hierarchy is now **Inputs → Returned output → Execution → Your assessment →
-Configuration and exports**. Inputs contains the submitted program, generically
-rendered parameters, budget and scenario. No parameter names are interpreted as
-prompts. This section stays stable while execution proceeds. Sampled/resolved
-scenario bindings belong with execution evidence instead.
+Configuration and exports**. Inputs contains the submitted `workflow` (its
+`lua_source`, `params` and `limits`), the investigation `budget` and the
+`scenario` (`user_message`, `world`, `input_domain`, `simulator_notes`). No
+parameter names are interpreted as prompts. This section stays stable while
+execution proceeds. Sampled/resolved scenario bindings belong with execution
+evidence instead.
+
+A later pass removed UI-invented names wherever an API field already had a name:
+the UI now says `budget`, `limits`, `params`, `lua_source`, `resolved_inputs`,
+`final_world_state`, `state_after`, `budget_cutoff_completion`,
+`unrendered_call`, `implementations`, `conversation_controls`, `put_model`,
+`turns`, `tool_calls` and `cost_usd`. A stage's selected detail shows its own
+recorded `budget` (for example `max_steps_per_trace` 1 versus 3), so a local limit
+is discoverable in the call it applies to. `stop_reason` and `phase` values are
+shown as the API records them, not as friendlier synonyms, and `workflow`
+summaries count `workflow.invocations` and `workflow.tool_calls`.
 
 Execution is a bounded, chronological call list with ONE selected detail. Repeated
 names remain distinct calls, keyed by recorded event/invocation identity. Selecting

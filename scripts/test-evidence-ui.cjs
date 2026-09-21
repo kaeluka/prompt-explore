@@ -36,6 +36,8 @@ const workflowEvidenceD = {
   tool_calls:[], stop_reason:'runtime_failure', error:'workflow failed: boom',
 };
 const workflowScenario = { world:'workflow world', input_domain:{}, user_message:'start' };
+workflowEvidenceC.invocations[0].budget = { max_steps_per_trace: 1, max_tokens: 100 };
+workflowEvidenceC.invocations[1].budget = { max_steps_per_trace: 3, max_tokens: 80 };
 const jobs = [
   { id:'job-a', status:'done', started_at:Date.now()-1000, finished_at:Date.now()-500, budget:{max_steps_per_trace:3,max_tokens:20}, put:{id:'safe-put',template:'Never cancel without confirmation.',tools:[]}, attributes:{put_model:'alpha',put_thinking:'low',prompt_hash:'a',campaign:'one',simulation_backend:'lua',step_budget:'3',token_budget:'20'}, grades:{}, scenario:{world:'world <img src=x onerror=alert(1)>',input_domain:{},user_message:'hello'}, progress:{}, result:{trace:{execution, turns:[{model_output:'not a final answer',tool_exchanges:[{call:{name:'lookup',args:{q:'<script>bad()</script>'}},response:'<b>response is text</b>',lua_execution:{outcome:'computed',program_revision:0},workspace_ops:[{tool:'read',args:{path:'x'},result:'y'}]}]}],tool_calls:1,implementations:implementation('return { lookup = function() return "a" end }'),simulation_program:lua('return { lookup = function() return "a" end }')},failure:null,usage:null}},
   { id:'job-b', status:'done', started_at:Date.now()-2000, finished_at:Date.now()-1000, budget:{max_steps_per_trace:9,max_tokens:90}, put:{id:'other',tools:[]}, attributes:{put_model:'beta',put_thinking:'high',prompt_hash:'b',campaign:'two',simulation_backend:'llm',step_budget:'9',token_budget:'90'}, grades:{}, scenario:{world:'other',input_domain:{},user_message:'hi'}, progress:{}, result:{trace:{execution:{...execution,stop_reason:'final_completion'},turns:[],tool_calls:0,implementations:implementation('return { lookup = function() return "b" end }'),simulation_program:lua('return { lookup = function() return "b" end }')},failure:null,usage:null}},
@@ -70,13 +72,13 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   ok(await page.locator('#job-row-job-b').count()===0,'URL filter should filter investigation rows'); ok((await page.locator('body').textContent()).includes('investigation list only; all jobs remain frontier candidates'),'filter candidacy warning remains available');
   await page.locator('#job-row-job-a').click(); const card=page.locator('#job-job-a'); await card.getByRole('heading',{name:'safe-put'}).waitFor();
   ok((await card.textContent()).includes('simulation_backend') && (await card.textContent()).includes('step_budget'),'reserved provenance attributes render read-only');
-  ok((await card.textContent()).includes('capped (step_budget) — done does not mean a final answer'),'capped execution warning visible'); ok((await card.textContent()).includes('executed, fidelity unverified'),'computed provenance is explicitly unverified'); ok((await card.textContent()).includes('tool request that could not be simulated'),'unrendered tool request is named, not merely implied by counters');
+  ok((await card.textContent()).includes('execution.stop_reason') && (await card.textContent()).includes('step_budget'),'stop_reason is named and its API value is preserved'); ok((await card.textContent()).includes('executed, fidelity unverified'),'computed provenance is explicitly unverified'); ok((await card.textContent()).includes('execution.unrendered_call'),'unrendered tool request is named, not merely implied by counters');
   ok((await card.textContent()).includes('Inputs') && (await card.textContent()).includes('Returned output'),'detail hierarchy starts with inputs and returned output on legacy jobs');
-  ok(await card.locator('.investigation-inputs').getByRole('heading',{name:'Single-agent configuration',exact:true}).isVisible(),'legacy configuration is an original input, not inferred from execution');
+  ok(await card.locator('.investigation-inputs').getByRole('heading',{name:'put',exact:true}).isVisible(),'legacy configuration is an original input, not inferred from execution');
   ok((await card.locator('.stable-inputs').textContent()).includes('Never cancel without confirmation.'),'legacy configuration retains the original template');
   // XSS payloads are text, never nodes.
   ok(await page.locator('script').filter({hasText:'bad()'}).count()===0,'tool payload did not create a script node'); ok(await page.locator('img').count()===0,'scenario payload did not create an image node');
-  await card.getByText('compare tool simulation code with another investigation', {exact:true}).click(); ok(await card.getByLabel('comparison investigation').inputValue()==='job-b','source comparison includes filtered-out investigations'); ok((await card.locator('.source-compare').textContent()).includes('return "b"'),'comparison renders selected other source');
+  await card.getByText('implementations · compare across investigations', {exact:true}).click(); ok(await card.getByLabel('comparison investigation').inputValue()==='job-b','source comparison includes filtered-out investigations'); ok((await card.locator('.source-compare').textContent()).includes('return "b"'),'comparison renders selected other source');
   await card.getByText(/^assessment/).click(); await card.getByLabel('assessment summary').fill('draft survives'); await card.getByLabel('assessment rubric').fill('read traces'); await card.getByLabel('assessment evidence JSON').fill('[{"turn":0,"exchange":0,"note":"tool args"}]');
   // Hide then re-show via filter; only the selected detail is mounted and its draft cache survives.
   await card.getByRole('button',{name:'close detail'}).click(); await page.locator('.filter-row input').fill('no-match'); await page.locator('#jobs').getByText('No investigations match').waitFor(); await page.locator('.filter-row input').fill('one'); await page.locator('#job-row-job-a').click(); if (!await card.getByLabel('assessment summary').isVisible()) await card.getByText(/^assessment/).click(); ok(await card.getByLabel('assessment summary').inputValue()==='draft survives','assessment draft survives filtering');
@@ -94,17 +96,17 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   await page.getByRole('button',{name:/Investigations/}).click(); await page.locator('#job-row-job-c').waitFor(); await page.locator('#job-row-job-c').click();
   const wfCard = page.locator('#job-job-c'); await wfCard.getByRole('heading',{name:'flow-a'}).waitFor();
   const wfText = await wfCard.textContent();
-  ok((await wfCard.locator('.detail-summary').textContent()).includes('cost unavailable'),'a known simulator price is not shown as the unknown whole-run cost');
+  ok((await wfCard.locator('.detail-summary').textContent()).includes('cost_usd') && (await wfCard.locator('.detail-summary').textContent()).includes('unavailable'),'unknown whole-run cost stays unavailable rather than reusing a known simulator price');
   const sectionOrder = ['Inputs', 'Returned output', 'Execution', 'Your assessment', 'Configuration and exports'];
   let lastPos = -1;
   for (const label of sectionOrder) { const pos = wfText.indexOf(label); ok(pos > lastPos, `section order includes ${label}`); lastPos = pos; }
-  ok(wfText.includes('User request') && wfText.includes('Resolved scenario inputs'),'scenario definition is input; resolved bindings are execution evidence');
+  ok(wfText.includes('user_message') && wfText.includes('resolved_inputs'),'scenario definition is input; resolved bindings are execution evidence');
   const inputs = wfCard.locator('.investigation-inputs');
-  ok(await inputs.getByRole('heading',{name:'Parameters',exact:true}).isVisible(),'opaque parameters have a generic view');
+  ok(await inputs.getByRole('heading',{name:'params',exact:true}).isVisible(),'opaque parameters have a generic view');
   ok(!(await inputs.textContent()).includes('You are the planner.'),'runtime prompts are not promoted to investigation inputs');
   const inputsBox = await inputs.boundingBox(), outputBox = await wfCard.locator('.returned-output').boundingBox();
   ok(inputsBox.y + inputsBox.height <= outputBox.y,'stable inputs precede output');
-  ok(await inputs.getByText('Lua source',{exact:true}).count()===1,'program source belongs to original inputs');
+  ok(await inputs.getByText('lua_source',{exact:true}).count()===1,'program source belongs to original inputs');
   const returned = wfCard.locator('.returned-output');
   ok(await returned.isVisible() && (await returned.textContent()).includes('PROGRAM OVERRIDE'),'actual program output is visible without opening any disclosure');
   ok(!(await returned.textContent()).includes('VERDICT TEXT'),'returned output never substitutes the last stage answer');
@@ -113,6 +115,7 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   ok(await wfCard.locator('.call-detail').count()===1,'only one call detail is mounted');
   const detail=wfCard.locator('.call-detail');
   ok((await detail.locator('.call-arguments').textContent()).includes('You are the planner.'),'selected call shows its actual prompt');
+  ok((await detail.locator('.call-outcome').textContent()).includes('"max_steps_per_trace": 1'),'selected stage shows its own recorded budget, including the local step limit');
   const headings=await detail.locator('section > h4').allTextContents();
   ok(JSON.stringify(headings)===JSON.stringify(['Arguments','Conversation','Outcome']),'call arguments precede conversation and outcome');
   ok(await detail.getByText('PLAN TEXT',{exact:true}).count()===1,'final stage output is not duplicated');
@@ -121,9 +124,10 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   ok((await detail.locator('.call-arguments').textContent()).includes('orders') && (await detail.locator('.call-outcome').textContent()).includes('rows'),'direct call arguments and response are retained');
   await wfCard.locator('.call-row').nth(2).click();
   ok((await detail.textContent()).includes('You are the verifier.') && !(await detail.textContent()).includes('You are the planner.'),'selection changes the active call only');
-  ok(wfText.includes('run_agent') && wfText.includes('Workflow program'),'submitted workflow program is available with its inputs');
+  ok((await detail.locator('.call-outcome').textContent()).includes('"max_steps_per_trace": 3'),'a different stage shows its different budget, not a shared one');
+  ok(wfText.includes('run_agent') && wfText.includes('workflow_program'),'submitted workflow program is available with its inputs');
   ok(!(await wfCard.locator('.summary-item .label').allTextContents()).includes('PUT') && (await wfCard.locator('.summary-item .label').allTextContents()).includes('workflow'),'a custom workflow shows a workflow summary, not a misleading single PUT model');
-  ok(wfText.includes('orchestration 30ms'),'orchestration timing is shown when recorded');
+  ok(wfText.includes('orchestration_ms 30ms'),'orchestration timing is shown when recorded');
   await wfCard.getByText('raw investigation JSON · complete job API representation',{exact:true}).click();
   ok((await wfCard.locator('.raw-json').last().textContent()).includes('"workflow"'),'raw investigation JSON remains available for workflow jobs');
 
@@ -138,7 +142,7 @@ const ok=(v,m)=>{if(!v)throw Error(m)};
   await page.goto(`http://127.0.0.1:${port}/?${wfFilter('five')}`);
   await page.getByRole('button',{name:/Investigations/}).click(); await page.locator('#job-row-job-e').waitFor();
   const liveText = await page.locator('#job-row-job-e').textContent();
-  ok(liveText.includes('orchestrating workflow'),'the orchestration phase is shown for a live workflow');
+  ok(liveText.includes('orchestration'),'the orchestration phase is shown for a live workflow');
   await page.locator('#job-row-job-e').click();
   const liveCard = page.locator('#job-job-e');
   await liveCard.getByRole('heading',{name:'flow-running'}).waitFor();
