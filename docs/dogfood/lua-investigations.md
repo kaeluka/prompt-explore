@@ -158,30 +158,29 @@ The first pass asked for caller assessment before exposing the result, buried th
 program's output inside a collapsed conversation, and mixed source/provenance
 with the execution story. That was not a good first-time reading order.
 
-A follow-up review found another ordering mistake: the tested prompts were still
-buried inside run steps and labeled "instructions". Prompts are inputs. They now
-appear explicitly as **Prompt** (or **Prompt · stage name**) in the first section,
-visible without opening any disclosure. The original single-agent template and
-any different rendered prompt are retained; custom stage prompts come from actual
-invocation evidence, never guesses about arbitrary parameter names. The program
-and its parameters are also grouped with inputs.
+Promoting every observed stage prompt into top-level Inputs was also wrong:
+it confused original investigation inputs with runtime call arguments, required
+placeholders before calls existed, and grew a wall of repeated prompts in loops.
 
-The final hierarchy is **Inputs → Returned output → Run steps → Your assessment →
-Configuration and exports**. The actual program return is visible immediately;
-structured return fields are rendered as readable labeled values. Agent stages
-and program tool calls form one chronological, compact list with expandable
-inputs, instructions, settings, full turns and raw evidence. A stage answer is
-not duplicated after its conversation or substituted for the program return.
-Failures, running/no-output states, cutoffs and unknown cost remain explicit.
-Sources and technical controls stay in disclosures. Workflow Lua and tool Lua
-have separate documentation links.
+The hierarchy is now **Inputs → Returned output → Execution → Your assessment →
+Configuration and exports**. Inputs contains the submitted program, generically
+rendered parameters, budget and scenario. No parameter names are interpreted as
+prompts. This section stays stable while execution proceeds. Sampled/resolved
+scenario bindings belong with execution evidence instead.
 
-Browser tests assert section order, visible exact prompts before execution/output,
-no guessed prompts for unstarted programs, visible output without opening details,
-chronological agent/direct-call ordering, collapsed stage internals, no repeated
-stage answer, and distinct failed/running output states. Live desktop and narrow
-screen review showed no horizontal overflow. This is an expert/browser review,
-not an independent first-time-human usability study.
+Execution is a bounded, chronological call list with ONE selected detail. Repeated
+names remain distinct calls, keyed by recorded event/invocation identity. Selecting
+a call shows **Arguments → Conversation → Outcome**: an agent's actual prompt
+belongs before that agent's conversation, not before the whole investigation.
+Appending calls does not steal the selection. Arrow/Home/End navigation works,
+and the list/detail layout stacks on narrow screens. Failures, partial turns,
+cutoffs, direct tool provenance and raw evidence remain available.
+
+Browser regressions include a 100-call loop fixture (no paid model calls), changing
+selection among identically named calls, live appends, stable input rendering,
+one mounted conversation, keyboard navigation, and live partial turns. They also
+check the original output/assessment/download/XSS behavior. This is an expert and
+browser review, not an independent first-time-human usability study.
 
 Still outside this prototype: parallel stages, resume/cancel HTTP endpoints,
 external application execution, and program-library management. Lua is cooperatively

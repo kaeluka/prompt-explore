@@ -153,6 +153,17 @@
   .returned-fields { margin: .35rem 0 0; }
   .returned-fields dt { font-weight: 600; margin: .65rem 0 .25rem; }
   .returned-fields dd { margin: 0; }
+  .call-browser { display: grid; grid-template-columns: minmax(12rem, .7fr) minmax(0, 1.3fr); gap: 1rem; margin-top: .5rem; align-items: start; }
+  .call-list { max-height: 24rem; overflow: auto; border: 1px solid var(--border); }
+  .call-row { display: grid; gap: .25rem; width: 100%; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: .6rem; text-align: left; overflow-wrap: anywhere; }
+  .call-row.active { background: var(--bg-alt, var(--bg)); box-shadow: inset 3px 0 var(--accent, currentColor); }
+  .call-row strong { font-weight: 600; }
+  .call-detail { min-width: 0; }
+  .call-detail > h3 { margin-top: 0; }
+  .call-detail > section { margin: .75rem 0; padding-bottom: .6rem; border-bottom: 1px solid var(--border); }
+  .call-detail h4 { margin: .35rem 0; }
+  .call-arguments .returned-value { max-height: 20rem; }
+  @media (max-width: 1100px) { .call-browser { grid-template-columns: minmax(0, 1fr); } .call-list { max-height: 13rem; } }
   .workflow-direct { border-left-color: var(--workspace); }
   .workflow-direct .bubble.put { background: var(--workspace-soft); border-color: var(--workspace-border); }
   .composer { border-top: 1px solid var(--border); padding-top: .45rem; margin: .65rem 0; }
@@ -789,52 +800,24 @@ function ResultLine({ j }) {
   </div>`;
 }
 
-// Prompts are inputs, not something the reader should have to find in a
-// completed agent trace. Custom Lua can construct them dynamically: show the
-// actual recorded prompts, never guess their meaning from arbitrary params.
-function PromptInputs({ j }) {
-  const custom = isCustomWorkflow(j);
-  const template = j.put?.template;
-  const invocations = workflowEvidence(j)?.invocations || [];
-  const prompts = [];
-  if (!custom && template != null) prompts.push({ label: 'Prompt', text: template });
-  invocations.forEach((invocation, index) => {
-    if (invocation.prompt == null || (!custom && invocation.prompt === template)) return;
-    prompts.push({
-      label: `${custom ? 'Prompt' : 'Rendered prompt'} · ${invocation.name || `Agent ${index + 1}`}`,
-      text: invocation.prompt,
-      model: invocation.model,
-    });
-  });
-  return html`<div class="prompt-inputs">
-    ${prompts.length ? prompts.map((prompt, index) => html`<div class="prompt-input" key=${index} style="margin-bottom:.8rem">
-      <h3 style="margin:0 0 .3rem">${prompt.label}</h3>
-      ${prompt.model ? html`<div class="meta">${shortModel(prompt.model)}</div>` : null}
-      <div class="returned-value prompt-text">${prompt.text === '' ? html`<span class="meta">(empty prompt)</span>` : prompt.text}</div>
-    </div>`) : html`<div class="meta">${custom ? (j.status === 'running' ? 'Stage prompts will appear here as the program starts each agent. The program and parameters are below.' : 'No agent prompts were recorded. The program and parameters are below.') : 'No prompt recorded in this investigation.'}</div>`}
-  </div>`;
-}
-
-function TaskPanel({ scenario, progress, trace }) {
-  const evidence = trace
-    ? { ...trace, user_message: scenario && scenario.user_message }
-    : { ...(progress || {}), user_message: (progress && progress.user_message) || (scenario && scenario.user_message) };
-  const ri = evidence.resolved_inputs || {};
-  const rows = Object.entries(ri).map(([k, v], i) => {
-    const isObj = v !== null && typeof v === 'object';
-    const shown = isObj ? JSON.stringify(v, null, 2) : String(v);
-    const body = (!isObj || shown.length <= 80)
-      ? html`<span>${shown}</span>`
-      : html`<details><summary class="mono" style="cursor:pointer;color:var(--text-dim)">${shown.split('\n')[0].slice(0,70)}…</summary><pre class="step" style="max-height:12em;overflow:auto;margin:0.3rem 0">${shown}</pre></details>`;
-    return html`<div key=${'ri'+i} style="display:flex;gap:0.4rem;padding:0.15rem 0;border-bottom:1px solid var(--border)"><span class="mono" style="color:var(--text-dim);flex-shrink:0">${k} →</span><span style="word-break:break-word">${body}</span></div>`;
-  });
-  return html`<div>
-    ${evidence.user_message && evidence.user_message.trim() ? html`<div class="bubble sim"><div class="role">User request</div><div class="body">${evidence.user_message}</div></div>` : html`<div class="meta">No opening user message</div>`}
-    ${Object.keys(ri).length ? html`<details style="margin-top:.45rem"><summary>Chosen input values · ${Object.keys(ri).length}</summary><div class="body">${rows}</div></details>` : Object.keys(scenario?.input_domain || {}).length ? html`<div class="meta">Input values not recorded</div>` : null}
-    ${scenario ? html`<details style="margin-top:.45rem"><summary>Test world and input domain</summary>
-      <div class="body" style="white-space:pre-wrap;word-break:break-word;padding:0.3rem 0">${scenario.world || '(no world)'}</div>
-      ${scenario.input_domain ? html`<details><summary class="meta">input domain</summary><pre class="step">${pretty(scenario.input_domain)}</pre></details>` : null}
-      ${scenario.simulator_notes ? html`<div class="meta" style="margin-top:0.4rem"><b>simulator notes:</b> ${scenario.simulator_notes}</div>` : null}
+// Only investigation-owned values belong here. Runtime call arguments and
+// resolved scenario bindings are execution evidence, not original inputs.
+function InvestigationInputs({ j }) {
+  const program = j.workflow;
+  const scenario = j.scenario;
+  return html`<div class="stable-inputs">
+    <h3>Program</h3>
+    ${program ? html`<details><summary>Lua source</summary>${program.lua_source != null ? html`<${SourceCode} source=${program.lua_source} />` : html`<span class="meta">Default program (source not stored in this record)</span>`}</details>
+      <h3>Parameters</h3><div class="investigation-params"><${ReturnedValue} value=${program.params ?? null} /></div>
+      ${program.limits ? html`<details><summary>Orchestration limits</summary><pre class="step">${pretty(program.limits)}</pre></details>` : null}`
+      : html`<div class="meta">Default single-agent program</div><h3>Single-agent configuration</h3><${ReturnedValue} value=${{put:j.put, model:j.put_model || jobAttributes(j).put_model, thinking:j.put_thinking_level, controls:j.conversation_controls}} />`}
+    <details><summary>Investigation budget</summary><pre class="step">${pretty(j.budget)}</pre></details>
+    <h3>Scenario</h3>
+    ${scenario?.user_message != null ? html`<div class="bubble sim"><div class="role">User request</div><div class="body">${scenario.user_message}</div></div>` : html`<div class="meta">No opening user message</div>`}
+    ${scenario ? html`<details><summary>Test world and input domain</summary>
+      <div class="body" style="white-space:pre-wrap;overflow-wrap:anywhere">${scenario.world || '(no world)'}</div>
+      <h4>Input domain</h4><pre class="step">${pretty(scenario.input_domain || {})}</pre>
+      ${scenario.simulator_notes ? html`<h4>Simulator notes</h4><div class="returned-value">${scenario.simulator_notes}</div>` : null}
     </details>` : null}
   </div>`;
 }
@@ -917,31 +900,75 @@ function ReturnedOutputPanel({ j }) {
   </div>`;
 }
 
-function RunStepsPanel({ j }) {
-  const trace = j.result && j.result.trace;
-  const progress = j.progress || {};
-  const evidence = trace ? { ...trace, user_message: progress.user_message || (j.scenario && j.scenario.user_message) } : { ...progress, user_message: progress.user_message || (j.scenario && j.scenario.user_message) };
+const callState = event => event.value.running ? 'running' : event.value.failure ? 'failed' : event.value.stop_reason ? stopLabel(event.value.stop_reason) : event.kind === 'tool' ? 'finished' : 'recorded';
+
+function CallDetail({ event, turns, j }) {
+  const v = event.value;
+  const range = invocationTurnRange(v);
+  const indices = event.indices || (range ? Array.from({length:Math.max(0, (v.running ? turns.length : range[1]) - range[0])}, (_, i) => range[0] + i) : []);
+  const callTurns = indices.filter(i => turns[i] != null).map(i => ({turn:turns[i], i}));
+  const args = event.kind === 'agent' ? Object.fromEntries(Object.entries({name:v.name,prompt:v.prompt,model:v.model,input:v.input,tools:v.tools,controls:v.controls}).filter(([,value])=>value!==undefined))
+    : event.kind === 'tool' ? {name:v.name,args:v.args}
+    : event.kind === 'legacy' ? {configuration:j.put,model:j.put_model || jobAttributes(j).put_model} : null;
+  return html`<article class="call-detail" aria-label="Selected call">
+    <h3>${event.kind === 'agent' ? 'run_agent' : event.kind === 'tool' ? 'call_tool' : 'Conversation'} · ${v.name}</h3>
+    <section class="call-arguments"><h4>Arguments</h4>${args ? html`<${ReturnedValue} value=${args} />` : html`<div class="meta">No call arguments recorded for these turns.</div>`}</section>
+    ${event.kind !== 'tool' ? html`<section class="call-conversation"><h4>Conversation</h4>${callTurns.length ? callTurns.map(({turn,i})=>html`<${TurnView} key=${i} turn=${turn} index=${i} />`) : html`<div class="meta">${v.running ? 'Waiting for model turns…' : 'No model turns recorded.'}</div>`}</section>` : null}
+    <section class="call-outcome"><h4>Outcome</h4><div class="meta">${callState(event)}${!v.running && v.steps_used != null ? ` · ${v.steps_used} steps · ${v.tokens_used ?? '—'} tokens` : ''}</div>
+      ${v.failure ? html`<div class="note"><${ClipText} text=${v.failure} /></div>` : null}
+      ${event.kind === 'tool' && Object.prototype.hasOwnProperty.call(v,'response') ? html`<${ReturnedValue} value=${v.response} />` : null}
+      ${event.kind !== 'tool' && v.output != null && !callTurns.some(({turn})=>turn.model_output===v.output && !(turn.tool_exchanges || []).length) ? html`<${ReturnedValue} value=${v.output} />` : null}
+      ${v.output === '' ? html`<div class="meta">Empty final output</div>` : null}
+      ${v.budget ? html`<details><summary>Effective budget</summary><pre class="step">${pretty(v.budget)}</pre></details>` : null}
+      ${v.budget_cutoff_completion ? html`<details><summary>Charged completion excluded by the token limit</summary><pre class="step">${pretty(v.budget_cutoff_completion)}</pre></details>` : null}
+      ${v.unrendered_call ? html`<details><summary>Tool request with no response</summary><pre class="step">${pretty(v.unrendered_call)}</pre></details>` : null}
+      ${v.lua_execution ? html`<${LuaExecutionProvenance} execution=${v.lua_execution} />` : null}
+      ${v.workspace_ops?.length ? html`<${WsOps} ops=${v.workspace_ops} />` : null}
+      ${v.lua_execution?.discarded_workspace_ops?.length ? html`<${WsOps} ops=${v.lua_execution.discarded_workspace_ops} rolledBack=${true} />` : null}
+      ${v.sim_thinking ? html`<${Thinking} side="sim" role="SIM" text=${v.sim_thinking} />` : null}
+      ${v.state_after != null ? html`<details><summary>World state after this call</summary><pre class="step">${pretty(v.state_after)}</pre></details>` : null}
+    </section>
+    <details><summary>Raw call evidence JSON</summary><pre class="step">${pretty(v)}</pre></details>
+  </article>`;
+}
+
+function RunStepsPanel({ j, jobUi }) {
+  const [selectedKey, setSelectedKey] = useState(() => jobUi?.selectedCallKey || null);
+  const evidence = j.result?.trace || j.progress || {};
   const wf = workflowEvidence(j);
   const turns = evidence.turns || [];
-  const events = wf ? workflowEvents(wf) : [];
-  const ordered = events.length ? events : [];
-  let agentIndex = 0;
-  let toolIndex = 0;
-  const agentTotal = ordered.filter(e => e.kind === 'agent').length || 1;
-  const toolTotal = ordered.filter(e => e.kind === 'tool').length || 1;
+  const events = (wf ? workflowEvents(wf) : []).map(event => ({...event, key:`${event.kind}:${event.value.event_id ?? event.value.invocation_id ?? event.i}`}));
   const covered = new Set();
-  (wf?.invocations || []).forEach(invocation => {
-    const range = invocationTurnRange(invocation);
-    if (range) for (let t = range[0]; t < (invocation.running ? turns.length : range[1]); t++) covered.add(t);
+  (wf?.invocations || []).forEach(v => {
+    const range = invocationTurnRange(v);
+    if (range) for (let i=range[0]; i<(v.running ? turns.length : range[1]); i++) covered.add(i);
   });
-  const unassigned = ordered.length ? turns.map((turn, i) => ({turn, i})).filter(({i}) => !covered.has(i)) : [];
-  const standaloneTurns = turns.length ? html`<details class="legacy-conversation"><summary>Agent conversation · ${turns.length} turns</summary>${turns.map((turn, i) => html`<${TurnView} key=${'turn'+i} turn=${turn} index=${i} />`)}</details>` : html`<div class="meta">${j.status === 'running' ? 'Waiting for a step to start…' : 'No agent or tool calls were recorded.'}</div>`;
-  return html`<div>
-    ${wf ? (ordered.length ? ordered.map((event, i) => event.kind === 'agent'
-      ? html`<${InvocationStage} key=${'event'+(event.value.event_id ?? i)} invocation=${event.value} turns=${turns} index=${agentIndex++} total=${agentTotal} />`
-      : html`<${DirectToolCallView} key=${'event'+(event.value.event_id ?? i)} call=${event.value} index=${toolIndex++} total=${toolTotal} />`
-    ) : standaloneTurns) : standaloneTurns}
-    ${unassigned.length ? html`<details><summary>Additional recorded turns · ${unassigned.length}</summary>${unassigned.map(({turn, i}) => html`<${TurnView} key=${i} turn=${turn} index=${i} />`)}</details>` : null}
+  const extra = turns.map((_,i)=>i).filter(i=>!covered.has(i));
+  if (extra.length || (!wf && (evidence.execution?.budget_cutoff_completion || evidence.execution?.unrendered_call))) events.push({
+    kind:wf ? 'trace' : 'legacy', key:'unattributed', indices:extra,
+    value:{...evidence.execution,name:wf ? 'Additional recorded turns' : 'Single-agent trace',running:j.status==='running',failure:j.result?.failure?.error,tokens_used:evidence.execution?.put_tokens_used},
+  });
+  const selected = events.find(event=>event.key===selectedKey) || events[0];
+  useEffect(()=>{ if (selected && jobUi) jobUi.selectedCallKey=selected.key; },[selected?.key]);
+  const select = key => { setSelectedKey(key); if (jobUi) jobUi.selectedCallKey=key; };
+  const keyboard = e => {
+    const index=events.findIndex(event=>event.key===selected?.key);
+    const next=e.key==='ArrowDown' ? Math.min(index+1,events.length-1) : e.key==='ArrowUp' ? Math.max(0,index-1) : e.key==='Home' ? 0 : e.key==='End' ? events.length-1 : null;
+    if (next==null || !events[next]) return;
+    e.preventDefault(); select(events[next].key); e.currentTarget.querySelectorAll('.call-row')[next]?.focus();
+  };
+  return html`<div class="execution-calls">
+    ${Object.keys(evidence.resolved_inputs || {}).length ? html`<details><summary>Resolved scenario inputs</summary><${ReturnedValue} value=${evidence.resolved_inputs} /></details>` : null}
+    <div class="meta">${events.length} execution record${events.length===1?'':'s'}</div>
+    ${events.length ? html`<div class="call-browser">
+      <div class="call-list" role="list" aria-label="Execution calls" onKeyDown=${keyboard}>
+        ${events.map((event,index)=>html`<div role="listitem" key=${event.key}><button class=${`call-row${event.key===selected.key?' active':''}`} aria-current=${event.key===selected.key?'true':null} tabIndex=${event.key===selected.key?0:-1} onClick=${()=>select(event.key)}>
+          <span class="meta">${index+1} · ${event.kind==='agent'?'run_agent':event.kind==='tool'?'call_tool':'trace'}</span><strong>${event.value.name || 'agent'}</strong>
+          <span class="meta">${event.value.model ? `${shortModel(event.value.model)} · ` : ''}${callState(event)}</span>
+        </button></div>`)}
+      </div>
+      <${CallDetail} key=${selected.key} event=${selected} turns=${turns} j=${j} />
+    </div>` : html`<div class="meta">${j.status==='running' ? 'No calls yet. Calls appear here when the program makes them.' : 'No agent or tool calls were recorded.'}</div>`}
   </div>`;
 }
 
@@ -1552,16 +1579,13 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
     ${j.reason ? html`<div class="meta" style="margin:.5rem 0 1rem"><b>Purpose:</b> ${j.reason}</div>` : null}
 
     <section class="detail-section investigation-inputs"><div class="panel-head"><h2>Inputs</h2></div>
-      <${PromptInputs} j=${j} />
-      <${TaskPanel} scenario=${j.scenario} progress=${j.progress} trace=${trace} />
-      ${!customWorkflow ? html`<${PutPanel} put=${j.put} />` : null}
-      ${(j.workflow || wf) ? html`<${WorkflowProgramPanel} program=${j.workflow} evidence=${wf} />` : null}
+      <${InvestigationInputs} j=${j} />
     </section>
     <section class="detail-section"><div class="panel-head"><h2>Returned output</h2></div>
       <${ReturnedOutputPanel} j=${j} />
     </section>
-    <section class="detail-section"><div class="panel-head"><h2>Run steps</h2></div>
-      <${RunStepsPanel} j=${j} />
+    <section class="detail-section"><div class="panel-head"><h2>Execution</h2></div>
+      <${RunStepsPanel} j=${j} jobUi=${jobUi} />
     </section>
     <section class="detail-section"><div class="panel-head"><h2>Your assessment</h2></div>
       <${AssessmentPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
@@ -1569,6 +1593,8 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
     </section>
     <section class="detail-section"><div class="panel-head"><h2>Configuration and exports</h2></div>
       <${Implementations} implementations=${j.result?.trace?.implementations || j.progress?.implementations} />
+      ${!customWorkflow ? html`<${PutPanel} put=${j.put} />` : null}
+      ${(j.workflow || wf) ? html`<${WorkflowProgramPanel} program=${j.workflow} evidence=${wf} />` : null}
       ${trace?.final_world_state != null ? html`<details><summary>Final tool state (state patches)</summary><pre class="step">${pretty(trace.final_world_state)}</pre></details>` : null}
       <${ControlsPanel} controls=${j.conversation_controls} />
       <${AttributesPanel} j=${j} token=${token} onPatched=${onPatched} jobUi=${jobUi} />
