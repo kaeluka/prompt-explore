@@ -1,0 +1,181 @@
+[
+  {
+    "fixture": "exec-js",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "ed132fdf-fcf7-4e59-bb96-c85ab075e003"
+  },
+  {
+    "fixture": "exec-js",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "1fe54edd-d207-49fb-9c87-e3cb62a67604"
+  },
+  {
+    "fixture": "safe-app",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "e09d9d79-e66a-43d2-b64e-0df6e8b71c58"
+  },
+  {
+    "fixture": "safe-app",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "9b6073df-2811-4de8-a82b-85fd3870eaad"
+  },
+  {
+    "fixture": "long-chain",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "458c7a5e-36af-48dd-af95-4c179ddde9e2"
+  },
+  {
+    "fixture": "long-chain",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "77caca33-9b3d-4ca9-8ba7-4a18075c20e8"
+  },
+  {
+    "fixture": "exec-js",
+    "tag": "degraded-3k",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 3000,
+    "id": "91e0860b-b60d-4c80-bfb6-8775c2e68322"
+  },
+  {
+    "fixture": "exec-js",
+    "tag": "degraded-low",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "low",
+    "max_tokens": 12000,
+    "id": "b8ff4be9-899a-43cb-8753-8139a0cd6a67"
+  },
+  {
+    "fixture": "safe-app",
+    "tag": "degraded-3k",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 3000,
+    "id": "1696bf4d-c205-424e-b340-14293b909954"
+  },
+  {
+    "fixture": "noisy",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "df26eb19-2930-46da-9959-489b0f7481dc"
+  },
+  {
+    "fixture": "noisy",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "e56e5ac8-5147-4f29-b442-887de26834fb"
+  },
+  {
+    "fixture": "dynamic",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "035883cd-5b5e-4d9b-91ce-3c9670c35b42"
+  },
+  {
+    "fixture": "dynamic",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "a67a27f3-6d48-453e-aa1e-6148a721fcc7"
+  },
+  {
+    "fixture": "big",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "91b00e56-c2c2-4e1f-8df2-f95073066ae0"
+  },
+  {
+    "fixture": "big",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "2834302f-d0b8-4102-a51c-f7769ff24f2b"
+  },
+  {
+    "fixture": "big",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 60,
+    "budget_tokens": 250000,
+    "id": "dbb8f04a-edd3-4d8c-b880-3df28dbe1473"
+  },
+  {
+    "fixture": "big",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 60,
+    "budget_tokens": 250000,
+    "id": "5b8e63d8-443a-418d-99a3-894b37a1f6c3"
+  },
+  {
+    "fixture": "huge",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 80,
+    "budget_tokens": 500000,
+    "id": "d40c035f-d841-4bfb-a1aa-bdd431b6cfb9"
+  },
+  {
+    "fixture": "huge",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 80,
+    "budget_tokens": 500000,
+    "id": "e700e437-54fc-44b9-9d3a-189077610ad1"
+  }
+]

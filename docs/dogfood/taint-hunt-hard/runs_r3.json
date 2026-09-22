@@ -1,0 +1,402 @@
+[
+  {
+    "tag": "fix",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-4.1-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "0012d9ef-72e5-4293-8c10-5a9e89476601"
+  },
+  {
+    "tag": "gpt-5-nano",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "edb1d14b-85ec-403d-9473-6c7ebb29c692"
+  },
+  {
+    "tag": "gpt-4.1-mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-4.1-mini",
+    "run": "1",
+    "thinking": null,
+    "id": "692953e8-7fbf-4a82-ba1e-7bc969466935"
+  },
+  {
+    "tag": "gpt-5-mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": null,
+    "id": "a49d382f-7328-4deb-983a-dfe9241ff316"
+  },
+  {
+    "tag": "gpt-5.4-nano",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "f5942e9f-c0ad-455d-987a-8a886cf244ed"
+  },
+  {
+    "tag": "gemini-2.5-flas",
+    "kind": "baseline",
+    "model": "open_router::google/gemini-2.5-flash-lite",
+    "run": "1",
+    "thinking": null,
+    "id": "019cf145-9d9b-4e48-8e9a-57b39ecc6a0f"
+  },
+  {
+    "tag": "gemini-2.5-flas",
+    "kind": "baseline",
+    "model": "open_router::google/gemini-2.5-flash",
+    "run": "1",
+    "thinking": null,
+    "id": "807e1fa0-407a-45ca-9600-055e470268d2"
+  },
+  {
+    "tag": "gemini-3.5-flas",
+    "kind": "baseline",
+    "model": "open_router::google/gemini-3.5-flash-lite",
+    "run": "1",
+    "thinking": null,
+    "id": "e9992ece-d280-4949-a2e9-0a1501a4d9cb"
+  },
+  {
+    "tag": "deepseek-v3.2",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "1",
+    "thinking": null,
+    "id": "a145ba2c-d3ae-4f5e-9b86-497317848f58"
+  },
+  {
+    "tag": "qwen3-235b-a22b",
+    "kind": "baseline",
+    "model": "open_router::qwen/qwen3-235b-a22b-2507",
+    "run": "1",
+    "thinking": null,
+    "id": "d22fa1bb-fb2b-4a19-8d45-c53bf885bb34"
+  },
+  {
+    "tag": "qwen3-30b-a3b-i",
+    "kind": "baseline",
+    "model": "open_router::qwen/qwen3-30b-a3b-instruct-2507",
+    "run": "1",
+    "thinking": null,
+    "id": "e5833c6d-5d90-44b8-b4d6-1b1b5a80ca2d"
+  },
+  {
+    "tag": "mistral-small-3",
+    "kind": "baseline",
+    "model": "open_router::mistralai/mistral-small-3.2-24b-instruct",
+    "run": "1",
+    "thinking": null,
+    "id": "bffbfe04-356e-4429-a391-684067617016"
+  },
+  {
+    "tag": "llama-3.3-70b-i",
+    "kind": "baseline",
+    "model": "open_router::meta-llama/llama-3.3-70b-instruct",
+    "run": "1",
+    "thinking": null,
+    "id": "b5f6f6a1-933b-48e5-a5cc-40b885f2ef54"
+  },
+  {
+    "tag": "nova-lite-v1",
+    "kind": "baseline",
+    "model": "open_router::amazon/nova-lite-v1",
+    "run": "1",
+    "thinking": null,
+    "id": "41cc3a73-2db6-4e36-b1a8-ef4536a3a73b"
+  },
+  {
+    "tag": "glm-4.6",
+    "kind": "baseline",
+    "model": "open_router::z-ai/glm-4.6",
+    "run": "1",
+    "thinking": null,
+    "id": "6c041754-e59f-4df3-9f34-b883ed8c8253"
+  },
+  {
+    "tag": "claude-haiku-4.",
+    "kind": "baseline",
+    "model": "open_router::anthropic/claude-haiku-4.5",
+    "run": "1",
+    "thinking": null,
+    "id": "df641619-9a97-4321-84b4-26b0d792cf4f"
+  },
+  {
+    "tag": "gpt5mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "2",
+    "thinking": null,
+    "id": "9448c4b8-7639-4fc8-a500-48717ca5f55d"
+  },
+  {
+    "tag": "gpt5mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "3",
+    "thinking": null,
+    "id": "b6954b3f-e3e7-4806-9173-26238a08b276"
+  },
+  {
+    "tag": "gpt5mini-low",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": "low",
+    "id": "92ed35cd-e848-42cf-b7de-0bcadb716440"
+  },
+  {
+    "tag": "gpt5mini-high",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": "high",
+    "id": "330bbc25-063b-4658-bb9d-f6a1a25c3030"
+  },
+  {
+    "tag": "gpt5nano-low",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "low",
+    "id": "221dc531-43b0-412e-8caf-ea9065be581e"
+  },
+  {
+    "tag": "gpt5nano-high",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "high",
+    "id": "ca4e4aab-9ef8-437c-a78d-95b942d9e4f2"
+  },
+  {
+    "tag": "gpt54nano-high",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": "high",
+    "id": "7dc478a9-51e6-49e4-998f-202cfe1379d8"
+  },
+  {
+    "tag": "deepseek-high",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "1",
+    "thinking": "high",
+    "id": "c69f33c9-5331-4acc-8d10-e30e7a3aa95e"
+  },
+  {
+    "tag": "glm46-run2",
+    "kind": "baseline",
+    "model": "open_router::z-ai/glm-4.6",
+    "run": "2",
+    "thinking": null,
+    "id": "b056e1e3-4ead-4890-a004-1e75395640c2"
+  },
+  {
+    "tag": "gpt5mini-high-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": "high",
+    "id": "e21278f9-b978-42da-8f3d-ee799bc50f8d"
+  },
+  {
+    "tag": "gpt5nano-high-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "high",
+    "id": "6041109b-666c-4900-a54a-ab220ae337a2"
+  },
+  {
+    "tag": "gpt5nano-med-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "medium",
+    "id": "f4274cfa-0abe-4081-b680-26d3bd71f632"
+  },
+  {
+    "tag": "gpt54nano-low",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": "low",
+    "id": "f19132de-b5e1-44a2-9ed2-d38d97380c1e"
+  },
+  {
+    "tag": "deepseek-high2",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "2",
+    "thinking": "high",
+    "id": "841f4d58-bf19-4dc6-ad4c-c9c0abdc0047"
+  },
+  {
+    "tag": "gpt5mini-low2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "2",
+    "thinking": "low",
+    "id": "ab990e77-d9fe-4e85-8297-29b4bc440bed"
+  },
+  {
+    "tag": "gpt5mini-dec",
+    "kind": "decompose",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": null,
+    "id": "188b641e-ffb5-4afc-a973-522972a91452"
+  },
+  {
+    "tag": "deepseek-dec",
+    "kind": "decompose",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "1",
+    "thinking": "high",
+    "id": "7c60a2fb-88f8-4a69-914b-07e390c2ceb5"
+  },
+  {
+    "tag": "gpt5nano-med-3k",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "medium",
+    "id": "3f09bd30-98b4-4853-9870-62a9dee9a96c"
+  },
+  {
+    "tag": "gpt5nano-low-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "low",
+    "id": "3cbd2690-ed8a-4d50-9249-e89760c09010"
+  },
+  {
+    "tag": "gpt5nano-med2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": "medium",
+    "id": "a6c38e75-17f2-46a2-babb-baced2c7ff80"
+  },
+  {
+    "tag": "gpt5nano-med3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "3",
+    "thinking": "medium",
+    "id": "c0558a1d-49d2-4e99-9eca-0823cffdbc7c"
+  },
+  {
+    "tag": "gpt5nano-min-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "minimal",
+    "id": "ccb27cc2-1e84-4b3e-a09d-629d6e0ad654"
+  },
+  {
+    "tag": "gpt5nano-low-big2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": "low",
+    "id": "b2939adb-84c6-4d90-9fee-702663d43a70"
+  },
+  {
+    "tag": "gpt5nano-low-big3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "3",
+    "thinking": "low",
+    "id": "02d12206-bc48-4dd1-8935-f031c7ca9466"
+  },
+  {
+    "tag": "gpt5nano-med4",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "4",
+    "thinking": "medium",
+    "id": "81667bd3-c583-4f61-b651-84c60d6ae0e9"
+  },
+  {
+    "tag": "gpt5nano-med-dec",
+    "kind": "decompose",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "medium",
+    "id": "6f6ed4ca-29f3-4bb8-9475-cb34bb6a3088"
+  },
+  {
+    "tag": "gpt5nano-low-big4",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "4",
+    "thinking": "low",
+    "id": "6209bce5-9bd1-4081-8ce9-075c22d9358a"
+  },
+  {
+    "tag": "gpt5nano-low-big5",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "5",
+    "thinking": "low",
+    "id": "1e9887bb-b882-43b7-85fd-f8c22b093be2"
+  },
+  {
+    "tag": "gpt5mini-low3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "3",
+    "thinking": "low",
+    "id": "27d65985-b395-41bd-a090-69cb02798531"
+  },
+  {
+    "tag": "gpt5nano-def-big1",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "0710d3c6-eba1-4f88-baf8-1104ae14a3ca"
+  },
+  {
+    "tag": "gpt5nano-def-big2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "id": "a1b17df1-a23a-4ee2-9f18-7a56f1c57521"
+  },
+  {
+    "tag": "gpt5nano-def-big3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "3",
+    "thinking": null,
+    "id": "e62aa3e1-0fba-477d-8479-81a874116961"
+  },
+  {
+    "tag": "gpt54nano-def-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "daac25c7-334b-41d9-9434-45a66e953254"
+  },
+  {
+    "tag": "deepseek-def-big",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "3",
+    "thinking": null,
+    "id": "759171a1-8720-437a-aee1-39e920c89f45"
+  }
+]

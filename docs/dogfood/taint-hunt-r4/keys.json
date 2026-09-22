@@ -1,0 +1,336 @@
+{
+  "exec-js": {
+    "language": "javascript",
+    "sink_family": "command execution (child_process)",
+    "real": {
+      "F1": {
+        "source": "server.js:8",
+        "sinks": [
+          "run.js:6"
+        ],
+        "desc": "query param host -> host.trim() (not a sanitizer) -> exec(`ping -c 1 ${target}`); command injection"
+      },
+      "F2": {
+        "source": "server.js:14",
+        "sinks": [
+          "run.js:10"
+        ],
+        "desc": "untrusted X-Filename header -> renamed to name -> execSync(\"tar -cf /tmp/out.tar \" + name); command injection"
+      }
+    },
+    "decoys": {
+      "D1": {
+        "source": "server.js:20",
+        "sinks": [
+          "run.js:14"
+        ],
+        "desc": "execFile(\"ls\", [\"-l\", dir]) uses an argument array and no shell; safe"
+      },
+      "D2": {
+        "source": "server.js:26",
+        "sinks": [
+          "run.js:18"
+        ],
+        "desc": "value charset-sanitized to [A-Za-z0-9_-] before exec(`echo ...`); safe"
+      },
+      "D3": {
+        "source": null,
+        "sinks": [
+          "run.js:22"
+        ],
+        "desc": "constant execSync(\"node -v\"); no source"
+      }
+    }
+  },
+  "safe-app": {
+    "language": "python",
+    "sink_family": "SQL + subprocess",
+    "real": {},
+    "expect_none": true,
+    "decoys": {
+      "D1": {
+        "source": "app.py:10",
+        "sinks": [
+          "db.py:8"
+        ],
+        "desc": "uid cast to int and bound with a ? placeholder; safe"
+      },
+      "D2": {
+        "source": "app.py:16",
+        "sinks": [
+          "db.py:14"
+        ],
+        "desc": "name bound with a ? placeholder; safe"
+      },
+      "D3": {
+        "source": "app.py:22",
+        "sinks": [
+          "db.py:22"
+        ],
+        "desc": "col whitelisted to a fixed tuple before ORDER BY concatenation; safe"
+      },
+      "D4": {
+        "source": "app.py:28",
+        "sinks": [
+          "shell.py:7"
+        ],
+        "desc": "path passed through shlex.quote and concatenated into shell=True; safe"
+      }
+    }
+  },
+  "long-chain": {
+    "language": "python",
+    "sink_family": "SQL",
+    "real": {
+      "F1": {
+        "source": "routes.py:9",
+        "sinks": [
+          "repo.py:7",
+          "repo.py:9"
+        ],
+        "desc": "user_in -> service.handle -> adapters.prepare (dict alias payload[\"v\"]) -> repo.lookup(v); % interpolation into execute"
+      },
+      "F2": {
+        "source": "routes.py:15",
+        "sinks": [
+          "repo.py:15"
+        ],
+        "desc": "X-Key header -> service.record -> adapters.wrap (encode/decode rename) -> repo.write(v); % interpolation into executescript"
+      }
+    },
+    "decoys": {
+      "D1": {
+        "source": "routes.py:22",
+        "sinks": [
+          "repo.py:20"
+        ],
+        "desc": "text -> service.show -> adapters.display -> repo.render(v) bound with a ? placeholder; safe"
+      },
+      "D2": {
+        "source": null,
+        "sinks": [
+          "repo.py:26"
+        ],
+        "desc": "constant executescript(\"DELETE FROM sessions\"); no source"
+      }
+    }
+  },
+  "noisy": {
+    "language": "python",
+    "sink_family": "SQL + subprocess (larger repo, 6 files)",
+    "real": {
+      "F1": {
+        "source": "api.py:12",
+        "sinks": [
+          "storage.py:7",
+          "storage.py:9"
+        ],
+        "desc": "q -> middleware.dispatch -> storage.search; % interpolation into execute"
+      },
+      "F2": {
+        "source": "api.py:18",
+        "sinks": [
+          "runner.py:5"
+        ],
+        "desc": "cmd -> format_utils.wrap -> runner.execute; subprocess.run(\"sh -c \" + text, shell=True) unquoted command injection"
+      }
+    },
+    "decoys": {
+      "D1": {
+        "source": "api.py:24",
+        "sinks": [
+          "storage.py:15"
+        ],
+        "desc": "uid cast to int and bound with ? ; safe"
+      },
+      "D2": {
+        "source": "api.py:30",
+        "sinks": [
+          "storage.py:21"
+        ],
+        "desc": "slug bound with ? ; safe"
+      },
+      "D3": {
+        "source": "api.py:36",
+        "sinks": [
+          "storage.py:29"
+        ],
+        "desc": "col whitelisted before ORDER BY concatenation; safe"
+      },
+      "D4": {
+        "source": "api.py:42",
+        "sinks": [
+          "runner.py:9"
+        ],
+        "desc": "path via shlex.quote then shell=True; safe"
+      },
+      "D5": {
+        "source": "api.py:48",
+        "sinks": [
+          "runner.py:13"
+        ],
+        "desc": "subprocess argument array, no shell; safe"
+      },
+      "D6": {
+        "source": null,
+        "sinks": [
+          "runner.py:17"
+        ],
+        "desc": "constant subprocess.run(\"node -v\"); no source"
+      }
+    }
+  },
+  "big": {
+    "language": "python",
+    "sink_family": "SQL + subprocess (26 files, ~400 lines)",
+    "real": {
+      "F1": {
+        "source": "api.py:12",
+        "sinks": [
+          "storage.py:7",
+          "storage.py:9"
+        ],
+        "desc": "q -> middleware.dispatch -> storage.search; % interpolation into execute"
+      },
+      "F2": {
+        "source": "api.py:18",
+        "sinks": [
+          "runner.py:5"
+        ],
+        "desc": "cmd -> format_utils.wrap -> runner.execute; unquoted shell=True command injection"
+      }
+    },
+    "decoys": {
+      "D1": {
+        "source": "api.py:24",
+        "sinks": [
+          "storage.py:15"
+        ],
+        "desc": "uid cast + ? ; safe"
+      },
+      "D2": {
+        "source": "api.py:30",
+        "sinks": [
+          "storage.py:21"
+        ],
+        "desc": "slug bound with ? ; safe"
+      },
+      "D3": {
+        "source": "api.py:36",
+        "sinks": [
+          "storage.py:29"
+        ],
+        "desc": "col whitelisted before ORDER BY; safe"
+      },
+      "D4": {
+        "source": "api.py:42",
+        "sinks": [
+          "runner.py:9"
+        ],
+        "desc": "path via shlex.quote then shell=True; safe"
+      },
+      "D5": {
+        "source": "api.py:48",
+        "sinks": [
+          "runner.py:13"
+        ],
+        "desc": "argument array, no shell; safe"
+      },
+      "D6": {
+        "source": null,
+        "sinks": [
+          "runner.py:17"
+        ],
+        "desc": "constant subprocess.run(\"node -v\"); no source"
+      }
+    }
+  },
+  "dynamic": {
+    "language": "python",
+    "sink_family": "SQL via indirect dispatch",
+    "real": {
+      "F1": {
+        "source": "routes.py:9",
+        "sinks": [
+          "engine.py:7",
+          "engine.py:9"
+        ],
+        "desc": "q -> plugins.handle -> dict lookup fn = OPS[\"like\"] -> fn(q) -> engine.by_like; % interpolation"
+      }
+    },
+    "decoys": {
+      "D1": {
+        "source": "routes.py:15",
+        "sinks": [
+          "engine.py:15"
+        ],
+        "desc": "term -> plugins.handle_exact -> OPS[\"exact\"] -> engine.by_exact bound with ? ; safe"
+      }
+    }
+  },
+  "huge": {
+    "language": "python",
+    "sink_family": "SQL + subprocess (66 files, ~1000 lines)",
+    "real": {
+      "F1": {
+        "source": "api.py:12",
+        "sinks": [
+          "storage.py:7",
+          "storage.py:9"
+        ],
+        "desc": "q -> middleware.dispatch -> storage.search; % interpolation into execute"
+      },
+      "F2": {
+        "source": "api.py:18",
+        "sinks": [
+          "runner.py:5"
+        ],
+        "desc": "cmd -> format_utils.wrap -> runner.execute; subprocess.run(\"sh -c \" + text, shell=True) unquoted command injection"
+      }
+    },
+    "decoys": {
+      "D1": {
+        "source": "api.py:24",
+        "sinks": [
+          "storage.py:15"
+        ],
+        "desc": "uid cast to int and bound with ? ; safe"
+      },
+      "D2": {
+        "source": "api.py:30",
+        "sinks": [
+          "storage.py:21"
+        ],
+        "desc": "slug bound with ? ; safe"
+      },
+      "D3": {
+        "source": "api.py:36",
+        "sinks": [
+          "storage.py:29"
+        ],
+        "desc": "col whitelisted before ORDER BY concatenation; safe"
+      },
+      "D4": {
+        "source": "api.py:42",
+        "sinks": [
+          "runner.py:9"
+        ],
+        "desc": "path via shlex.quote then shell=True; safe"
+      },
+      "D5": {
+        "source": "api.py:48",
+        "sinks": [
+          "runner.py:13"
+        ],
+        "desc": "subprocess argument array, no shell; safe"
+      },
+      "D6": {
+        "source": null,
+        "sinks": [
+          "runner.py:17"
+        ],
+        "desc": "constant subprocess.run(\"node -v\"); no source"
+      }
+    }
+  }
+}

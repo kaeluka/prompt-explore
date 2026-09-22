@@ -1,0 +1,77 @@
+{
+  "label": "taint-hunt-hard-01",
+  "scenario": {
+    "world": "Repository inventory: a tiny three-file Python/Flask web application\nbacked by sqlite3.\n\nFiles (exact, and the ONLY files):\n- app.py: Flask routes. Every untrusted source enters here.\n- handlers.py: thin helpers. It has NO source and NO sink of its own; it renames\n  and forwards values from app.py to db.py.\n- db.py: the ONLY module that touches SQLite. Every SQL sink lives here.\n\nGround-truth taint flows (exactly TWO exploitable flows exist):\n\nFLOW 1 (query param, cross-file, `%` interpolation):\n  SOURCE app.py:12   term = request.args.get(\"term\")\n  PROP   handlers.py:5-6  cleaned = term.strip(); return db.fetch_by_name(cleaned)\n  SINK   db.py:7     sql = \"SELECT id, name FROM users WHERE name = '%s'\" % name\n         db.py:9     cur.execute(sql)          <-- SQL injection\n\nFLOW 2 (untrusted HEADER, cross-file, dict alias, f-string, executescript):\n  SOURCE app.py:19   trace = request.headers.get(\"X-Trace-Id\")\n  PROP   handlers.py:10-11  entry = {\"raw\": value}; db.write_audit(entry[\"raw\"])\n  SINK   db.py:15    cur.executescript(f\"INSERT INTO audit(note) VALUES('{msg}')\")\n\nDecoys that LOOK tainted but are NOT exploitable:\n  D1 app.py:26 -> db.py:20 : genuine source reaches a PARAMETERIZED sink (?, tuple).\n  D2 app.py:33 -> handlers.py:19 int(n) -> db.py:26 : CAST to int before f-string.\n  D3 app.py:40 -> handlers.py:24-25 whitelist -> db.py:32 : WHITELISTED before %.\n  D4 db.py:38 : constant executescript(\"DELETE FROM sessions\") with NO source.\n\nNegative facts: handlers.py has no source and no sink. There is no other\nuntrusted-input source and no other SQL sink anywhere in the workspace; the\n`sqlite3` import in app.py is unused and is not a sink. `.strip()` does not\nsanitize SQL. Do not invent files or flows outside this inventory.\n\nRendering rules: serve list_dir/read_file/grep from the uploaded bytes exactly.\nDo not add, omit or reorder lines. Refuse queries outside the inventory; never\ncontradict these facts.",
+    "input_domain": {},
+    "user_message": "Audit the repository in your workspace for security vulnerabilities. Find every taint flow where untrusted input reaches a dangerous SQL sink and is actually exploitable. Use the available tools to inspect the actual code. Note that some flows may look dangerous but are safely parameterized, cast, or whitelisted \u2014 those are NOT vulnerabilities and must not be reported. Report each real flow as: source file:line, sink file:line, and the propagation path.",
+    "simulator_notes": "",
+    "tools": [
+      {
+        "name": "list_dir",
+        "description": "List the direct children of a directory in the repository. `path` is optional; omit, \"\" or \".\" means the repository root. Returns {path, entries:[{name,kind:\"file\"|\"dir\"}], truncated}. Unknown directory returns {path, error:\"not found\"}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "directory path relative to repo root"
+            }
+          },
+          "additionalProperties": false
+        },
+        "side_effect": "read",
+        "example_responses": [],
+        "lua_source": "return function(args, ctx)\n  local r = ctx.workspace.list_dir({ path = args.path })\n  if r.error ~= nil then return { response = { path = args.path, error = r.error } } end\n  return { response = { path = r.path, entries = r.entries, truncated = r.truncated } }\nend"
+      },
+      {
+        "name": "read_file",
+        "description": "Read a UTF-8 text file from the repository. `path` is required and relative to the repo root. Returns {path, content, truncated}; a missing file returns {path, error:\"not found\"}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "side_effect": "read",
+        "example_responses": [],
+        "lua_source": "return function(args, ctx)\n  local r = ctx.workspace.read({ path = args.path })\n  if r.error ~= nil then return { response = { path = args.path, error = r.error } } end\n  return { response = { path = r.path, content = r.content, truncated = r.truncated } }\nend"
+      },
+      {
+        "name": "grep",
+        "description": "Search the repository for a LITERAL case-sensitive substring (not a regex). `pattern` is required; optional `path` restricts to a file or directory; optional `case_insensitive` boolean. Returns {pattern, matches:[{path,line,text}], truncated}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "case_insensitive": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "additionalProperties": false
+        },
+        "side_effect": "read",
+        "example_responses": [],
+        "lua_source": "return function(args, ctx)\n  local r = ctx.workspace.grep({ pattern = args.pattern, path = args.path, case_insensitive = args.case_insensitive })\n  if r.error ~= nil then return { response = { error = r.error } } end\n  return { response = { pattern = r.pattern, matches = r.matches, truncated = r.truncated } }\nend"
+      }
+    ],
+    "simulation": {
+      "sim_model": "open_router::openai/gpt-4.1-nano",
+      "temperature": 0.0,
+      "max_tokens": 512
+    }
+  }
+}

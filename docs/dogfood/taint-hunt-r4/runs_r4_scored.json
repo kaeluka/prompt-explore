@@ -1,0 +1,567 @@
+[
+  {
+    "fixture": "exec-js",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "ed132fdf-fcf7-4e59-bb96-c85ab075e003",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "server.js:8",
+        "run.js:6"
+      ],
+      [
+        "server.js:14",
+        "run.js:10"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 8,
+    "tokens": 17779,
+    "cost": 0.00333368,
+    "stop": "final_completion",
+    "answer": "FLOW source=server.js:8 sink=run.js:6\nFLOW source=server.js:14 sink=run.js:10"
+  },
+  {
+    "fixture": "exec-js",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "1fe54edd-d207-49fb-9c87-e3cb62a67604",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "server.js:8",
+        "run.js:6"
+      ],
+      [
+        "server.js:14",
+        "run.js:10"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 5,
+    "tokens": 9286,
+    "cost": 0.00183385,
+    "stop": "final_completion",
+    "answer": "FLOW source=server.js:8 sink=run.js:6\nFLOW source=server.js:14 sink=run.js:10"
+  },
+  {
+    "fixture": "safe-app",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "e09d9d79-e66a-43d2-b64e-0df6e8b71c58",
+    "found": [],
+    "fpos": [],
+    "unknown": [],
+    "flows": [],
+    "recall": null,
+    "fp": 0,
+    "said_none": true,
+    "steps": 5,
+    "tokens": 7257,
+    "cost": 0.00105266,
+    "stop": "final_completion",
+    "answer": "NONE"
+  },
+  {
+    "fixture": "safe-app",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "9b6073df-2811-4de8-a82b-85fd3870eaad",
+    "found": [],
+    "fpos": [],
+    "unknown": [],
+    "flows": [],
+    "recall": null,
+    "fp": 0,
+    "said_none": true,
+    "steps": 5,
+    "tokens": 6737,
+    "cost": 0.0008965,
+    "stop": "final_completion",
+    "answer": "NONE"
+  },
+  {
+    "fixture": "long-chain",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "458c7a5e-36af-48dd-af95-4c179ddde9e2",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "routes.py:9",
+        "repo.py:9"
+      ],
+      [
+        "routes.py:15",
+        "repo.py:15"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 7,
+    "tokens": 11753,
+    "cost": 0.0020039,
+    "stop": "final_completion",
+    "answer": "FLOW source=routes.py:9 sink=repo.py:9\nFLOW source=routes.py:15 sink=repo.py:15"
+  },
+  {
+    "fixture": "long-chain",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "77caca33-9b3d-4ca9-8ba7-4a18075c20e8",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "routes.py:9",
+        "repo.py:9"
+      ],
+      [
+        "routes.py:15",
+        "repo.py:15"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 6,
+    "tokens": 9629,
+    "cost": 0.00158232,
+    "stop": "final_completion",
+    "answer": "FLOW source=routes.py:9 sink=repo.py:9\nFLOW source=routes.py:15 sink=repo.py:15"
+  },
+  {
+    "fixture": "exec-js",
+    "tag": "degraded-3k",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 3000,
+    "id": "91e0860b-b60d-4c80-bfb6-8775c2e68322",
+    "found": [],
+    "fpos": [],
+    "unknown": [],
+    "flows": [],
+    "recall": 0.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 11,
+    "tokens": 21987,
+    "cost": 0.00283031,
+    "stop": "final_completion",
+    "answer": ""
+  },
+  {
+    "fixture": "exec-js",
+    "tag": "degraded-low",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "low",
+    "max_tokens": 12000,
+    "id": "b8ff4be9-899a-43cb-8753-8139a0cd6a67",
+    "found": [
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [
+      [
+        "server.js:9",
+        "run.js:6"
+      ]
+    ],
+    "flows": [
+      [
+        "server.js:9",
+        "run.js:6"
+      ],
+      [
+        "server.js:14",
+        "run.js:10"
+      ]
+    ],
+    "recall": 0.5,
+    "fp": 1,
+    "said_none": false,
+    "steps": 5,
+    "tokens": 7260,
+    "cost": 0.00096585,
+    "stop": "final_completion",
+    "answer": "FLOW source=server.js:9 sink=run.js:6\nPropagation path: server.js:9 -> utils.ping(host) -> run.ping(target) -> exec(`ping -c 1 ${target}`, ...) (run.js:6)\n\nFLOW source=server.js:14 sink=run.js:10\nPropagation path: server.js:14 -> utils.archive(file) -> run.tar(name) -> execSync(\"tar -cf /tmp/out.tar \" + name) (run.js:10)"
+  },
+  {
+    "fixture": "safe-app",
+    "tag": "degraded-3k",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 3000,
+    "id": "1696bf4d-c205-424e-b340-14293b909954",
+    "found": [],
+    "fpos": [],
+    "unknown": [],
+    "flows": [],
+    "recall": null,
+    "fp": 0,
+    "said_none": false,
+    "steps": 6,
+    "tokens": 9632,
+    "cost": 0.00163287,
+    "stop": "final_completion",
+    "answer": ""
+  },
+  {
+    "fixture": "noisy",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "df26eb19-2930-46da-9959-489b0f7481dc",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "api.py:12",
+        "storage.py:9"
+      ],
+      [
+        "api.py:18",
+        "runner.py:5"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 8,
+    "tokens": 15824,
+    "cost": 0.00269671,
+    "stop": "final_completion",
+    "answer": "FLOW source=api.py:12 sink=storage.py:9\nFLOW source=api.py:18 sink=runner.py:5"
+  },
+  {
+    "fixture": "noisy",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "e56e5ac8-5147-4f29-b442-887de26834fb",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "api.py:12",
+        "storage.py:9"
+      ],
+      [
+        "api.py:18",
+        "runner.py:5"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 8,
+    "tokens": 14506,
+    "cost": 0.00216547,
+    "stop": "final_completion",
+    "answer": "FLOW source=api.py:12 sink=storage.py:9\nFLOW source=api.py:18 sink=runner.py:5"
+  },
+  {
+    "fixture": "dynamic",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "035883cd-5b5e-4d9b-91ce-3c9670c35b42",
+    "found": [
+      "F1"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "routes.py:9",
+        "engine.py:9"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 6,
+    "tokens": 7920,
+    "cost": 0.00100006,
+    "stop": "final_completion",
+    "answer": "FLOW source=routes.py:9 sink=engine.py:9"
+  },
+  {
+    "fixture": "dynamic",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "a67a27f3-6d48-453e-aa1e-6148a721fcc7",
+    "found": [
+      "F1"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "routes.py:9",
+        "engine.py:9"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 5,
+    "tokens": 8109,
+    "cost": 0.00157655,
+    "stop": "final_completion",
+    "answer": "FLOW source=routes.py:9 sink=engine.py:9"
+  },
+  {
+    "fixture": "big",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "91b00e56-c2c2-4e1f-8df2-f95073066ae0",
+    "found": [],
+    "fpos": [],
+    "unknown": [],
+    "flows": [],
+    "recall": 0.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 18,
+    "tokens": 42142,
+    "cost": 0.00101741,
+    "stop": "token_budget",
+    "answer": ""
+  },
+  {
+    "fixture": "big",
+    "tag": "winner",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "id": "2834302f-d0b8-4102-a51c-f7769ff24f2b",
+    "found": [],
+    "fpos": [],
+    "unknown": [],
+    "flows": [],
+    "recall": 0.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 18,
+    "tokens": 42049,
+    "cost": 0.00115409,
+    "stop": "token_budget",
+    "answer": ""
+  },
+  {
+    "fixture": "big",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 60,
+    "budget_tokens": 250000,
+    "id": "dbb8f04a-edd3-4d8c-b880-3df28dbe1473",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "api.py:12",
+        "storage.py:9"
+      ],
+      [
+        "api.py:18",
+        "runner.py:5"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 28,
+    "tokens": 81359,
+    "cost": 0.00365061,
+    "stop": "final_completion",
+    "answer": "FLOW source=api.py:12 sink=storage.py:9\nFLOW source=api.py:18 sink=runner.py:5"
+  },
+  {
+    "fixture": "big",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 60,
+    "budget_tokens": 250000,
+    "id": "5b8e63d8-443a-418d-99a3-894b37a1f6c3",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "fpos": [],
+    "unknown": [],
+    "flows": [
+      [
+        "api.py:12",
+        "storage.py:9"
+      ],
+      [
+        "api.py:18",
+        "runner.py:5"
+      ]
+    ],
+    "recall": 1.0,
+    "fp": 0,
+    "said_none": false,
+    "steps": 28,
+    "tokens": 80954,
+    "cost": 0.00400701,
+    "stop": "final_completion",
+    "answer": "FLOW source=api.py:12 sink=storage.py:9\nFLOW source=api.py:18 sink=runner.py:5"
+  },
+  {
+    "fixture": "huge",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 80,
+    "budget_tokens": 500000,
+    "id": "d40c035f-d841-4bfb-a1aa-bdd431b6cfb9",
+    "found": [
+      "F1"
+    ],
+    "fpos": [],
+    "unknown": [
+      [
+        "api.py:18",
+        "runner.py:4"
+      ]
+    ],
+    "flows": [
+      [
+        "api.py:12",
+        "storage.py:9"
+      ],
+      [
+        "api.py:18",
+        "runner.py:4"
+      ]
+    ],
+    "recall": 0.5,
+    "fp": 1,
+    "said_none": false,
+    "steps": 80,
+    "tokens": 418246,
+    "cost": 0.00912807,
+    "stop": "final_completion",
+    "answer": "FLOW source=api.py:12 sink=storage.py:9\nFLOW source=api.py:18 sink=runner.py:4"
+  },
+  {
+    "fixture": "huge",
+    "tag": "winner-bigbudget",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "max_tokens": 12000,
+    "budget_steps": 80,
+    "budget_tokens": 500000,
+    "id": "e700e437-54fc-44b9-9d3a-189077610ad1",
+    "found": [
+      "F1"
+    ],
+    "fpos": [],
+    "unknown": [
+      [
+        "api.py:18",
+        "runner.py:4"
+      ]
+    ],
+    "flows": [
+      [
+        "api.py:12",
+        "storage.py:9"
+      ],
+      [
+        "api.py:18",
+        "runner.py:4"
+      ]
+    ],
+    "recall": 0.5,
+    "fp": 1,
+    "said_none": false,
+    "steps": 68,
+    "tokens": 351354,
+    "cost": 0.00664953,
+    "stop": "final_completion",
+    "answer": "FLOW source=api.py:12 sink=storage.py:9\nFLOW source=api.py:18 sink=runner.py:4"
+  }
+]

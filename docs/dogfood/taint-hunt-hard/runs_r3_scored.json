@@ -1,0 +1,1597 @@
+[
+  {
+    "tag": "fix",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-4.1-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "0012d9ef-72e5-4293-8c10-5a9e89476601",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 6,
+    "tokens": 3382,
+    "cost": 0.000472,
+    "stop": "final_completion",
+    "answer": "Based on the code inspection, the following exploitable SQL injection flows are confirmed:\n\n1. In `db.py`, the function `fetch_by_name` constructs an SQL query by directly interpolating the `name` parameter into the SQL string without parameterization or sanitization. This allows an attacker to inject malicious SQL through the `name` parameter.\n\n2. In `db.py`, the function `write_audit` uses string formatting with an f-string to insert `msg` into an SQL command, which is vulnerable to SQL injection if `msg` contains malicious SQL code.\n\n3. In `db.py`, the function `top_rows` constructs an SQL query by directly interpolating the `count` parameter into the SQL string without parameterization, which could be exploited if `count` is manipulated to include malicious SQL.\n\n4. In `db.py`, the function `ordered_users` constructs an SQL query by directly interpolating the `col` parameter into the SQL string without parameterization or sanitization, allowing injection if `col` is manipulated.\n\nThe functions `lookup_param` and `top_n` are safe because they use parameterized queries, and `list_users` sanitizes the column name.\n\nThe confirmed exploitable flows are:\n\n- source db.py:7, sink db.py:7, with `name` parameter in `fetch_by_name`.\n- source db.py:11, sink db.py:11, with `msg` in `write_audit`.\n- source db.py:15, sink db.py:15, with `count` in `top_rows`.\n- source db.py:19, sink db.py:19, with `col` in `ordered_users`."
+  },
+  {
+    "tag": "gpt-5-nano",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "edb1d14b-85ec-403d-9473-6c7ebb29c692",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 6,
+    "tokens": 9654,
+    "cost": 0.0016081,
+    "stop": "final_completion",
+    "answer": ""
+  },
+  {
+    "tag": "gpt-4.1-mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-4.1-mini",
+    "run": "1",
+    "thinking": null,
+    "id": "692953e8-7fbf-4a82-ba1e-7bc969466935",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:7",
+        "db.py:6"
+      ],
+      [
+        "app.py:11",
+        "db.py:11"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:7",
+        "db.py:6"
+      ],
+      [
+        "app.py:11",
+        "db.py:11"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 2984,
+    "cost": 0.0013184,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:7 sink=db.py:6\nFLOW source=app.py:11 sink=db.py:11"
+  },
+  {
+    "tag": "gpt-5-mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": null,
+    "id": "a49d382f-7328-4deb-983a-dfe9241ff316",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7289,
+    "cost": 0.00508675,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt-5.4-nano",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "f5942e9f-c0ad-455d-987a-8a886cf244ed",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [
+      "D3"
+    ],
+    "fp": 1,
+    "unknown": [
+      [
+        "app.py:12",
+        "db.py:15"
+      ],
+      [
+        "app.py:7",
+        "db.py:9"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:15"
+      ],
+      [
+        "app.py:7",
+        "db.py:9"
+      ],
+      [
+        "app.py:35",
+        "db.py:32"
+      ]
+    ],
+    "steps": 9,
+    "tokens": 5094,
+    "cost": 0.00098172,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:15  \nFLOW source=app.py:7 sink=db.py:9  \nFLOW source=app.py:35 sink=db.py:32"
+  },
+  {
+    "tag": "gemini-2.5-flas",
+    "kind": "baseline",
+    "model": "open_router::google/gemini-2.5-flash-lite",
+    "run": "1",
+    "thinking": null,
+    "id": "019cf145-9d9b-4e48-8e9a-57b39ecc6a0f",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 238,
+    "tokens": 1507,
+    "cost": 0.0002053,
+    "stop": "step_budget",
+    "answer": ""
+  },
+  {
+    "tag": "gemini-2.5-flas",
+    "kind": "baseline",
+    "model": "open_router::google/gemini-2.5-flash",
+    "run": "1",
+    "thinking": null,
+    "id": "807e1fa0-407a-45ca-9600-055e470268d2",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [
+      "D2"
+    ],
+    "fp": 1,
+    "unknown": [
+      [
+        "app.py:13",
+        "db.py:16"
+      ],
+      [
+        "app.py:28",
+        "db.py:36"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:13",
+        "db.py:16"
+      ],
+      [
+        "app.py:28",
+        "db.py:36"
+      ],
+      [
+        "app.py:33",
+        "db.py:42"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 2767,
+    "cost": 0.0009885,
+    "stop": "final_completion",
+    "answer": "FLOW app.py:13 sink=db.py:16\nFLOW app.py:28 sink=db.py:36\nFLOW app.py:33 sink=db.py:42"
+  },
+  {
+    "tag": "gemini-3.5-flas",
+    "kind": "baseline",
+    "model": "open_router::google/gemini-3.5-flash-lite",
+    "run": "1",
+    "thinking": null,
+    "id": "e9992ece-d280-4949-a2e9-0a1501a4d9cb",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:11",
+        "db.py:8"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:11",
+        "db.py:8"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 2912,
+    "cost": 0.0010496,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:11 sink=db.py:8"
+  },
+  {
+    "tag": "deepseek-v3.2",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "1",
+    "thinking": null,
+    "id": "a145ba2c-d3ae-4f5e-9b86-497317848f58",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [
+      "D2"
+    ],
+    "fp": 1,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ],
+      [
+        "app.py:33",
+        "db.py:26"
+      ]
+    ],
+    "steps": 9,
+    "tokens": 22358,
+    "cost": 0.00488315,
+    "stop": "final_completion",
+    "answer": "The `purge_sessions` function doesn't take any user input, so it's not vulnerable.\n\nLet me double-check the flows by examining each vulnerable path more carefully:\n\n**Flow 1 verification**: `/search` \u2192 `fetch_by_name` with string interpolation\n**Flow 2 verification**: `/audit/ping` \u2192 `write_audit` with f-string interpolation  \n**Flow 4 verification**: `/limit` \u2192 `top_rows` with f-string interpolation\n\nAll three are exploitable SQL injection vulnerabilities.\n\nNow I need to report each confirmed exploitable flow:\n\nFLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15\nFLOW source=app.py:33 sink=db.py:26"
+  },
+  {
+    "tag": "qwen3-235b-a22b",
+    "kind": "baseline",
+    "model": "open_router::qwen/qwen3-235b-a22b-2507",
+    "run": "1",
+    "thinking": null,
+    "id": "d22fa1bb-fb2b-4a19-8d45-c53bf885bb34",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [
+      "D2",
+      "D3"
+    ],
+    "fp": 2,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ],
+      [
+        "app.py:33",
+        "db.py:26"
+      ],
+      [
+        "app.py:40",
+        "db.py:32"
+      ]
+    ],
+    "steps": 8,
+    "tokens": 12446,
+    "cost": 0.00043764,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15\nFLOW source=app.py:33 sink=db.py:26\nFLOW source=app.py:40 sink=db.py:32"
+  },
+  {
+    "tag": "qwen3-30b-a3b-i",
+    "kind": "baseline",
+    "model": "open_router::qwen/qwen3-30b-a3b-instruct-2507",
+    "run": "1",
+    "thinking": null,
+    "id": "e5833c6d-5d90-44b8-b4d6-1b1b5a80ca2d",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [
+      "D2",
+      "D3"
+    ],
+    "fp": 2,
+    "unknown": [
+      [
+        "app.py:6",
+        "db.py:9"
+      ],
+      [
+        "app.py:11",
+        "db.py:15"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:6",
+        "db.py:9"
+      ],
+      [
+        "app.py:11",
+        "db.py:15"
+      ],
+      [
+        "app.py:16",
+        "db.py:26"
+      ],
+      [
+        "app.py:21",
+        "db.py:32"
+      ]
+    ],
+    "steps": 7,
+    "tokens": 10303,
+    "cost": 0.000520722,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:6 sink=db.py:9\nFLOW source=app.py:11 sink=db.py:15\nFLOW source=app.py:16 sink=db.py:26\nFLOW source=app.py:21 sink=db.py:32"
+  },
+  {
+    "tag": "mistral-small-3",
+    "kind": "baseline",
+    "model": "open_router::mistralai/mistral-small-3.2-24b-instruct",
+    "run": "1",
+    "thinking": null,
+    "id": "bffbfe04-356e-4429-a391-684067617016",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 24,
+    "tokens": 11162,
+    "cost": 0.001108625,
+    "stop": "step_budget",
+    "answer": ""
+  },
+  {
+    "tag": "llama-3.3-70b-i",
+    "kind": "baseline",
+    "model": "open_router::meta-llama/llama-3.3-70b-instruct",
+    "run": "1",
+    "thinking": null,
+    "id": "b5f6f6a1-933b-48e5-a5cc-40b885f2ef54",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [
+      "D2"
+    ],
+    "fp": 1,
+    "unknown": [
+      [
+        "app.py:13",
+        "db.py:5"
+      ],
+      [
+        "app.py:21",
+        "db.py:9"
+      ],
+      [
+        "app.py:29",
+        "db.py:17"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:13",
+        "db.py:5"
+      ],
+      [
+        "app.py:21",
+        "db.py:9"
+      ],
+      [
+        "app.py:29",
+        "db.py:17"
+      ],
+      [
+        "app.py:33",
+        "db.py:21"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 8396,
+    "cost": 0.00088228,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:13, sink=db.py:5, propagation path=request.args.get(\"term\") -> handlers.run_search(term) -> db.fetch_by_name(name)\nFLOW source=app.py:21, sink=db.py:9, propagation path=request.headers.get(\"X-Trace-Id\") -> handlers.log_request(trace) -> db.write_audit(msg)\nFLOW source=app.py:29, sink=db.py:17, propagation path=request.args.get(\"n\") -> handlers.top_n(n) -> db.top_rows(count)\nFLOW source=app.py:33, sink=db.py:21, propagation path=request.args.get(\"col\") -> handlers.list_users(col) -> db.ordered_users(col)"
+  },
+  {
+    "tag": "nova-lite-v1",
+    "kind": "baseline",
+    "model": "open_router::amazon/nova-lite-v1",
+    "run": "1",
+    "thinking": null,
+    "id": "41cc3a73-2db6-4e36-b1a8-ef4536a3a73b",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 11,
+    "tokens": 10874,
+    "cost": 0.00072192,
+    "stop": "final_completion",
+    "answer": "- For the `/search` endpoint, the untrusted input `term` is passed to `handlers.run_search(term)`, which in turn calls `db.fetch_by_name(cleaned)`. The `fetch_by_name` function uses string formatting to - The generated text has been blocked by our content filters."
+  },
+  {
+    "tag": "glm-4.6",
+    "kind": "baseline",
+    "model": "open_router::z-ai/glm-4.6",
+    "run": "1",
+    "thinking": null,
+    "id": "6c041754-e59f-4df3-9f34-b883ed8c8253",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:10",
+        "db.py:8"
+      ],
+      [
+        "app.py:16",
+        "db.py:14"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:10",
+        "db.py:8"
+      ],
+      [
+        "app.py:16",
+        "db.py:14"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 4831,
+    "cost": 0.00394249,
+    "stop": "final_completion",
+    "answer": "Now let me trace each taint flow carefully:\n\n**Flow 1 \u2014 `/search` route:**\n- `app.py:10`: `term = request.args.get(\"term\")` (source)\n- `app.py:11`: `handlers.run_search(term)` \u2192 `handlers.py:5`: `cleaned = term.strip()` (only `.strip()`, not safe)\n- `handlers.py:6`: `db.fetch_by_name(cleaned)` \u2192 `db.py:7`: `sql = \"SELECT ... '%s'\" % name` (string-format SQL injection)\n- `db.py:8`: `cur.execute(sql)` (sink)\n- **EXPLOITABLE** \u2014 `.strip()` does not prevent SQL injection.\n\n**Flow 2 \u2014 `/audit/ping` route:**\n- `app.py:16`: `trace = request.headers.get(\"X-Trace-Id\")` (source)\n- `app.py:17`: `handlers.log_request(trace)` \u2192 `handlers.py:9-10`: `entry[\"raw\"]` passes value unchanged\n- `handlers.py:10`: `db.write_audit(entry[\"raw\"])` \u2192 `db.py:14`: `cur.executescript(f\"INSERT INTO audit(note) VALUES('{msg}')\")` (f-string SQL injection, sink)\n- **EXPLOITABLE** \u2014 header value flows directly into `executescript` via f-string.\n\n**Flow 3 \u2014 `/profile` route:**\n- `app.py:22`: `name = request.args.get(\"name\")` \u2192 `handlers.py:13`: `db.lookup_param(name)` \u2192 `db.py:18`: `cur.execute(\"... WHERE name = ?\", (name,))`\n- **SAFE** \u2014 parameterized with `?` placeholder.\n\n**Flow 4 \u2014 `/limit` route:**\n- `app.py:27`: `n = request.args.get(\"n\")` \u2192 `handlers.py:16`: `count = int(n)` \u2192 `db.py:22`: `cur.execute(f\"... LIMIT {count}\")`\n- **SAFE** \u2014 cast to `int()` before interpolation.\n\n**Flow 5 \u2014 `/sort` route:**\n- `app.py:32`: `col = request.args.get(\"col\")` \u2192 `handlers.py:19-20`: whitelisted to `\"name\"` or `\"emai"
+  },
+  {
+    "tag": "claude-haiku-4.",
+    "kind": "baseline",
+    "model": "open_router::anthropic/claude-haiku-4.5",
+    "run": "1",
+    "thinking": null,
+    "id": "df641619-9a97-4321-84b4-26b0d792cf4f",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:9",
+        "db.py:6"
+      ],
+      [
+        "app.py:14",
+        "db.py:10"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:9",
+        "db.py:6"
+      ],
+      [
+        "app.py:14",
+        "db.py:10"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 6595,
+    "cost": 0.011131,
+    "stop": "final_completion",
+    "answer": "Now let me trace the taint flows systematically. I'll analyze each endpoint and handler:\n\n**Analysis:**\n\n1. **`/search` endpoint (app.py:8-10)**\n   - Source: `request.args.get(\"term\")` at app.py:9\n   - Flows to: `handlers.run_search(term)` at app.py:10\n   - In handlers.py:5-6: `cleaned = term.strip()` then `db.fetch_by_name(cleaned)`\n   - In db.py:6: `sql = \"SELECT id, name FROM users WHERE name = '%s'\" % name`\n   - **VULNERABLE**: String interpolation with `%` operator, no parameterization\n\n2. **`/audit/ping` endpoint (app.py:13-16)**\n   - Source: `request.headers.get(\"X-Trace-Id\")` at app.py:14\n   - Flows to: `handlers.log_request(trace)` at app.py:15\n   - In handlers.py:10-11: `entry = {\"raw\": value}` then `db.write_audit(entry[\"raw\"])`\n   - In db.py:10: `cur.executescript(f\"INSERT INTO audit(note) VALUES('{msg}'\")`\n   - **VULNERABLE**: f-string interpolation with executescript, no parameterization\n\n3. **`/profile` endpoint (app.py:18-21)**\n   - Source: `request.args.get(\"name\")` at app.py:19\n   - Flows to: `handlers.safe_lookup(name)` at app.py:20\n   - In handlers.py:14: `db.lookup_param(name)`\n   - In db.py:14: `cur.execute(\"SELECT id, name FROM users WHERE name = ?\", (name,))`\n   - **SAFE**: Parameterized query with `?` placeholder\n\n4. **`/limit` endpoint (app.py:24-27)**\n   - Source: `request.args.get(\"n\")` at app.py:25\n   - Flows to: `handlers.top_n(n)` at app.py:26\n   - In handlers.py:17-18: `count = int(n)` then `db.top_rows(count)`\n   - In db.py:19: `cur.execute(f\""
+  },
+  {
+    "tag": "gpt5mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "2",
+    "thinking": null,
+    "id": "9448c4b8-7639-4fc8-a500-48717ca5f55d",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7420,
+    "cost": 0.00534875,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5mini",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "3",
+    "thinking": null,
+    "id": "b6954b3f-e3e7-4806-9173-26238a08b276",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7329,
+    "cost": 0.00540205,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5mini-low",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": "low",
+    "id": "92ed35cd-e848-42cf-b7de-0bcadb716440",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 6496,
+    "cost": 0.00373605,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5mini-high",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": "high",
+    "id": "330bbc25-063b-4658-bb9d-f6a1a25c3030",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 5,
+    "tokens": 8397,
+    "cost": 0.00730275,
+    "stop": "final_completion",
+    "answer": ""
+  },
+  {
+    "tag": "gpt5nano-low",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "low",
+    "id": "221dc531-43b0-412e-8caf-ea9065be581e",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [
+      "D2",
+      "D3"
+    ],
+    "fp": 2,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ],
+      [
+        "app.py:33",
+        "db.py:26"
+      ],
+      [
+        "app.py:40",
+        "db.py:32"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7043,
+    "cost": 0.00091895,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15\nFLOW source=app.py:33 sink=db.py:26\nFLOW source=app.py:40 sink=db.py:32"
+  },
+  {
+    "tag": "gpt5nano-high",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "high",
+    "id": "ca4e4aab-9ef8-437c-a78d-95b942d9e4f2",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 5,
+    "tokens": 8754,
+    "cost": 0.00160335,
+    "stop": "final_completion",
+    "answer": ""
+  },
+  {
+    "tag": "gpt54nano-high",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": "high",
+    "id": "7dc478a9-51e6-49e4-998f-202cfe1379d8",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 7,
+    "tokens": 9642,
+    "cost": 0.00507282,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9  \nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "deepseek-high",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "1",
+    "thinking": "high",
+    "id": "c69f33c9-5331-4acc-8d10-e30e7a3aa95e",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 7,
+    "tokens": 16176,
+    "cost": 0.003597185,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "glm46-run2",
+    "kind": "baseline",
+    "model": "open_router::z-ai/glm-4.6",
+    "run": "2",
+    "thinking": null,
+    "id": "b056e1e3-4ead-4890-a004-1e75395640c2",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:10",
+        "db.py:8"
+      ],
+      [
+        "app.py:17",
+        "db.py:14"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:10",
+        "db.py:8"
+      ],
+      [
+        "app.py:17",
+        "db.py:14"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 4617,
+    "cost": 0.00356799,
+    "stop": "final_completion",
+    "answer": "Now let me trace every taint flow from sources to sinks:\n\n**Flow 1 \u2014 `/search` route:**\n- `app.py:10`: `term = request.args.get(\"term\")` (source)\n- `handlers.py:4`: `cleaned = term.strip()` \u2014 `.strip()` does NOT prevent SQL injection\n- `db.py:7`: `sql = \"SELECT id, name FROM users WHERE name = '%s'\" % name` \u2014 string formatting into SQL\n- `db.py:8`: `cur.execute(sql)` \u2014 non-parameterized execute sink\n- **EXPLOITABLE**\n\n**Flow 2 \u2014 `/audit/ping` route:**\n- `app.py:17`: `trace = request.headers.get(\"X-Trace-Id\")` (source)\n- `handlers.py:8`: `entry = {\"raw\": value}` then `db.write_audit(entry[\"raw\"])` \u2014 passes value unchanged\n- `db.py:14`: `cur.executescript(f\"INSERT INTO audit(note) VALUES('{msg}')\")` \u2014 f-string interpolation into executescript\n- **EXPLOITABLE**\n\n**Flow 3 \u2014 `/profile` route:**\n- `app.py:23`: `name = request.args.get(\"name\")` (source)\n- `db.py:18`: `cur.execute(\"SELECT id, name FROM users WHERE name = ?\", (name,))` \u2014 **parameterized with `?` placeholder** \u2192 SAFE\n\n**Flow 4 \u2014 `/limit` route:**\n- `app.py:29`: `n = request.args.get(\"n\")` (source)\n- `handlers.py:14`: `count = int(n)` \u2014 **cast to int**, raises exception on non-integer; integer values cannot inject SQL \u2192 SAFE\n\n**Flow 5 \u2014 `/sort` route:**\n- `app.py:35`: `col = request.args.get(\"col\")` (source)\n- `handlers.py:18`: `if col not in (\"name\", \"email\"): col = \"name\"` \u2014 **whitelisted** to a fixed set \u2192 SAFE\n\n---\n\nFLOW source=app.py:10 sink=db.py:8\nFLOW source=app.py:17 sink=db.py:14"
+  },
+  {
+    "tag": "gpt5mini-high-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": "high",
+    "id": "e21278f9-b978-42da-8f3d-ee799bc50f8d",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 10492,
+    "cost": 0.01147875,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-high-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "high",
+    "id": "6041109b-666c-4900-a54a-ab220ae337a2",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 15984,
+    "cost": 0.00449815,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-med-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "medium",
+    "id": "f4274cfa-0abe-4081-b680-26d3bd71f632",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:7"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 10781,
+    "cost": 0.00247175,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:7\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt54nano-low",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": "low",
+    "id": "f19132de-b5e1-44a2-9ed2-d38d97380c1e",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:12",
+        "db.py:8"
+      ],
+      [
+        "app.py:18",
+        "db.py:13"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:8"
+      ],
+      [
+        "app.py:18",
+        "db.py:13"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 3829,
+    "cost": 0.00169505,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:8  \nFLOW source=app.py:18 sink=db.py:13"
+  },
+  {
+    "tag": "deepseek-high2",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "2",
+    "thinking": "high",
+    "id": "841f4d58-bf19-4dc6-ad4c-c9c0abdc0047",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 10,
+    "tokens": 29898,
+    "cost": 0.006793096,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5mini-low2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "2",
+    "thinking": "low",
+    "id": "ab990e77-d9fe-4e85-8297-29b4bc440bed",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 6551,
+    "cost": 0.00384605,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5mini-dec",
+    "kind": "decompose",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "1",
+    "thinking": null,
+    "id": "188b641e-ffb5-4afc-a973-522972a91452",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:7"
+      ],
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 10,
+    "tokens": 15099,
+    "cost": 0.01359375,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:7\nFLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "deepseek-dec",
+    "kind": "decompose",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "1",
+    "thinking": "high",
+    "id": "7c60a2fb-88f8-4a69-914b-07e390c2ceb5",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 13,
+    "tokens": 43120,
+    "cost": 0.00966777,
+    "stop": "token_budget",
+    "answer": ""
+  },
+  {
+    "tag": "gpt5nano-med-3k",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "medium",
+    "id": "3f09bd30-98b4-4853-9870-62a9dee9a96c",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 5,
+    "tokens": 8780,
+    "cost": 0.00161095,
+    "stop": "final_completion",
+    "answer": ""
+  },
+  {
+    "tag": "gpt5nano-low-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "low",
+    "id": "3cbd2690-ed8a-4d50-9249-e89760c09010",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:7"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 6978,
+    "cost": 0.00089575,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:7\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-med2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": "medium",
+    "id": "a6c38e75-17f2-46a2-babb-baced2c7ff80",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 10762,
+    "cost": 0.00240375,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-med3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "3",
+    "thinking": "medium",
+    "id": "c0558a1d-49d2-4e99-9eca-0823cffdbc7c",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 10797,
+    "cost": 0.00244595,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-min-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "minimal",
+    "id": "ccb27cc2-1e84-4b3e-a09d-629d6e0ad654",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 6,
+    "tokens": 7076,
+    "cost": 0.0003452,
+    "stop": "final_completion",
+    "answer": "NONE"
+  },
+  {
+    "tag": "gpt5nano-low-big2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": "low",
+    "id": "b2939adb-84c6-4d90-9fee-702663d43a70",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [
+      "D2"
+    ],
+    "fp": 1,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:7"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ],
+      [
+        "app.py:33",
+        "db.py:26"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7081,
+    "cost": 0.00099455,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:7\nFLOW source=app.py:19 sink=db.py:15\nFLOW source=app.py:33 sink=db.py:26"
+  },
+  {
+    "tag": "gpt5nano-low-big3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "3",
+    "thinking": "low",
+    "id": "02d12206-bc48-4dd1-8935-f031c7ca9466",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7151,
+    "cost": 0.00101975,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-med4",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "4",
+    "thinking": "medium",
+    "id": "81667bd3-c583-4f61-b651-84c60d6ae0e9",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 8688,
+    "cost": 0.00163455,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-med-dec",
+    "kind": "decompose",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": "medium",
+    "id": "6f6ed4ca-29f3-4bb8-9475-cb34bb6a3088",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 10,
+    "tokens": 17140,
+    "cost": 0.00307786,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-low-big4",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "4",
+    "thinking": "low",
+    "id": "6209bce5-9bd1-4081-8ce9-075c22d9358a",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [
+      "D2"
+    ],
+    "fp": 1,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ],
+      [
+        "app.py:33",
+        "db.py:24"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7491,
+    "cost": 0.00116135,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15\nFLOW source=app.py:33 sink=db.py:24"
+  },
+  {
+    "tag": "gpt5nano-low-big5",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "5",
+    "thinking": "low",
+    "id": "1e9887bb-b882-43b7-85fd-f8c22b093be2",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:11",
+        "db.py:6"
+      ],
+      [
+        "app.py:17",
+        "db.py:13"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:11",
+        "db.py:6"
+      ],
+      [
+        "app.py:17",
+        "db.py:13"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 7086,
+    "cost": 0.00093895,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:11 sink=db.py:6\nFLOW source=app.py:17 sink=db.py:13"
+  },
+  {
+    "tag": "gpt5mini-low3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-mini",
+    "run": "3",
+    "thinking": "low",
+    "id": "27d65985-b395-41bd-a090-69cb02798531",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 6916,
+    "cost": 0.00434075,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-def-big1",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "0710d3c6-eba1-4f88-baf8-1104ae14a3ca",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 10586,
+    "cost": 0.00239935,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-def-big2",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "2",
+    "thinking": null,
+    "id": "a1b17df1-a23a-4ee2-9f18-7a56f1c57521",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:9"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 11351,
+    "cost": 0.00269975,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:9\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt5nano-def-big3",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5-nano",
+    "run": "3",
+    "thinking": null,
+    "id": "e62aa3e1-0fba-477d-8479-81a874116961",
+    "found": [
+      "F1",
+      "F2"
+    ],
+    "recall": 1.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [
+      [
+        "app.py:12",
+        "db.py:7"
+      ],
+      [
+        "app.py:19",
+        "db.py:15"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 9313,
+    "cost": 0.00189015,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:12 sink=db.py:7\nFLOW source=app.py:19 sink=db.py:15"
+  },
+  {
+    "tag": "gpt54nano-def-big",
+    "kind": "baseline",
+    "model": "open_router::openai/gpt-5.4-nano",
+    "run": "1",
+    "thinking": null,
+    "id": "daac25c7-334b-41d9-9434-45a66e953254",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [
+      [
+        "app.py:8",
+        "db.py:6"
+      ],
+      [
+        "app.py:8",
+        "db.py:6"
+      ],
+      [
+        "app.py:23",
+        "db.py:23"
+      ],
+      [
+        "app.py:23",
+        "db.py:23"
+      ],
+      [
+        "app.py:34",
+        "db.py:10"
+      ],
+      [
+        "app.py:34",
+        "db.py:10"
+      ]
+    ],
+    "flows": [
+      [
+        "app.py:8",
+        "db.py:6"
+      ],
+      [
+        "app.py:8",
+        "db.py:6"
+      ],
+      [
+        "app.py:23",
+        "db.py:23"
+      ],
+      [
+        "app.py:23",
+        "db.py:23"
+      ],
+      [
+        "app.py:34",
+        "db.py:10"
+      ],
+      [
+        "app.py:34",
+        "db.py:10"
+      ]
+    ],
+    "steps": 5,
+    "tokens": 3123,
+    "cost": 0.00081255,
+    "stop": "final_completion",
+    "answer": "FLOW source=app.py:8 sink=db.py:6  \nFLOW source=app.py:8 -> handlers.py:5 -> db.py:6\n\nFLOW source=app.py:23 sink=db.py:23  \nFLOW source=app.py:23 -> handlers.py:22 -> db.py:23\n\nFLOW source=app.py:34 sink=db.py:10  \nFLOW source=app.py:34 -> handlers.py:30 -> db.py:10"
+  },
+  {
+    "tag": "deepseek-def-big",
+    "kind": "baseline",
+    "model": "open_router::deepseek/deepseek-v3.2",
+    "run": "3",
+    "thinking": null,
+    "id": "759171a1-8720-437a-aee1-39e920c89f45",
+    "found": [],
+    "recall": 0.0,
+    "fpos": [],
+    "fp": 0,
+    "unknown": [],
+    "flows": [],
+    "steps": 13,
+    "tokens": 41826,
+    "cost": 0.00689882,
+    "stop": "token_budget",
+    "answer": "The `int(n)` conversion on line 19 will raise a ValueError if `n` is not a valid integer. If it succeeds, `count` is a Python integer. When interpolated into the f-string in `db.py:26`, it becomes a numeric literal in SQL. This is safe from SQL injection.\n\nHowever, I should also check if there are any other flows I might have missed. Let me search for any other potential SQL operations:"
+  }
+]
