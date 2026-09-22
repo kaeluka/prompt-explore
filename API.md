@@ -53,7 +53,7 @@ List all jobs (for the dashboard). Running jobs first, then by recency. Returns 
 
 ### `POST /api/investigations`
 
-Single-agent shorthand for library callers: build the default program. This executes the default Lua program. Custom orchestration: supply workflow with lua_source and opaque params INSTEAD of those shorthand fields. Lua source returns function(params, ctx). Call ctx.run_agent for each prompt/model stage, and ctx.call_tool for direct scenario-tool access. Each stage has a fresh conversation but all stages and direct calls share one simulation world and investigation-wide budget. See GET /docs/workflow for the full contract.  The program is part of the investigation, not the scenario. Compare one-stage and multi-stage programs using the same scenario_id and resolved_inputs; repeated submissions without explicit bindings sample inputs afresh. Submit separate investigations for experimental repetitions, then group by attributes.  Poll the returned id and read /api/investigations/{id}/evidence. For workflow runs inspect workflow.output and workflow.invocations (exact handoffs and ranges into flat turns), not merely the last agent completion. Partial failures, direct tool responses and all usage survive discarded outputs. The caller judges end-to-end behavior; done only means evidence was recorded.
+Every HTTP investigation supplies `workflow`; omit its `lua_source` to use the default single-agent program. `workflow.params` is arbitrary JSON with no privileged keys. The default program happens to read `prompt`, `model` and optional `controls`, calls `ctx.render(prompt)`, then invokes one agent. Custom source returns function(params, ctx); call ctx.run_agent for each agent stage and ctx.call_tool for direct scenario-tool access. Each stage has a fresh conversation but all stages and direct calls share one simulation world and investigation-wide budget. See GET /docs/workflow for the full contract.  The program is part of the investigation, not the scenario. Compare one-stage and multi-stage programs using the same scenario_id and resolved_inputs; repeated submissions without explicit bindings sample inputs afresh. Submit separate investigations for experimental repetitions, then group by attributes.  Poll the returned id and read /api/investigations/{id}/evidence. For workflow runs inspect workflow.output and workflow.invocations (exact handoffs and ranges into flat turns), not merely the last agent completion. Partial failures, direct tool responses and all usage survive discarded outputs. The caller judges end-to-end behavior; done only means evidence was recorded.
 
 Body: [`InvestigateRequest`](#investigaterequest)
 
@@ -70,7 +70,7 @@ Body: [`InvestigateRequest`](#investigaterequest)
 | Status | Response |
 |---|---|
 | `202` | Investigation job created: [`JobCreated`](#jobcreated) |
-| `400` | Malformed request, conflicting workflow and shorthand fields, invalid Lua source/limits or conversation controls. Runtime Lua/provider errors are retained in job failure evidence; poll the job. |
+| `400` | Malformed request, unknown legacy fields, invalid attributes, or invalid Lua source/limits. Runtime Lua/provider errors are retained in job failure evidence; poll the job. |
 | `401` | Missing or invalid bearer token |
 
 ### `DELETE /api/investigations/{id}`

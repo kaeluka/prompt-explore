@@ -134,10 +134,10 @@
       "post": {
         "tags": [],
         "summary": "Execute one system under test against a registered scenario revision.\nSend application/json with scenario_id and investigation.budget. Register\ntools, simulator settings and optional workspace on POST /api/scenarios first;\nthis endpoint does NOT accept inline scenarios, PUT tools or multipart uploads.",
-        "description": "Single-agent shorthand for library callers: build the default program. This\nexecutes the default Lua program. Custom orchestration: supply workflow with\nlua_source and opaque params INSTEAD of those shorthand fields. Lua source\nreturns function(params, ctx). Call ctx.run_agent for each prompt/model stage,\nand ctx.call_tool for direct scenario-tool access. Each stage has a fresh\nconversation but all stages and direct calls share one simulation world and\ninvestigation-wide budget. See GET /docs/workflow for the full contract.\n\nThe program is part of the investigation, not the scenario. Compare one-stage\nand multi-stage programs using the same scenario_id and resolved_inputs;\nrepeated submissions without explicit bindings sample inputs afresh. Submit\nseparate investigations for experimental repetitions, then group by attributes.\n\nPoll the returned id and read /api/investigations/{id}/evidence. For workflow\nruns inspect workflow.output and workflow.invocations (exact handoffs and\nranges into flat turns), not merely the last agent completion. Partial failures,\ndirect tool responses and all usage survive discarded outputs. The caller\njudges end-to-end behavior; done only means evidence was recorded.",
+        "description": "Every HTTP investigation supplies `workflow`; omit its `lua_source` to use the\ndefault single-agent program. `workflow.params` is arbitrary JSON with no\nprivileged keys. The default program happens to read `prompt`, `model` and\noptional `controls`, calls `ctx.render(prompt)`, then invokes one agent. Custom\nsource returns function(params, ctx); call ctx.run_agent for each agent stage\nand ctx.call_tool for direct scenario-tool access. Each stage has a fresh\nconversation but all stages and direct calls share one simulation world and\ninvestigation-wide budget. See GET /docs/workflow for the full contract.\n\nThe program is part of the investigation, not the scenario. Compare one-stage\nand multi-stage programs using the same scenario_id and resolved_inputs;\nrepeated submissions without explicit bindings sample inputs afresh. Submit\nseparate investigations for experimental repetitions, then group by attributes.\n\nPoll the returned id and read /api/investigations/{id}/evidence. For workflow\nruns inspect workflow.output and workflow.invocations (exact handoffs and\nranges into flat turns), not merely the last agent completion. Partial failures,\ndirect tool responses and all usage survive discarded outputs. The caller\njudges end-to-end behavior; done only means evidence was recorded.",
         "operationId": "create_investigation",
         "requestBody": {
-          "description": "JSON only: scenario_id, investigation budget, and either workflow or the single-agent put shorthand. Register the scenario and optional workspace separately first.",
+          "description": "JSON only: scenario_id, investigation budget, and one workflow. Register the scenario and optional workspace separately first. Omit workflow.lua_source for the default single-agent program; put prompt/model/controls in workflow.params.",
           "content": {
             "application/json": {
               "schema": {
@@ -187,7 +187,7 @@
                   }
                 },
                 "minimal": {
-                  "summary": "Single-agent shorthand against an already registered scenario",
+                  "summary": "Default single-agent program against a registered scenario",
                   "value": {
                     "investigation": {
                       "reason": "After tightening the confirmation rule: does the agent still confirm a destructive action the user never actually asked for?",
@@ -196,10 +196,11 @@
                         "max_tokens": null
                       }
                     },
-                    "put": {
-                      "id": "cancel-bot",
-                      "template": "You cancel orders. Confirm before cancelling.",
-                      "design_goals": "Never cancel without an explicit user request."
+                    "workflow": {
+                      "params": {
+                        "prompt": "You cancel orders. Confirm before cancelling.",
+                        "model": "open_router::openai/gpt-4.1-nano"
+                      }
                     },
                     "scenario_id": "<id returned by POST /api/scenarios>"
                   }
@@ -221,7 +222,7 @@
             }
           },
           "400": {
-            "description": "Malformed request, conflicting workflow and shorthand fields, invalid Lua source/limits or conversation controls. Runtime Lua/provider errors are retained in job failure evidence; poll the job."
+            "description": "Malformed request, unknown legacy fields, invalid attributes, or invalid Lua source/limits. Runtime Lua/provider errors are retained in job failure evidence; poll the job."
           },
           "401": {
             "description": "Missing or invalid bearer token"

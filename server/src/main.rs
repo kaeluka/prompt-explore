@@ -1466,10 +1466,11 @@ async fn index() -> impl axum::response::IntoResponse {
 /// tools, simulator settings and optional workspace on POST /api/scenarios first;
 /// this endpoint does NOT accept inline scenarios, PUT tools or multipart uploads.
 ///
-/// Single-agent shorthand for library callers: build the default program. This
-/// executes the default Lua program. Custom orchestration: supply workflow with
-/// lua_source and opaque params INSTEAD of those shorthand fields. Lua source
-/// returns function(params, ctx). Call ctx.run_agent for each prompt/model stage,
+/// Every HTTP investigation supplies `workflow`; omit its `lua_source` to use the
+/// default single-agent program. `workflow.params` is arbitrary JSON with no
+/// privileged keys. The default program happens to read `prompt`, `model` and
+/// optional `controls`, calls `ctx.render(prompt)`, then invokes one agent. Custom
+/// source returns function(params, ctx); call ctx.run_agent for each agent stage
 /// and ctx.call_tool for direct scenario-tool access. Each stage has a fresh
 /// conversation but all stages and direct calls share one simulation world and
 /// investigation-wide budget. See GET /docs/workflow for the full contract.
@@ -1490,19 +1491,20 @@ async fn index() -> impl axum::response::IntoResponse {
     request_body(
         content = InvestigateRequest,
         content_type = "application/json",
-        description = "JSON only: scenario_id, investigation budget, and either workflow or the single-agent put shorthand. Register the scenario and optional workspace separately first.",
+        description = "JSON only: scenario_id, investigation budget, and one workflow. Register the scenario and optional workspace separately first. Omit workflow.lua_source for the default single-agent program; put prompt/model/controls in workflow.params.",
         examples((
             "minimal" = (
-                summary = "Single-agent shorthand against an already registered scenario",
+                summary = "Default single-agent program against a registered scenario",
                 value = json!({
                     "investigation": {
                         "reason": "After tightening the confirmation rule: does the agent still confirm a destructive action the user never actually asked for?",
                         "budget": { "max_steps_per_trace": 6, "max_tokens": null }
                     },
-                    "put": {
-                        "id": "cancel-bot",
-                        "template": "You cancel orders. Confirm before cancelling.",
-                        "design_goals": "Never cancel without an explicit user request."
+                    "workflow": {
+                        "params": {
+                            "prompt": "You cancel orders. Confirm before cancelling.",
+                            "model": "open_router::openai/gpt-4.1-nano"
+                        }
                     },
                     "scenario_id": "<id returned by POST /api/scenarios>"
                 })
@@ -1537,7 +1539,7 @@ async fn index() -> impl axum::response::IntoResponse {
     security(("api_token" = [])),
     responses(
         (status = 202, description = "Investigation job created", body = JobCreated),
-        (status = 400, description = "Malformed request, conflicting workflow and shorthand fields, invalid Lua source/limits or conversation controls. Runtime Lua/provider errors are retained in job failure evidence; poll the job."),
+        (status = 400, description = "Malformed request, unknown legacy fields, invalid attributes, or invalid Lua source/limits. Runtime Lua/provider errors are retained in job failure evidence; poll the job."),
         (status = 401, description = "Missing or invalid bearer token")
     )
 )]
@@ -3867,6 +3869,10 @@ mod tests {
         let view_properties = &spec["components"]["schemas"]["JobView"]["properties"];
         assert!(view_properties.get("put_model").is_none());
         assert!(view_properties.get("put").is_none());
+        let minimal = &spec["paths"]["/api/investigations"]["post"]["requestBody"]["content"]["application/json"]
+            ["examples"]["minimal"]["value"];
+        assert!(minimal.get("workflow").is_some());
+        assert!(minimal.get("put").is_none());
         let response = app
             .oneshot(
                 HttpRequest::get("/docs/workflow")
