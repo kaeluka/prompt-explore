@@ -40,12 +40,10 @@ pub struct PromptUnderTest {
     /// The opening user turn is separate — it comes from the scenario's
     /// `user_message`, not the template.
     pub template: String,
-    /// The EFFECTIVE tool surface this run exposed to the model, taken from the
-    /// referenced scenario. It is reported here so evidence is self-contained
-    /// and `prompt_hash` identifies what the model saw. Do NOT supply it when
-    /// submitting an investigation (`POST /api/investigations` rejects a
-    /// non-empty `tools`): the tool surface belongs to the scenario, where the
-    /// simulator's optional Lua implementations live next to it.
+    /// The EFFECTIVE tool surface this library-level shorthand exposed to the
+    /// model, taken from the referenced scenario. The HTTP investigation API
+    /// has only the workflow form; its tool surface belongs to the scenario,
+    /// where the simulator's optional Lua implementations live next to it.
     #[serde(default)]
     pub tools: Vec<ToolSchema>,
     /// The author's stated intent for the prompt — documentation the

@@ -4,22 +4,20 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::llm::ThinkingLevel;
-use crate::model::input::{Budget, PromptUnderTest};
+use crate::model::input::Budget;
 use crate::simulate::Workspace;
 
 /// Attributes the harness derives from an investigation and therefore callers must
 /// not edit through a metadata PATCH. `label` is the explicit editable display
 /// attribute; other valid names are caller-owned arbitrary attributes.
 pub const IMMUTABLE_ATTRIBUTE_NAMES: &[&str] = &[
-    "put_model",
+    "application_hash",
     "sim_model",
-    "put_thinking",
     "sim_thinking",
-    "prompt_hash",
     "workspace_hash",
     "scenario_id",
     "scenario_revision",
@@ -27,7 +25,6 @@ pub const IMMUTABLE_ATTRIBUTE_NAMES: &[&str] = &[
     "simulation_backend",
     "step_budget",
     "token_budget",
-    "workflow_hash",
 ];
 
 pub fn valid_attribute_name(name: &str) -> bool {
@@ -104,23 +101,19 @@ fn thinking_attribute(level: Option<ThinkingLevel>) -> String {
         .unwrap_or_else(|| "provider_default".into())
 }
 
-/// Assemble authoritative provenance from resolved settings and seed content.
-/// Callers validate custom attributes before invoking this; derived values always win.
+/// Assemble authoritative provenance from resolved simulator settings and seed
+/// content. Callers validate custom attributes before invoking this; derived
+/// values always win. The application's own identity is added separately, from
+/// the submitted workflow.
 pub fn system_attributes(
-    put_model: &str,
     sim_model: &str,
-    put_thinking: Option<ThinkingLevel>,
     sim_thinking: Option<ThinkingLevel>,
-    put: &PromptUnderTest,
     workspace_hash: &str,
     custom: BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut attributes = custom;
-    attributes.insert("put_model".into(), put_model.into());
     attributes.insert("sim_model".into(), sim_model.into());
-    attributes.insert("put_thinking".into(), thinking_attribute(put_thinking));
     attributes.insert("sim_thinking".into(), thinking_attribute(sim_thinking));
-    attributes.insert("prompt_hash".into(), prompt_hash(put));
     attributes.insert("workspace_hash".into(), workspace_hash.into());
     attributes
 }
@@ -147,21 +140,13 @@ pub fn with_execution_attributes(
     attributes
 }
 
-/// SHA-256 of a canonical JSON representation of only prompt behavior. The
-/// cosmetic PUT `id` is deliberately absent, so renaming a variant cannot
-/// create a different lineage attribute.
-pub fn prompt_hash(prompt: &PromptUnderTest) -> String {
-    let value = json!({
-        "template": prompt.template,
-        "tools": prompt.tools,
-        "design_goals": prompt.design_goals,
-    });
-    stable_hash_hex(&canonical_json(&value))
-}
-
-/// Content identity of caller-authored orchestration: source, opaque parameters
-/// and resource limits. Canonical JSON means object key order is immaterial.
-pub fn workflow_hash(workflow: &crate::model::workflow::WorkflowProgram) -> String {
+/// Content identity of the application under test: the Lua source, opaque
+/// parameters and resource limits of the submitted workflow. Canonical JSON
+/// means object key order is immaterial. This is what the default frontier
+/// grouping uses, so two configurations that differ only in an opaque param
+/// (for example the model name) remain distinct without the harness
+/// interpreting any parameter key.
+pub fn application_hash(workflow: &crate::model::workflow::WorkflowProgram) -> String {
     stable_hash_hex(&canonical_json(
         &serde_json::to_value(workflow).expect("workflow serializes"),
     ))
@@ -235,16 +220,17 @@ fn canonical_object(object: &Map<String, Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn workflow_identity_includes_parameters_and_limits() {
+    fn application_identity_includes_parameters_and_limits() {
         let a = crate::model::workflow::WorkflowProgram::default();
         let mut b = a.clone();
         b.params = json!({"model": "another-model"});
-        assert_ne!(workflow_hash(&a), workflow_hash(&b));
+        assert_ne!(application_hash(&a), application_hash(&b));
         b = a.clone();
         b.limits.max_agent_invocations += 1;
-        assert_ne!(workflow_hash(&a), workflow_hash(&b));
+        assert_ne!(application_hash(&a), application_hash(&b));
     }
 
     #[test]

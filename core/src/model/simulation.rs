@@ -180,8 +180,8 @@ pub struct RunProgress {
     /// The opening user message, for rendering the complete conversation live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_message: Option<String>,
-    /// Concrete template values selected from the input domain. Recorded before
-    /// the PUT loop so a later failure still exposes reproducible inputs.
+    /// Concrete values selected from the input domain. Recorded before
+    /// orchestration so a later failure still exposes reproducible inputs.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub resolved_inputs: HashMap<String, Value>,
     /// Live token usage and estimated cost, split by role. Populated by the
@@ -373,23 +373,22 @@ fn duration_ms(duration: std::time::Duration) -> u64 {
 ///
 /// ## Authoring the `input_domain`
 ///
-/// For each `{{variable}}` in the PUT template, describe its input DOMAIN
-/// — the value space, semantics, and any PRECONDITIONS or trust contract
-/// the prompt may assume about it. The simulator picks a concrete value
-/// from this domain (its job), fills the template, and the chosen value is
-/// reported in the trace's `resolved_inputs`. A domain is richer than a
-/// pinned value: "tier is standard or premium, premium cancels without a
-/// fee" or "user_record: { id, name, tier }; user.id has been verified
-/// upstream — the agent may trust the person described". The world states
-/// the contract; whether the world actually HONORS it (or breaks it) is
-/// where the behavior you are looking for lives.
+/// For each `{{variable}}` a workflow may pass to `ctx.render(text)`, describe
+/// its input DOMAIN — the value space, semantics, and any PRECONDITIONS or
+/// trust contract the application may assume about it. The simulator picks a
+/// concrete value from this domain before Lua starts; `ctx.render` fills it
+/// into caller-chosen text, and the chosen value is reported in
+/// `resolved_inputs`. A domain is richer than a pinned value: "tier is standard
+/// or premium, premium cancels without a fee" or "user_record: { id, name,
+/// tier }; user.id has been verified upstream — the agent may trust the person
+/// described". The world states the contract; whether the world actually
+/// HONORS it (or breaks it) is where the behavior you are looking for lives.
 ///
-/// Variables are for what VARIES per scenario. If a passage is the same
-/// in every scenario, it is not a variable: it is part of the prompt
-/// under test and belongs verbatim in the template. (Writing a complete
-/// literal as the domain description tends to make the simulator copy it
-/// — but it may still paraphrase or drop it; that failure mode is
-/// invisible unless you diff `resolved_inputs` against what you sent.)
+/// Variables are for what VARIES per run. If a passage is constant, it is not
+/// a variable: keep it verbatim in workflow source/params. Writing a complete
+/// literal as the domain description tends to make the simulator copy it, but
+/// it may still paraphrase or drop it; that failure mode is visible by reading
+/// the recorded `resolved_inputs`.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Scenario {
     /// The world specification — ground truth the simulator renders tool
@@ -411,14 +410,12 @@ pub struct Scenario {
     /// rendering to it.
     pub world: String,
     /// Per-`{{variable}}` input-domain descriptions: the value space,
-    /// semantics, and preconditions/trust contracts. Each KEY must match
-    /// a `{{variable}}` placeholder in the PUT template (see
-    /// `PromptUnderTest.template` for the placeholder syntax); the
-    /// simulator generates a concrete value for each and substitutes it
-    /// (reported in the trace's `resolved_inputs`). Only use placeholders
-    /// for inputs that should VARY across scenarios — constant text under
-    /// test belongs verbatim in the template, where the simulator cannot
-    /// paraphrase or drop it. Empty for templates with no placeholders.
+    /// semantics, and preconditions/trust contracts. The simulator chooses a
+    /// concrete value for each before workflow Lua starts; `ctx.render(text)`
+    /// validates and fills those placeholders, and `ctx.resolved_inputs`
+    /// exposes the exact bindings. Only use placeholders for inputs that should
+    /// VARY across runs — constant text under test belongs verbatim in workflow
+    /// source/params. Empty when the program renders no sampled placeholders.
     #[serde(default)]
     pub input_domain: HashMap<String, String>,
     /// The opening message from the user/protagonist.
@@ -497,8 +494,8 @@ pub struct Trace {
     #[serde(default)]
     pub final_world_state: HashMap<String, Value>,
     /// The concrete `{{variable}}` values the simulator generated from
-    /// `input_domain` and rendered the PUT template with. Reported so a
-    /// trace is reproducible: the exact input that produced it.
+    /// `input_domain` and made available to `ctx.render` and
+    /// `ctx.resolved_inputs`. Reported so a trace is reproducible.
     #[serde(default)]
     pub resolved_inputs: HashMap<String, Value>,
     /// Workflow source/params/output and per-invocation/direct-tool evidence.

@@ -30,9 +30,13 @@ pub struct GroupedSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct GroupedFrontierRequest {
     /// Attribute names that form a group. Omit for exactly
-    /// `["put_model", "put_thinking", "prompt_hash"]`; send `[]` for one
-    /// group containing every current job. A job missing a requested key is
-    /// retained in that key's explicit JSON-null group, never dropped.
+    /// `["application_hash", "scenario_id", "scenario_revision"]` — the identity
+    /// of the submitted application AND of the world it ran against. Both always
+    /// exist, so a default group is never keyed on an absent fact; two
+    /// investigations share a group only when they ran the same program against
+    /// the same scenario revision. Send `[]` for one group containing every
+    /// current job. A job missing a requested key is retained in that key's
+    /// explicit JSON-null group, never dropped.
     #[serde(default = "default_group_by")]
     pub group_by: Vec<String>,
     /// Axes whose arithmetic means define Pareto dominance. Every included run
@@ -43,9 +47,9 @@ pub struct GroupedFrontierRequest {
 
 fn default_group_by() -> Vec<String> {
     vec![
-        "put_model".into(),
-        "put_thinking".into(),
-        "prompt_hash".into(),
+        "application_hash".into(),
+        "scenario_id".into(),
+        "scenario_revision".into(),
     ]
 }
 
@@ -403,12 +407,22 @@ fn group_label(attributes: &[(String, Option<String>)]) -> String {
 
 fn display_attribute_value(key: &str, value: Option<&str>) -> String {
     let Some(value) = value else {
-        return "null".into();
+        // An absent key is NOT the literal value "null". Distinguish the two
+        // cases a reader actually cares about: a system fact that does not
+        // apply to this execution form, and a caller attribute the caller
+        // never recorded. The stable group id still distinguishes absence from
+        // the literal string "null"; only the human label is made honest.
+        return if crate::frontier::attributes::is_immutable_attribute(key) {
+            "—".into()
+        } else {
+            "(unset)".into()
+        };
     };
     match key {
-        // Resolved names retain their provider in `attributes`; the compact
-        // plot label uses the model basename.
-        "put_model" | "sim_model" => value
+        // The scenario-owned simulator model is a genuine system role; its
+        // compact plot label uses the basename. Caller attributes named
+        // `model` or `put_model` remain ordinary values and are preserved.
+        "sim_model" => value
             .rsplit('/')
             .next()
             .unwrap_or(value)
@@ -416,7 +430,12 @@ fn display_attribute_value(key: &str, value: Option<&str>) -> String {
             .next()
             .unwrap_or(value)
             .to_string(),
-        "prompt_hash" => format!("prompt-{}", value.chars().take(8).collect::<String>()),
+        "application_hash" => {
+            format!("application-{}", value.chars().take(8).collect::<String>())
+        }
+        "scenario_hash" => {
+            format!("scenario-{}", value.chars().take(8).collect::<String>())
+        }
         "workspace_hash" => format!("workspace-{}", value.chars().take(8).collect::<String>()),
         // Caller-owned values are evidence, not prose to summarize. Preserve
         // them in full; the SVG sizes legend columns conservatively and its
@@ -438,7 +457,6 @@ mod tests {
                 put_id: None,
                 grades: BTreeMap::new(),
                 usage: Some(UsageByRole::default()),
-                put_model: None,
                 sim_model: None,
                 steps_per_trace: vec![1],
                 timing: None,
@@ -620,14 +638,11 @@ mod tests {
         let mut run = snapshot("run");
         run.attributes.extend([
             (
-                "put_model".into(),
-                "open_router::openai/gpt-5.6-luna".into(),
-            ),
-            ("put_thinking".into(), "low".into()),
-            (
-                "prompt_hash".into(),
+                "application_hash".into(),
                 "a1b2c3d4eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
             ),
+            ("scenario_id".into(), "scn-abc".into()),
+            ("scenario_revision".into(), "2".into()),
         ]);
         run.snapshot.grades.insert("x".into(), 1.0);
         let req = GroupedFrontierRequest {
@@ -635,8 +650,26 @@ mod tests {
             axes: request(&["x"]).axes,
         };
         let point = compute_for(&req, vec![run]).points.pop().unwrap();
-        assert_eq!(point.label, "gpt-5.6-luna/low/prompt-a1b2c3d4");
+        assert_eq!(point.label, "application-a1b2c3d4/scn-abc/2");
         assert!(!point.label.starts_with("g-"));
+    }
+
+    #[test]
+    fn absent_attributes_render_honestly_not_as_literal_null() {
+        let mut run = snapshot("run");
+        run.attributes.insert("sim_model".into(), "mock::m".into());
+        run.snapshot.grades.insert("x".into(), 1.0);
+        let req = GroupedFrontierRequest {
+            group_by: vec![
+                "application_hash".into(),
+                "variant".into(),
+                "sim_model".into(),
+            ],
+            axes: request(&["x"]).axes,
+        };
+        let point = compute_for(&req, vec![run]).points.pop().unwrap();
+        assert_eq!(point.label, "—/(unset)/m");
+        assert!(!point.label.contains("null"));
     }
 
     #[test]
@@ -658,13 +691,13 @@ mod tests {
         let mut a = snapshot("a");
         let mut b = snapshot("b");
         a.attributes
-            .insert("put_model".into(), "provider_a::shared-model".into());
+            .insert("sim_model".into(), "provider_a::shared-model".into());
         b.attributes
-            .insert("put_model".into(), "provider_b::shared-model".into());
+            .insert("sim_model".into(), "provider_b::shared-model".into());
         a.snapshot.grades.insert("x".into(), 1.0);
         b.snapshot.grades.insert("x".into(), 2.0);
         let req = GroupedFrontierRequest {
-            group_by: vec!["put_model".into()],
+            group_by: vec!["sim_model".into()],
             axes: request(&["x"]).axes,
         };
         let result = compute_for(&req, vec![a, b]);
@@ -707,7 +740,7 @@ mod tests {
             serde_json::from_str(r#"{"axes":[{"name":"x","better":"higher"}]}"#).unwrap();
         assert_eq!(
             defaulted.group_by,
-            vec!["put_model", "put_thinking", "prompt_hash"]
+            vec!["application_hash", "scenario_id", "scenario_revision"]
         );
         assert!(
             serde_json::from_str::<GroupedFrontierRequest>(r#"{"axes":[],"investigations":[]}"#)

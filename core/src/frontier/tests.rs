@@ -37,7 +37,6 @@ fn snap(id: &str) -> InvestigationSnapshot {
         put_id: Some(format!("put-{id}")),
         grades: BTreeMap::new(),
         usage: Some(UsageByRole::default()),
-        put_model: Some("zai_coding::glm-5.2".into()),
         sim_model: Some("zai_coding::glm-5.2".into()),
         steps_per_trace: vec![2, 4],
         timing: None,
@@ -431,8 +430,8 @@ fn problem_axis_absent_unpriced_model_names_it() {
     assert_eq!(ps[0].reason, "axis_absent");
     assert!(ps[0].detail.contains("not priced in the model catalog"));
     assert!(
-        ps[0].detail.contains("zai_coding::glm-5.2"),
-        "names the model"
+        ps[0].detail.contains("agent cost cannot be measured"),
+        "explains that agent-side usage spans several models"
     );
 }
 

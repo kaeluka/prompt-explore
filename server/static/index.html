@@ -500,28 +500,6 @@ function ExecutionSummary({ execution, budget }) {
   </div>`;
 }
 
-function PutPanel({ put }) {
-  if (!put) return null;
-  const tools = put.tools || [];
-  return html`
-    <details style="margin-top:0.4rem">
-      <summary class="meta">put</summary>
-      ${put.template ? html`<div style="margin:0.3rem 0"><b class="meta">template</b><div class="body" style="white-space:pre-wrap;word-break:break-word">${put.template}</div></div>` : null}
-      <div class="meta" style="margin:0.3rem 0"><b>design_goals:</b> ${put.design_goals || ''}</div>
-      ${tools.length ? html`
-        <div class="meta" style="margin:0.3rem 0"><b>tools:</b> (click to expand)</div>
-        ${tools.map(t => html`
-          <details style="margin:0.2rem 0 0.2rem 0.6rem">
-            <summary class="mono meta" style="cursor:pointer">${t.name} <span style="opacity:0.6">(${t.side_effect})</span></summary>
-            <div style="margin:0.3rem 0 0.3rem 0.7rem">
-              <div class="meta" style="margin:0.2rem 0"><b>description:</b> ${t.description || ''}</div>
-              <details><summary class="meta">parameters</summary><pre class="step">${JSON.stringify(t.parameters, null, 2)}</pre></details>
-              ${t.example_responses && t.example_responses.length ? html`<details><summary class="meta">example_responses (${t.example_responses.length})</summary><div>${t.example_responses.map(r => html`<pre class="step">${r}</pre>`)}</div></details>` : null}
-            </div>
-          </details>`)}
-      ` : null}
-    </details>`;
-}
 
 // The submitted orchestration program (JobView.workflow) is caller-owned and
 // visible even before execution or on failure; the evidence endpoint also
@@ -564,8 +542,7 @@ const WORKFLOW_REQUEST_EXAMPLE = JSON.stringify({
 const SINGLE_AGENT_REQUEST_EXAMPLE = JSON.stringify({
   scenario_id: '<scenario-id>',
   investigation: { reason: 'baseline single-agent run', budget: { max_steps_per_trace: 10, max_tokens: 10000 } },
-  put: { id: 'support-agent', template: 'You are a careful support agent. Resolve the request and cite the evidence you used.', design_goals: 'Resolve correctly without inventing facts.' },
-  put_model: 'open_router::openai/gpt-4.1-nano',
+  workflow: { params: { prompt: 'You are a careful support agent. Resolve the request and cite the evidence you used.', model: 'open_router::openai/gpt-4.1-nano' } },
   attributes: { label: 'baseline' },
 }, null, 2);
 
@@ -609,7 +586,7 @@ function InvestigationComposer({ token }) {
   };
   return html`<details class="composer">
     <summary>New investigation <span class="meta">(POST /api/investigations)</span></summary>
-    <div class="meta">Submit a custom Lua workflow, or the legacy single-agent shorthand, as request JSON. Lua source and params pass through verbatim; the server validates every field.</div>
+    <div class="meta">Submit the investigation as request JSON: a Lua workflow, or workflow.params for the default program. Lua source and params pass through verbatim; the server validates every field.</div>
     <div class="grow" style="margin:.4rem 0">
       <select aria-label="insert scenario id" value="" onChange=${e => pickScenario(e.target.value)}>
         <option value="">insert scenario id…</option>
@@ -628,13 +605,12 @@ function InvestigationComposer({ token }) {
 function InvestigationInputs({ j }) {
   const program = j.workflow;
   const scenario = j.scenario;
-  const attributes = jobAttributes(j);
   return html`<div class="stable-inputs">
     <h3>workflow</h3>
     ${program ? html`<details><summary>lua_source</summary>${program.lua_source != null ? html`<${SourceCode} source=${program.lua_source} />` : html`<span class="meta">Default program (source not stored in this record)</span>`}</details>
       <h3>params</h3><div class="investigation-params"><${ReturnedValue} value=${program.params ?? null} /></div>
       ${program.limits ? html`<details><summary>limits</summary><pre class="step">${pretty(program.limits)}</pre></details>` : null}`
-      : html`<div class="meta">Default single-agent program</div><h3>put</h3><${ReturnedValue} value=${{put:j.put, put_model:j.put_model || attributes.put_model, put_thinking_level:j.put_thinking_level || attributes.put_thinking, conversation_controls:j.conversation_controls}} />`}
+      : html`<div class="meta">workflow program not recorded</div>`}
     <details><summary>budget</summary><pre class="step">${pretty(j.budget)}</pre></details>
     <h3>scenario</h3>
     ${scenario?.user_message != null ? html`<div class="bubble sim"><div class="role">user_message</div><div class="body">${scenario.user_message}</div></div>` : html`<div class="meta">No opening user message</div>`}
@@ -733,7 +709,7 @@ function CallDetail({ event, turns, j }) {
   const callTurns = indices.filter(i => turns[i] != null).map(i => ({turn:turns[i], i}));
   const args = event.kind === 'agent' ? Object.fromEntries(Object.entries({name:v.name,prompt:v.prompt,model:v.model,input:v.input,tools:v.tools,controls:v.controls}).filter(([,value])=>value!==undefined))
     : event.kind === 'tool' ? {name:v.name,args:v.args}
-    : event.kind === 'legacy' ? {configuration:j.put,model:j.put_model || jobAttributes(j).put_model} : null;
+    : null;
   return html`<article class="call-detail" aria-label="Selected call">
     <h3>${event.kind === 'agent' ? 'run_agent' : event.kind === 'tool' ? 'call_tool' : 'Conversation'} · ${v.name}</h3>
     <section class="call-arguments"><h4>Arguments</h4>${args ? html`<${ReturnedValue} value=${args} />` : html`<div class="meta">No call arguments recorded for these turns.</div>`}</section>
@@ -810,9 +786,9 @@ const RESERVED_AXES = [
   ['elapsed_ms','lower'], ['resolving_inputs_ms','lower'], ['put_loop_ms','lower'],
 ];
 const reservedDir = n => (RESERVED_AXES.find(([rn]) => rn === n) || [null, null])[1];
-const SYSTEM_ATTRIBUTE_KEYS = new Set(['put_model', 'sim_model', 'put_thinking', 'sim_thinking', 'prompt_hash', 'workspace_hash', 'workflow_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
+const SYSTEM_ATTRIBUTE_KEYS = new Set(['application_hash', 'sim_model', 'sim_thinking', 'workspace_hash', 'simulation_backend', 'step_budget', 'token_budget', 'scenario_id', 'scenario_revision', 'scenario_hash']);
 const jobAttributes = j => (j && j.attributes) || {};
-const displayName = j => jobAttributes(j).label || (j.put && j.put.id) || (j.id || '').slice(0, 8);
+const displayName = j => jobAttributes(j).label || (j.id || '').slice(0, 8);
 const shortModel = value => value ? String(value).split('::').pop().split('/').pop() : '—';
 const terminalExecution = j => j?.result?.trace?.execution || j?.progress?.execution || null;
 const stopLabel = reason => reason == null ? '' : String(reason);
@@ -826,9 +802,7 @@ const jobUsage = j => j?.result?.usage || j?.progress?.usage || null;
 // Live or terminal orchestration evidence. The server puts submitted programs
 // on the job view but execution evidence on progress/result, so read the
 // evidence from either place. A custom workflow is what submitted a program (or
-// resolved to the sentinel `put_model`), never merely "a trace with turns".
 const workflowEvidence = j => (j && j.result && j.result.trace && j.result.trace.workflow) || (j && j.progress && j.progress.workflow) || null;
-const isCustomWorkflow = j => !!(j && (j.workflow || j.put_model === 'workflow' || (workflowEvidence(j) && !(j.put && j.put.template))));
 // An invocation's turn_start is inclusive, turn_end exclusive, into the flat
 // Trace.turns list. Return null when the server did not record a usable range
 // so callers fall back to the flat conversation rather than dropping turns.
@@ -853,8 +827,9 @@ const workflowEvents = workflow => {
 const attributeValue = (attributes, key) => Object.prototype.hasOwnProperty.call(attributes || {}, key) ? attributes[key] : null;
 const groupKeyFor = (groupBy, attributes) => JSON.stringify(groupBy.map(k => attributeValue(attributes, k)));
 const fallbackGroupValue = (key, value) => {
-  if (value == null) return 'null';
-  if (key === 'put_model' || key === 'sim_model') return shortModel(value);
+  // Mirror the server's honest labels: an absent key is not the literal "null".
+  if (value == null) return SYSTEM_ATTRIBUTE_KEYS.has(key) ? '—' : '(unset)';
+  if (key === 'sim_model') return shortModel(value);
   if (key.endsWith('_hash')) return `${key.slice(0, -5).replaceAll('_','-')}-${String(value).slice(0,8)}`;
   return String(value);
 };
@@ -1373,15 +1348,11 @@ function SourceComparison({ j, jobs }) {
 function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack }) {
   const jobUi = jobUiState(uiCache, j.id);
   const detailRef = usePreservedDetails(jobUi);
-  const attributes = jobAttributes(j);
-  const putModel = attributes.put_model || j.put_model;
-  const putThinking = attributes.put_thinking || j.put_thinking_level;
   const trace = j.result && j.result.trace;
   const execution = terminalExecution(j);
   const counts = evidenceCounts(j);
   const usage = jobUsage(j);
   const totalCost = totalUsageCost(usage);
-  const customWorkflow = isCustomWorkflow(j);
   const wf = workflowEvidence(j);
   return html`<div ref=${detailRef} id=${`job-${j.id}`} class=${`job-detail${leaving ? ' leaving' : ''}`} key=${j.id}>
     <div class="detail-title">
@@ -1394,9 +1365,7 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
     <div class="detail-summary">
       <div class="summary-item"><span class="label">execution</span><span class="value"><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status === 'done' ? 'recorded' : j.status}</span> ${execution?.stop_reason ? stopLabel(execution.stop_reason) : j.phase ? phaseLabel(j.phase) : ''}</span></div>
       <div class="summary-item"><span class="label">review</span><span class=${`value ${reviewLabel(j) === 'needs review' ? 'pending' : ''}`}>${reviewLabel(j)}${Object.keys(j.grades || {}).length ? ` · ${Object.keys(j.grades).length} grade${Object.keys(j.grades).length === 1 ? '' : 's'}` : ''}</span></div>
-      ${customWorkflow
-        ? html`<div class="summary-item"><span class="label">workflow</span><span class="value">${wf ? `${(wf.invocations || []).length} workflow.invocations · ${(wf.tool_calls || []).length} workflow.tool_calls` : 'program'}</span></div>`
-        : html`<div class="summary-item"><span class="label">put_model</span><span class="value" title=${putModel || ''}>${shortModel(putModel)}${putThinking ? ` · ${putThinking}` : ''}</span></div>`}
+      <div class="summary-item"><span class="label">workflow</span><span class="value">${wf ? `${(wf.invocations || []).length} workflow.invocations · ${(wf.tool_calls || []).length} workflow.tool_calls` : 'program'}</span></div>
       <div class="summary-item"><span class="label">scenario</span><span class="value mono">${j.scenario_id ? `${j.scenario_id.slice(0,8)} · r${j.scenario_revision}` : '—'}</span></div>
       <div class="summary-item"><span class="label">turns</span><span class="value">${counts.turns}</span></div>
       <div class="summary-item"><span class="label">tool_calls</span><span class="value">${counts.tools}</span></div>
@@ -1419,7 +1388,6 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
     </section>
     <section class="detail-section"><div class="panel-head"><h2>Configuration and exports</h2></div>
       <${Implementations} implementations=${j.result?.trace?.implementations || j.progress?.implementations} />
-      ${!customWorkflow ? html`<${PutPanel} put=${j.put} />` : null}
       ${(j.workflow || wf) ? html`<${WorkflowProgramPanel} program=${j.workflow} evidence=${wf} />` : null}
       ${trace?.final_world_state != null ? html`<details><summary>final_world_state</summary><pre class="step">${pretty(trace.final_world_state)}</pre></details>` : null}
       <${ControlsPanel} controls=${j.conversation_controls} />
@@ -1436,13 +1404,9 @@ function JobCard({ j, jobs, token, onDelete, onPatched, leaving, uiCache, onBack
 // pending or failed group is never hidden merely because it has no coordinate.
 function JobRow({ j, onOpen, selected }) {
   const attributes = jobAttributes(j), execution = terminalExecution(j), usage = jobUsage(j), counts = evidenceCounts(j);
-  const putModel = attributes.put_model || j.put_model;
-  const customWorkflow = isCustomWorkflow(j);
   const wf = workflowEvidence(j);
   const cost = totalUsageCost(usage);
-  const modelLine = customWorkflow
-    ? `workflow${wf ? ` · ${(wf.invocations || []).length} workflow.invocations · ${(wf.tool_calls || []).length} workflow.tool_calls` : ''}`
-    : `${shortModel(putModel)}${attributes.put_thinking ? ` · ${attributes.put_thinking}` : ''}`;
+  const modelLine = `workflow${wf ? ` · ${(wf.invocations || []).length} workflow.invocations · ${(wf.tool_calls || []).length} workflow.tool_calls` : ''}`;
   return html`<button id=${`job-row-${j.id}`} class=${`job-row${selected ? ' active' : ''}`} aria-current=${selected ? 'true' : null} onClick=${() => onOpen(j.id)}>
     <span><span class=${`badge ${j.status === 'done' ? 'job-done' : j.status}`}>${j.status}</span><span class="meta" style="display:block;margin-top:.2rem">${execution?.stop_reason ? execution.stop_reason : j.phase ? phaseLabel(j.phase) : ''}</span></span>
     <span class="primary" title=${j.reason || ''}>
@@ -1475,7 +1439,7 @@ function GroupedJobCards({ jobs, groupBy, points, activeGroupId, onActiveGroup, 
   </div>`;
 }
 
-const DEFAULT_GROUP_BY = ['put_model', 'put_thinking', 'prompt_hash'];
+const DEFAULT_GROUP_BY = ['application_hash', 'scenario_id', 'scenario_revision'];
 function readSharedState() {
   const q = new URL(window.location.href).searchParams, bad = [];
   const json = (name, fallback, check) => {

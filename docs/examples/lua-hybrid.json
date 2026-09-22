@@ -69,11 +69,11 @@
         "max_steps_per_trace": 4
       }
     },
-    "put": {
-      "id": "lua-hybrid",
-      "template": "You are a careful assistant. Use the tools you are given and never invent data.",
-      "design_goals": "Use tool results and report them accurately."
-    },
-    "put_model": "open_router::google/gemini-2.5-flash"
+    "workflow": {
+      "params": {
+        "prompt": "You are a careful assistant. Use the tools you are given and never invent data.",
+        "model": "open_router::google/gemini-2.5-flash"
+      }
+    }
   }
 }

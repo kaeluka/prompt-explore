@@ -479,7 +479,7 @@ async fn explicit_inputs_are_validated_and_used_verbatim() {
     let client = Arc::new(MockLlmClient::scripted(vec![]));
     // No declared-call sequence at all: resolution is the only simulator work,
     // and it must not happen when bindings are supplied.
-    let mut engine = prompt_explore::simulate::SimEngine::start(
+    let engine = prompt_explore::simulate::SimEngine::start(
         client.clone(),
         "sim",
         None,

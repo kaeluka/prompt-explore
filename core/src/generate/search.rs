@@ -42,10 +42,10 @@ pub struct InvestigateOutcome {
 }
 
 impl Investigator {
-    /// Run exactly one scenario against the PUT. The investigation's `reason`
-    /// is advisory framing for the caller; nothing here is judged against it.
-    /// If supplied, progress is initialized for this scenario and updated live.
-    /// `resolved_inputs` pins the scenario's declared inputs when present.
+    /// Library shorthand for a one-agent run: builds the default workflow
+    /// program with ordinary `params.prompt` / `params.model` / `params.controls`
+    /// and runs it like any other program. The HTTP API has no such form; it
+    /// always submits `workflow`.
     pub async fn investigate(
         &self,
         investigation: &Investigation,
@@ -54,52 +54,42 @@ impl Investigator {
         resolved_inputs: Option<&std::collections::HashMap<String, serde_json::Value>>,
         progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
     ) -> InvestigateOutcome {
-        self.run_workflow_internal(
-            investigation,
-            put,
-            runtime,
-            resolved_inputs,
-            progress,
-            &WorkflowProgram {
-                lua_source: crate::model::workflow::DEFAULT_WORKFLOW_LUA.into(),
-                params: serde_json::Value::Null,
-                limits: Default::default(),
-            },
-            true,
-        )
-        .await
+        let workflow = WorkflowProgram {
+            lua_source: crate::model::workflow::DEFAULT_WORKFLOW_LUA.into(),
+            params: serde_json::json!({
+                "prompt": put.template.clone(),
+                "model": self.runner_put.model.clone(),
+                "controls": {
+                    "thinking": self.runner_put.thinking_level,
+                    "temperature": self.runner_options.put_temperature,
+                    "max_tokens": self.runner_options.put_max_tokens,
+                }
+            }),
+            limits: Default::default(),
+        };
+        self.run_workflow_internal(investigation, runtime, resolved_inputs, progress, &workflow)
+            .await
     }
 
     pub async fn investigate_workflow(
         &self,
         investigation: &Investigation,
-        put: &PromptUnderTest,
         runtime: &ScenarioRuntime,
         resolved_inputs: Option<&std::collections::HashMap<String, serde_json::Value>>,
         progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
         workflow: &WorkflowProgram,
     ) -> InvestigateOutcome {
-        self.run_workflow_internal(
-            investigation,
-            put,
-            runtime,
-            resolved_inputs,
-            progress,
-            workflow,
-            false,
-        )
-        .await
+        self.run_workflow_internal(investigation, runtime, resolved_inputs, progress, workflow)
+            .await
     }
 
     async fn run_workflow_internal(
         &self,
         investigation: &Investigation,
-        put: &PromptUnderTest,
         runtime: &ScenarioRuntime,
         resolved_inputs: Option<&std::collections::HashMap<String, serde_json::Value>>,
         progress: Option<Arc<std::sync::Mutex<RunProgress>>>,
         workflow: &WorkflowProgram,
-        legacy_mode: bool,
     ) -> InvestigateOutcome {
         let progress =
             progress.unwrap_or_else(|| Arc::new(std::sync::Mutex::new(RunProgress::default())));
@@ -110,7 +100,6 @@ impl Investigator {
         let put_role = self.runner_put.clone();
         let sim_role = self.runner_sim.clone();
         let runner_options = self.runner_options.clone();
-        let put = put.clone();
         let task_runtime = runtime.clone();
         let budget = investigation.budget.clone();
         let task_progress = progress.clone();
@@ -127,12 +116,10 @@ impl Investigator {
                 sim_role,
                 runner_options,
                 budget,
-                put,
                 task_runtime,
                 task_inputs,
                 task_progress,
                 workflow,
-                legacy_mode,
             ))
         });
 

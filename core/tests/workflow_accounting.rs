@@ -72,7 +72,7 @@ async fn concurrent_workflows_keep_the_callers_runtime_and_default_params() {
     };
     let (legacy, custom) = tokio::join!(
         investigator.investigate(&investigation, &put, &runtime, None, None),
-        investigator.investigate_workflow(&investigation, &put, &runtime, None, None, &workflow)
+        investigator.investigate_workflow(&investigation, &runtime, None, None, &workflow)
     );
     assert!(legacy.failure.is_none(), "{:?}", legacy.failure);
     assert!(custom.failure.is_none(), "{:?}", custom.failure);
@@ -138,7 +138,6 @@ async fn default_program_does_not_silently_swallow_agent_failure() {
     let result = investigator
         .investigate_workflow(
             &investigation,
-            &put,
             &runtime,
             None,
             Some(progress.clone()),

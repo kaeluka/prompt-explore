@@ -4,8 +4,8 @@ A scenario describes the world. An investigation's Lua program describes the
 application being tested: prompts, models, stages, handoffs, branches and loops.
 Changing the decomposition does not require changing the scenario.
 
-Submit `workflow` instead of the single-agent `put`, `put_model`,
-`put_thinking_level` and `conversation_controls` shorthand:
+Every investigation submits `workflow`. There is no separate `put`, `put_model`,
+`put_thinking_level` or `conversation_controls` form:
 
 ```json
 {
@@ -27,10 +27,9 @@ Submit `workflow` instead of the single-agent `put`, `put_model`,
 only the program interprets them. Constants in source work equally well. Omit
 `lua_source` to select the default program. It reads `params.prompt`,
 `params.model` and optional `params.controls`, calls one agent with `ctx.input`,
-and returns its output (raising an error if the agent failed). These keys are
-conventions of that program only. The
-legacy single-agent request is translated to that same execution path, not a
-separate runtime.
+renders the prompt with `ctx.render`, and returns its output (raising an error
+if the agent failed). These keys are conventions of that program only; the
+request schema does not interpret them.
 
 ## Program contract
 
@@ -49,6 +48,9 @@ JSON array (important for empty arrays).
 
 - `ctx.input`: the scenario's opening user message.
 - `ctx.resolved_inputs`: the sampled or explicitly pinned scenario input bindings.
+- `ctx.render(text)`: validate and fill `{{variable}}` placeholders from
+  `ctx.resolved_inputs`. Escaped `\{{name}}` remains literal. A missing domain
+  declaration or non-string argument fails the workflow before a model call.
 - `ctx.run_agent(options)`: await a fresh agent conversation to completion.
 - `ctx.call_tool(name, arguments)`: invoke a scenario tool directly and return its
   response JSON. No agent/model call is needed just to call a tool.
@@ -63,7 +65,7 @@ Scenario definitions and their workspace seeds remain unchanged across runs.
 ```lua
 local result = ctx.run_agent {
   name = "extract",                    -- evidence label; repeats are allowed
-  prompt = params.prompts.extract,     -- exact system prompt text
+  prompt = ctx.render(params.prompts.extract), -- exact rendered system prompt
   model = params.models.extract.id,    -- use a provider-qualified model name
   input = ctx.input,                   -- opening user message
   tools = {"read_file"},               -- optional subset; omitted means all
@@ -132,17 +134,19 @@ Prefer `GET /api/investigations/{id}/evidence`:
   Agent invocations and direct calls share monotonic `event_id` values so their
   interleaving is explicit. Records marked `running` have not completed yet.
 - `workflow.source` and `workflow.params`: the orchestration that ran.
-- `workflow_program`: submitted custom configuration, retained even if execution
-  never began. Live/failed runs retain partial `workflow` evidence.
+- `workflow_program`: the submitted application configuration, retained even if
+  execution never began. Live/failed runs retain partial `workflow` evidence.
 
 Caller assessments and grades still apply to the complete investigation. No
 in-harness judge is added. Record your judgments with PATCH and compare using
-`POST /api/frontier`. `workflow_hash` pins custom source, parameters and limits;
-custom programs have no single `put_model`/`put_thinking` attribute. Their
-`prompt_hash` identifies the workflow for the existing default grouping. Use
-explicit `variant` attributes when comparing decompositions. Multi-model cost is
-summed from actual per-model usage; a missing model price leaves cost unavailable
-rather than applying one model's price to all tokens.
+`POST /api/frontier`. `application_hash` identifies the submitted source,
+opaque parameters and limits. The default grouping is
+`[application_hash, scenario_id, scenario_revision]`, so repetitions average
+only when both application and pinned world match. There is no single
+`put_model`/thinking attribute: record readable model or variant names as
+caller-owned attributes when you want those cohorts. Multi-model cost is summed
+from actual per-model usage; a missing model price leaves cost unavailable rather
+than applying one model's price to all tokens.
 
 Start with the same scenario and explicit `resolved_inputs` for matched runs.
 Sequential stages are supported; concurrency, resume and external application

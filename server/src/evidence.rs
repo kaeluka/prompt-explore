@@ -10,7 +10,8 @@ use super::*;
 /// Read every `turns[].tool_exchanges[].response`: this is what
 /// the PUT actually observed. `workspace_ops` only shows what the simulator
 /// consulted; `lua_execution.outcome=computed` only says code ran, not that the
-/// reply was faithful. Compare replies with `scenario.world` AND `put.tools`.
+/// reply was faithful. Compare replies with `scenario.world` AND the tool
+/// contracts on `scenario.tools`.
 /// An invalid root listing or false-empty search can invalidate a comparison even
 /// when the final answer looks right. Source revisions may differ across reruns.
 ///
@@ -40,17 +41,14 @@ pub(super) struct InvestigationEvidence {
     budget: Budget,
     execution: RunExecution,
     reason: Option<String>,
-    put: PromptUnderTest,
-    /// Submitted custom orchestration, retained even if execution never started.
-    workflow_program: Option<prompt_explore::model::workflow::WorkflowProgram>,
+    /// The submitted program, retained even if execution never started.
+    workflow_program: prompt_explore::model::workflow::WorkflowProgram,
     /// Complete orchestration evidence: source/params/output, exact agent
     /// inputs and turn ranges, and direct tool calls with responses/provenance.
     /// Read this output rather than assuming the last agent turn was delivered.
     workflow: Option<prompt_explore::model::workflow::WorkflowEvidence>,
     scenario: Scenario,
-    put_model: String,
     sim_model: String,
-    put_thinking_level: Option<ThinkingLevel>,
     sim_thinking_level: Option<ThinkingLevel>,
     conversation_controls: ResolvedConversationControls,
     workspace_files: usize,
@@ -125,13 +123,10 @@ impl From<JobView> for InvestigationEvidence {
             budget: job.budget,
             execution,
             reason: job.reason,
-            put: job.put,
             workflow_program: job.workflow,
             workflow,
             scenario: job.scenario,
-            put_model: job.put_model,
             sim_model: job.sim_model,
-            put_thinking_level: job.put_thinking_level,
             sim_thinking_level: job.sim_thinking_level,
             conversation_controls: job.conversation_controls,
             workspace_files: job.workspace_files,

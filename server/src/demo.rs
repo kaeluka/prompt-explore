@@ -83,8 +83,8 @@ pub async fn run() {
     ];
     for (job_id, put_id, template, out, steps) in campaign {
         let (id, mut job): (String, Job) = fabricate_done_job(job_id, put_id, template, out, steps);
-        // `prompt_hash` is system-derived from each distinct template; label
-        // is the caller-owned, editable display attribute used by grouped points.
+        // `application_hash` is derived from each default-workflow program and
+        // params; label is the caller-owned, editable display attribute.
         job.attributes
             .insert("label".into(), job_id.replace('-', " "));
         job.attributes

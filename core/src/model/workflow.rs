@@ -14,14 +14,15 @@ use crate::model::lua::{
 };
 use crate::model::simulation::{LuaExecutionRecord, RunStopReason, WorkspaceOp};
 
-/// The built-in single-stage compatibility program. Legacy
-/// `Investigator::investigate` translates the ordinary PUT prompt/model/controls
-/// into `params.prompt`, `params.model` and `params.controls`, then runs this
-/// program in the sandbox like any other workflow.
+/// The built-in single-stage program. There is nothing privileged about it:
+/// it is ordinary workflow Lua that happens to read `params.prompt`,
+/// `params.model` and `params.controls`. `Investigator::investigate` uses it
+/// as the library shorthand for a one-agent run. `ctx.render` fills the
+/// scenario's sampled `{{input_domain}}` values into the prompt text.
 pub const DEFAULT_WORKFLOW_LUA: &str = r#"return function(params, ctx)
   local agent = ctx.run_agent({
     name = "put",
-    prompt = params.prompt,
+    prompt = ctx.render(params.prompt),
     model = params.model,
     controls = params.controls,
     input = ctx.input,

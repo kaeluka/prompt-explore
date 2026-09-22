@@ -6,11 +6,14 @@
 
 Test caller-authored composition, not whether splitting a prompt improves quality.
 Each investigation runs one Lua program against one pinned scenario. The default
-program reads ordinary prompt/model/controls parameters; the legacy single-PUT
-request translates to that same program. Agent stages share simulation state but
-not conversation history. Direct program tool calls use the same engine.
+program reads ordinary prompt/model/controls parameters; those names are its
+convention, not request-schema fields. `ctx.render` fills sampled input-domain
+values. Agent stages share simulation state but not conversation history. Direct
+program tool calls use the same engine. The prototype briefly retained a legacy
+single-PUT request translation; caller probes showed the dual form caused
+confusion, so it was removed before merge.
 
-The HTTP API accepts `workflow` instead of the legacy PUT fields. The UI includes
+The HTTP API has one application form, `workflow`. The UI includes
 a request-JSON composer, workflow output, exact stage inputs, chronological event
 IDs, direct tool evidence and raw JSON. See [the contract](../workflow-api.md) and
 [the two-stage request example](../examples/workflow-extract-review.json).
@@ -34,7 +37,7 @@ agent calls except the second stage of extract/review, which used Mini:
 
 | Case | Investigation | Observation |
 |---|---|---|
-| Legacy single prompt | `2aa9953c-ebd3-4aa0-a510-64d3fbcb95c4` | Default Lua ran one agent and preserved the compatibility request. |
+| Original compatibility request | `2aa9953c-ebd3-4aa0-a510-64d3fbcb95c4` | Historical prototype evidence: the then-available request translation ran the same default Lua program. New callers use `workflow.params`. |
 | Default Lua + params | `6065109f-6c54-483a-8f4d-a43d23636239` | Omitted source honored the supplied ordinary parameters. |
 | Extract → review | `4c9cdaa7-c7c3-44b1-910b-534f02564442` | Nano output became Mini input byte-for-byte; reviewer had no tools. |
 | Direct tools + branch + agent | `51c3a743-62b0-4711-b4d0-adf2f7256055` | Program wrote the note; the later agent read the same exact contents twice. |
@@ -76,7 +79,7 @@ it is not a quality recommendation.
    that ended with an earlier investigation; concurrent siblings then failed with
    connection errors. The final implementation runs Lua on a blocking thread but
    polls async work on the caller's long-lived runtime. A deterministic test asserts
-   runtime identity across concurrent legacy/default-program runs. The matched
+   runtime identity across concurrent default-program runs. The matched
    final batch had no connection failures.
 2. **Bad test tool implementation.** The initial write handler omitted
    `state_patch={}`. Its staged write was rolled back, and simulator fallback
@@ -90,10 +93,10 @@ it is not a quality recommendation.
    now share the same agent-loop implementation. Reaching an exact cap with a final
    completion still records a final completion; attempting more work is refused.
 4. **Default-program semantics.** Supplying the default source must not select a
-   hidden parameter path. Only the compatibility entry point translates legacy
-   request fields; custom/default-program submissions honor their own params.
-   The default program propagates an ordinary agent failure rather than silently
-   returning no output as a successful application run.
+   hidden parameter path. There is now only one path: custom/default-program
+   submissions honor their own opaque params. The default program reads its
+   documented convention and propagates an ordinary agent failure rather than
+   silently returning no output as a successful application run.
 
 The initial failed attempts remain in the evidence directory. In particular, the
 first bounded-loop run recovered from a connection failure, **not** the intended
@@ -116,9 +119,10 @@ simulated `call_agent` tool, and copied stale inline-scenario/PUT-tools shapes.
 
 Intermediate edits exposed further ambiguity: the model confused workflow Lua
 with tool-handler Lua (`ctx.workspace`), assumed orchestration limits delegated
-to the simulator, or mixed workflow and legacy PUT fields. We corrected the
-endpoint's obsolete example, added explicit two-stage/direct-call examples, and
-separated the two Lua contexts and mutually exclusive request forms in the spec.
+to the simulator, or mixed workflow and the temporary legacy PUT fields. We
+removed the dual application form, corrected the endpoint example, added
+explicit two-stage/direct-call examples, and separated the two Lua contexts in
+the spec.
 
 Results were mixed, not a clean documentation pass. Several after probes used
 correct real `ctx.run_agent` stages, `ctx.call_tool`, opaque params and complete
@@ -173,8 +177,8 @@ evidence instead.
 A later pass removed UI-invented names wherever an API field already had a name:
 the UI now says `budget`, `limits`, `params`, `lua_source`, `resolved_inputs`,
 `final_world_state`, `state_after`, `budget_cutoff_completion`,
-`unrendered_call`, `implementations`, `conversation_controls`, `put_model`,
-`turns`, `tool_calls` and `cost_usd`. A stage's selected detail shows its own
+`unrendered_call`, `implementations`, `conversation_controls`,
+`application_hash`, `turns`, `tool_calls` and `cost_usd`. A stage's selected detail shows its own
 recorded `budget` (for example `max_steps_per_trace` 1 versus 3), so a local limit
 is discoverable in the call it applies to. `stop_reason` and `phase` values are
 shown as the API records them, not as friendlier synonyms, and `workflow`

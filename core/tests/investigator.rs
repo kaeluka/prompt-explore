@@ -63,7 +63,7 @@ fn investigator(put_client: Arc<dyn LlmClient>, sim_client: Arc<dyn LlmClient>) 
     Investigator {
         runner_put: LlmRole {
             client: put_client,
-            model: "put".into(),
+            model: "mock::put".into(),
             thinking_level: None,
         },
         runner_sim: LlmRole {
@@ -202,7 +202,7 @@ async fn investigate_failure_keeps_inputs_and_completed_turns() {
 
     assert!(outcome.trace.is_none());
     let failure = outcome.failure.expect("exactly one failure");
-    assert_eq!(failure.stage, "runner");
+    assert_eq!(failure.stage, "workflow");
     assert!(failure.error.contains("mock script exhausted"));
     let progress = progress.lock().unwrap();
     assert_eq!(progress.phase, RunPhase::PutLoop);
@@ -276,7 +276,7 @@ async fn investigate_captures_runner_task_panics_as_failure_evidence() {
             .contains("deliberate PUT panic")
     );
     assert_eq!(invocation.name, "put");
-    assert_eq!(invocation.model, "put");
+    assert_eq!(invocation.model, "mock::put");
     assert_eq!(invocation.input.as_deref(), Some("Hello"));
     assert_eq!(invocation.prompt, "Answer the user.");
 }

@@ -97,19 +97,21 @@ supports this without ever judging for you:
   pending, not given invented coordinates. Every excluded investigation and
   its missing grades remain visible in the API and UI as a grading backlog.
 
-Attributes are string-valued. `put_model`, `sim_model`, `put_thinking`,
-`sim_thinking`, `prompt_hash`, `workspace_hash`, `scenario_id`,
-`scenario_revision`, `scenario_hash`, `simulation_backend`, `step_budget`, and
-`token_budget` are recorded automatically and cannot be edited. Group by
-`scenario_id`/`scenario_revision` when a scenario was corrected mid-campaign.
-For a backend comparison, explicitly group by `simulation_backend`; the default
-PUT grouping otherwise merges LLM and Lua runs. `label` is editable and displayed in
-the UI; other custom attributes are editable too. Renaming a label leaves the default
-grouping unchanged; explicitly grouping by `label` makes it an identity key
-like any other selected attribute. Model attributes use resolved names;
-missing thinking settings are `provider_default` (different from explicit
-`none`). Prompt hashes exclude the cosmetic PUT id; workspace hashes describe
-extracted paths and contents, not zip metadata.
+Attributes are string-valued. `application_hash`, `sim_model`, `sim_thinking`,
+`workspace_hash`, `scenario_id`, `scenario_revision`, `scenario_hash`,
+`simulation_backend`, `step_budget`, and `token_budget` are recorded
+automatically and cannot be edited. `application_hash` covers workflow source,
+opaque params and limits; therefore a model change inside params still changes
+the application identity without giving any param key harness semantics. The
+default grouping is `application_hash` + `scenario_id` + `scenario_revision`, so
+only repetitions of the same application on the same pinned world are averaged.
+For a backend comparison, explicitly group by `simulation_backend`. `label` is
+editable and displayed in the UI; other custom attributes are editable too.
+There is no single agent-model attribute because a workflow may invoke several
+models: record a readable caller-owned `model`/`variant` attribute when you want
+those cohorts. Missing simulator thinking is `provider_default` (different from
+explicit `none`). Workspace hashes describe extracted paths and contents, not
+zip metadata.
 
 The UI groups investigation cards by the same selected attributes as the plot.
 Hover/focus links a point or legend entry to its card group; activate it to scroll
@@ -166,21 +168,21 @@ $ curl -X PATCH .../api/investigations/v1-terse -d '{"grades": {"put_cost_usd": 
 }
 ```
 
-Then request one point per model/thinking/prompt combination (the default
-`group_by` if omitted), across **all** investigations:
+Then request one point per application/scenario-revision combination (the
+default `group_by` if omitted), across **all** investigations:
 
 ```
 $ curl -X POST 'http://127.0.0.1:8099/api/frontier?format=json' \
     -H 'content-type: application/json' -d '{
-      "group_by": ["put_model", "put_thinking", "prompt_hash"],
+      "group_by": ["application_hash", "scenario_id", "scenario_revision"],
       "axes": [{"name": "put_output_tokens", "better": "lower"},
                {"name": "tone_of_voice", "better": "higher"}] }'
 ```
 
 Each returned point carries its grouping `attributes`, a stable `id`, and a
 slash-separated value label in `group_by` order (for example
-`gpt-5.6-luna/low/prompt-a1b2c3d4`). Caller-owned values are displayed in full;
-only model names and hashes use their documented basename/prefix forms. Wide
+`application-a1b2c3d4/scn-1234abcd/2`). Caller-owned values are displayed in
+full; only model names and hashes use their documented basename/prefix forms. Wide
 legends scroll horizontally rather than truncating text. Each point also carries all member `investigations`, the `included` ids used for **every** coordinate, and an
 `excluded` backlog. `values` contains arithmetic means, not totals across the
 group. `on_frontier` and `dominated_by` describe dominance between **group ids**.
@@ -471,13 +473,13 @@ curl --fail-with-body -sS http://127.0.0.1:8080/api/investigations \
     "reason": "Check that Luna looks up stock rather than inventing availability.",
     "budget": {"max_steps_per_trace": 3}
   },
-  "put": {
-    "id": "luna-stock-check",
-    "template": "You are an inventory assistant. Always look up stock before answering availability questions. Never invent stock counts.",
-    "design_goals": "Use the lookup result and report availability accurately."
-  },
-  "put_model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
-  "put_thinking_level": "high"
+  "workflow": {
+    "params": {
+      "prompt": "You are an inventory assistant. Always look up stock before answering availability questions. Never invent stock counts.",
+      "model": "bedrock_sigv4::us.openai.gpt-5.6-luna",
+      "controls": {"thinking": "high"}
+    }
+  }
 }
 JSON
 ```

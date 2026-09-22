@@ -31,10 +31,16 @@ was unreleased when renamed, and unknown request fields are rejected.
 
 System-owned attributes cannot be supplied, changed, or removed by callers:
 
-- `put_model`, `sim_model`: resolved provider/model names.
-- `put_thinking`, `sim_thinking`: recorded effort keyword, or
-  `provider_default` when omitted. Explicit `none` is distinct.
-- `prompt_hash`: SHA-256 of canonical prompt content excluding cosmetic `id`.
+- `application_hash`: SHA-256 content identity of submitted workflow source,
+  opaque params and limits. Params remain uninterpreted; changing any of them
+  changes identity without privileging keys such as `model` or `prompt`.
+- `sim_model`, `sim_thinking`: the scenario-owned simulator's resolved model and
+  effort keyword (`provider_default` when omitted; explicit `none` is distinct).
+  There is no single agent-model attribute because one program may invoke many
+  models; callers can record readable `model`/`variant` attributes explicitly.
+- `scenario_id`, `scenario_revision`, `scenario_hash`: the pinned world identity.
+- `simulation_backend`, `step_budget`, `token_budget`: effective execution
+  configuration.
 - `workspace_hash`: SHA-256 of sorted extracted paths and file bytes, independent
   of zip ordering, compression, timestamps, and archive name. No workspace
   corresponds to the empty-content hash. This fingerprints the uploaded seed,
@@ -76,7 +82,7 @@ be contradicted.
 
 ```json
 {
-  "group_by": ["put_model", "put_thinking", "prompt_hash"],
+  "group_by": ["application_hash", "scenario_id", "scenario_revision"],
   "axes": [
     {"name":"put_cost_usd", "better":"lower"},
     {"name":"quality", "better":"higher"}
@@ -85,9 +91,13 @@ be contradicted.
 ```
 
 `POST /api/frontier?format=json` supports one or more axes. `format=svg`
-requires exactly two. Omitted `group_by` defaults to the example above;
-`group_by: []` makes one group. Missing attributes form explicit null-valued groups,
-not silent exclusions; null is distinct from the string `"null"` or `""`.
+requires exactly two. Omitted `group_by` defaults to the example above: repeats
+average only when both the application and pinned scenario revision match.
+`group_by: []` makes one group. Missing attributes form explicit null-valued
+groups in the API, not silent exclusions; null is distinct from the string
+`"null"` or `""`. Human labels render absent system facts as `—` and absent
+caller attributes as `(unset)` rather than presenting the JSON token `null` as a
+value.
 
 Malformed/unknown request fields are rejected. Invalid axes, duplicate grouping
 keys, and direction conflicts yield typed validation problems. In particular,

@@ -15,7 +15,7 @@ use crate::model::workflow::{
     AgentControls, AgentInvocationRecord, DirectToolCallRecord, WorkflowEvidence, WorkflowLimits,
     WorkflowProgram,
 };
-use crate::model::{Budget, PromptUnderTest, ToolSchema};
+use crate::model::{Budget, ToolSchema};
 
 use super::engine::{ScenarioRuntime, SimEngine, escaped_placeholders, missing_input_domains};
 use super::lua::{
@@ -51,12 +51,10 @@ pub(crate) async fn run_workflow(
     sim_role: LlmRole,
     runner_options: RunnerOptions,
     investigation_budget: Budget,
-    put: PromptUnderTest,
     runtime: ScenarioRuntime,
     resolved_inputs: Option<HashMap<String, Value>>,
     progress: Arc<Mutex<RunProgress>>,
     workflow: WorkflowProgram,
-    legacy_mode: bool,
 ) -> Result<Trace, WorkflowRunError> {
     workflow.validate().map_err(WorkflowRunError::workflow)?;
     if let Ok(mut progress) = progress.lock() {
@@ -71,33 +69,6 @@ pub(crate) async fn run_workflow(
             stop_reason: None,
             error: None,
         });
-    }
-
-    let missing = missing_input_domains(&put.template, &runtime.scenario.input_domain);
-    if !missing.is_empty() {
-        let escaped = escaped_placeholders(&put.template);
-        let hint = if escaped.is_empty() {
-            String::new()
-        } else {
-            format!(
-                ". The prompt also escapes {} — escaped braces are literal text too",
-                escaped
-                    .iter()
-                    .map(|name| format!("'\\{{{{{name}}}}}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        return Err(WorkflowRunError::runner(format!(
-            "prompt template uses {} with no input_domain entry in the scenario. To write \
-             literal braces in the prompt text, escape them: \\{{{{name}}}} renders as the \
-             literal text {{{{name}}}} (in a JSON string that is \\\\{{{{name}}}}){hint}",
-            missing
-                .iter()
-                .map(|name| format!("'{{{{{name}}}}}'"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
     }
 
     if let Ok(mut g) = progress.lock() {
@@ -124,19 +95,7 @@ pub(crate) async fn run_workflow(
         g.set_phase(RunPhase::Orchestration);
     }
 
-    let prepared_params = if legacy_mode {
-        json!({
-            "prompt": render_template(&put.template, &resolved),
-            "model": put_role.model,
-            "controls": {
-                "thinking": put_role.thinking_level,
-                "temperature": runner_options.put_temperature,
-                "max_tokens": runner_options.put_max_tokens,
-            }
-        })
-    } else {
-        workflow.params.clone()
-    };
+    let prepared_params = workflow.params.clone();
 
     let initial_evidence = WorkflowEvidence {
         source: workflow.lua_source.clone(),
@@ -183,7 +142,6 @@ pub(crate) async fn run_workflow(
         host_bytes_used: 0,
         agent_invocations_used: 0,
         direct_tool_calls_used: 0,
-        legacy_mode,
     }));
 
     let lua_output =
@@ -204,15 +162,7 @@ pub(crate) async fn run_workflow(
     };
     host_locked.sync_progress(Some(stop_reason));
 
-    let first_invocation_failure = host_locked
-        .legacy_mode
-        .then(|| {
-            host_locked
-                .invocations
-                .iter()
-                .find_map(|invocation| invocation.failure.clone())
-        })
-        .flatten();
+    let first_invocation_failure: Option<String> = None;
 
     if !host_locked.invocations.is_empty() {
         if let Ok(mut g) = host_locked.progress.lock() {
@@ -293,7 +243,6 @@ struct WorkflowHost {
     host_bytes_used: usize,
     agent_invocations_used: usize,
     direct_tool_calls_used: usize,
-    legacy_mode: bool,
 }
 
 impl WorkflowHost {
@@ -414,16 +363,13 @@ impl Default for RunAgentBudget {
     }
 }
 
-fn validate_run_agent_request(
-    request: &RunAgentRequest,
-    legacy_mode: bool,
-) -> Result<(), WorkflowRunError> {
-    if !legacy_mode && !request.model.contains("::") {
+fn validate_run_agent_request(request: &RunAgentRequest) -> Result<(), WorkflowRunError> {
+    if !request.model.contains("::") {
         return Err(WorkflowRunError::workflow(
             "ctx.run_agent model must be provider-qualified (expected provider::model)",
         ));
     }
-    if !request.prompt.is_empty() || legacy_mode {
+    if !request.prompt.is_empty() {
         // prompt is required by serde; only validate remaining runtime properties here.
     }
     if let Some(controls) = &request.controls {
@@ -500,6 +446,55 @@ async fn run_lua_program(
         .map_err(|error| format!("ctx.input set failed: {error}"))?;
     ctx.set("resolved_inputs", resolved_lua)
         .map_err(|error| format!("ctx.resolved_inputs set failed: {error}"))?;
+
+    // ctx.render(text): deterministic `{{variable}}` filling from the scenario's
+    // sampled input_domain. Text under test belongs here rather than in a
+    // harness-owned template field, so any program can inject sampled inputs and
+    // validation names the placeholder that the scenario did not declare.
+    let render_domain = host.lock().await.runtime.scenario.input_domain.clone();
+    let render_values = resolved_inputs.clone();
+    let render = lua
+        .create_function(move |_, value: LuaValue| -> mlua::Result<String> {
+            let text = match value {
+                LuaValue::String(text) => text.to_str()?.to_owned(),
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "ctx.render expects a string, got {}",
+                        other.type_name()
+                    )));
+                }
+            };
+            let missing = missing_input_domains(&text, &render_domain);
+            if !missing.is_empty() {
+                let escaped = escaped_placeholders(&text);
+                let hint = if escaped.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ". The text also escapes {} — escaped braces are literal text too",
+                        escaped
+                            .iter()
+                            .map(|name| format!("'\\{{{{{name}}}}}'"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                return Err(mlua::Error::RuntimeError(format!(
+                    "text uses {} with no input_domain entry in the scenario. To write \
+                     literal braces, escape them: \\{{{{name}}}} renders as the literal text \
+                     {{{{name}}}} (in a JSON string that is \\\\{{{{name}}}}){hint}",
+                    missing
+                        .iter()
+                        .map(|name| format!("'{{{{{name}}}}}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            Ok(render_template(&text, &render_values))
+        })
+        .map_err(|error| format!("ctx.render creation failed: {error}"))?;
+    ctx.set("render", render)
+        .map_err(|error| format!("ctx.render set failed: {error}"))?;
 
     let run_agent_json = json.clone();
     let run_agent_budget = lua_budget.clone();
@@ -635,7 +630,7 @@ async fn run_agent_host_call(
             "workflow agent-invocation limit exceeded",
         ));
     }
-    validate_run_agent_request(&request, host.legacy_mode)?;
+    validate_run_agent_request(&request)?;
 
     let tool_names = resolve_tool_subset(&host.runtime.tools, request.tools.as_ref())
         .map_err(WorkflowRunError::workflow)?;
@@ -1090,6 +1085,7 @@ impl WorkflowProgram {
 mod tests {
     use super::*;
     use crate::llm::{ChatResponse, MockLlmClient};
+    use crate::model::PromptUnderTest;
     use crate::model::{Investigation, Scenario, SideEffect};
     use crate::simulate::Workspace;
 
@@ -1136,6 +1132,53 @@ mod tests {
         ScenarioRuntime::from_put(&put(), scenario(), Workspace::empty())
     }
 
+    async fn render_only(text: &str) -> Result<Trace, WorkflowRunError> {
+        run_workflow(
+            LlmRole {
+                client: Arc::new(MockLlmClient::scripted(vec![])),
+                model: String::new(),
+                thinking_level: None,
+            },
+            LlmRole {
+                client: Arc::new(MockLlmClient::scripted(vec![ChatResponse {
+                    content: Some(r#"{"item":"sample"}"#.into()),
+                    thinking: None,
+                    tool_calls: vec![],
+                    usage: None,
+                }])),
+                model: "sim-model".into(),
+                thinking_level: None,
+            },
+            RunnerOptions::default(),
+            investigation().budget,
+            runtime(),
+            None,
+            Arc::new(Mutex::new(RunProgress::default())),
+            WorkflowProgram {
+                lua_source: "return function(params, ctx) return ctx.render(params.text) end"
+                    .into(),
+                params: json!({"text": text}),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ctx_render_fills_sampled_inputs_and_rejects_missing_domains() {
+        let trace = render_only("value={{item}}").await.unwrap();
+        assert_eq!(trace.workflow.unwrap().output, Some(json!("value=sample")));
+
+        let error = render_only("value={{missing}}").await.unwrap_err();
+        assert_eq!(error.stage, "workflow");
+        assert!(error.error.contains("{{missing}}"), "{}", error.error);
+        assert!(
+            error.error.contains("no input_domain entry"),
+            "{}",
+            error.error
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn trivial_workflow_runs_without_host_calls() {
         let trace = run_workflow(
@@ -1156,7 +1199,6 @@ mod tests {
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
@@ -1165,7 +1207,6 @@ mod tests {
                 params: Value::Null,
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap();
@@ -1211,12 +1252,10 @@ end"#
                 max_steps_per_trace: 1,
                 max_tokens: None,
             },
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
             workflow,
-            false,
         )
         .await
         .unwrap();
@@ -1247,7 +1286,6 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
@@ -1268,7 +1306,6 @@ end"#
                 params: Value::Null,
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap();
@@ -1303,7 +1340,6 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
@@ -1311,7 +1347,6 @@ end"#
                 lua_source: r#"return function(params, ctx) return ctx.run_agent({prompt='p', model='bare'}) end"#.into(),
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap_err();
@@ -1340,7 +1375,6 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
@@ -1356,7 +1390,6 @@ end"#
                 },
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap_err();
@@ -1392,7 +1425,6 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
@@ -1408,7 +1440,6 @@ end"#
                 },
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap_err();
@@ -1456,12 +1487,14 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
-            WorkflowProgram::default(),
-            true,
+            WorkflowProgram {
+                lua_source: crate::model::workflow::DEFAULT_WORKFLOW_LUA.into(),
+                params: json!({"prompt": "System {{item}}", "model": "mock::put-model"}),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1518,12 +1551,10 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
             workflow,
-            false,
         )
         .await
         .unwrap();
@@ -1565,7 +1596,6 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
@@ -1574,7 +1604,6 @@ end"#
                 params: json!({"prompt":"custom prompt","model":"mock::chosen"}),
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap();
@@ -1627,12 +1656,10 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
             workflow,
-            false,
         )
         .await
         .unwrap();
@@ -1688,12 +1715,10 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
             workflow,
-            false,
         )
         .await
         .unwrap();
@@ -1764,12 +1789,10 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
             workflow,
-            false,
         )
         .await
         .unwrap();
@@ -1843,12 +1866,10 @@ end"#
             },
             RunnerOptions::default(),
             investigation().budget,
-            put(),
             runtime(),
             None,
             Arc::new(Mutex::new(RunProgress::default())),
             workflow,
-            false,
         )
         .await
         .unwrap();

@@ -274,7 +274,9 @@ The program belongs to the investigation, **never the scenario**. All
 investigations use Lua, including the default single-agent program. `params` is
 arbitrary JSON with no privileged keys; only the program decides what to pass
 to `ctx.run_agent` or `ctx.call_tool`. Default-program parameter names are
-conventions, not harness magic. Do not replace this with a DAG DSL.
+conventions, not harness magic. `ctx.render(text)` performs the deterministic
+`{{input_domain}}` substitution from the run's recorded `resolved_inputs`; it
+does not grant access to world truth. Do not replace this with a DAG DSL.
 
 `ctx.run_agent` runs a complete agent conversation. Each invocation gets fresh
 messages; all calls share one scenario simulation session/world/workspace.
@@ -329,8 +331,8 @@ contract reachable from OpenAPI through `LuaWorkspaceCapability` and
 ## Live grouped Pareto frontier
 
 All investigations in memory are candidates. There is no server-side selection
-list. `POST /api/frontier` groups by attributes (default `put_model`,
-`put_thinking`, `prompt_hash`) and averages requested axes over completed
+list. `POST /api/frontier` groups by attributes (default `application_hash`,
+`scenario_id`, `scenario_revision`) and averages requested axes over completed
 investigations with **every** requested value. All coordinates use the same
 cohort, equally weighted per investigation. Browsing filters never change
 frontier candidacy. The caller owns comparability and grading; the harness owns

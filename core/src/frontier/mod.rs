@@ -349,8 +349,9 @@ pub struct InvestigationSnapshot {
     pub grades: BTreeMap<String, f64>,
     /// Token usage split by role; Some once the run finished.
     pub usage: Option<UsageByRole>,
-    /// Model names (for error details: unpriced-model messages).
-    pub put_model: Option<String>,
+    /// The simulator's resolved model (for error details: unpriced-model
+    /// messages). Agent-side usage spans every model the workflow invoked, so
+    /// there is no single agent model to name here.
     pub sim_model: Option<String>,
     /// Per-conversation step counts (one completed trace contributes one). A "step" is
     /// one tool call OR one final completion — the same unit the
@@ -645,17 +646,21 @@ pub fn compute(
                     Some(v) => values.push(v),
                     None => {
                         let why = if axis.name.ends_with("_cost_usd") {
-                            let role_model = if axis.name.starts_with("put_") {
-                                snap.put_model.as_deref()
+                            let from_simulator = axis.name.starts_with("sim_");
+                            let named = if from_simulator {
+                                format!(
+                                    "the simulator model '{}' is not priced",
+                                    snap.sim_model.as_deref().unwrap_or("(unknown)")
+                                )
                             } else {
-                                snap.sim_model.as_deref()
+                                "at least one model the workflow invoked is not priced".into()
                             };
+                            let role = if from_simulator { "simulator" } else { "agent" };
                             format!(
-                                "the {} model '{}' is not priced in the model catalog, so \
-                                 cost cannot be measured — use a token axis instead, grade \
-                                 cost yourself as a judged axis, or drop this investigation",
-                                axis.name.split('_').next().unwrap_or("model"),
-                                role_model.unwrap_or("(unknown)")
+                                "{named} in the model catalog, so {} cost cannot be measured — use a \
+                                 token axis instead, grade cost yourself as a judged axis, or drop \
+                                 this investigation",
+                                role
                             )
                         } else {
                             "no completed traces on this investigation — drop it or re-run"

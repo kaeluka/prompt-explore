@@ -40,7 +40,7 @@ use prompt_explore::llm::{
     ProviderClient, ProviderModels, ThinkingLevel, UsageByRole, UsageTotals, UsageTracker,
     catalog_pricing_map, cost_usd, list_all_map,
 };
-use prompt_explore::model::input::{Budget, Investigation, PromptUnderTest};
+use prompt_explore::model::input::{Budget, Investigation};
 use prompt_explore::model::lua::LuaOptions;
 use prompt_explore::model::output::RunFailure;
 use prompt_explore::model::scenario::ToolImplementation;
@@ -122,9 +122,10 @@ struct Job {
     /// read the unfolding traces with that framing in mind. Nothing is
     /// judged against it.
     reason: Option<String>,
-    /// Legacy single-agent prompt, empty for custom workflows.
-    put: PromptUnderTest,
-    workflow: Option<prompt_explore::model::workflow::WorkflowProgram>,
+    /// The application under test: the submitted Lua program with its opaque
+    /// params and limits. Every investigation has one; agent models live on its
+    /// individual invocations, not here.
+    workflow: prompt_explore::model::workflow::WorkflowProgram,
     /// The input scenario (narrative, world_state, simulator_notes), so the
     /// ground truth is visible while the run unfolds. This is the narrative
     /// SNAPSHOT the reference pinned, not a live lookup.
@@ -136,33 +137,21 @@ struct Job {
     scenario_definition_hash: String,
     /// Live per-role usage trackers, shared with the running task. Kept on the
     /// job so ANY read — the list view included — can report spend without
-    /// fetching evidence. None when the server has no provider client, in which
-    /// case the run failed before its first call and `result.usage` is zeroed.
+    /// fetching evidence.
     put_tracker: Option<Arc<UsageTracker>>,
     sim_tracker: Option<Arc<UsageTracker>>,
-    /// The resolved model name running the prompt under test (the `put_model`
-    /// from the request, or the server default). Stored so the dashboard
-    /// can show which model produced the traces — set at job creation,
-    /// visible while running.
-    put_model: String,
-    /// The resolved model name running the tool simulator (the `sim_model`
-    /// from the request, or the server default). It resolves independently
-    /// of `put_model`. The simulator is the test environment; surfacing it lets
-    /// a reader judge whether it was powerful enough to render believably.
+    /// The resolved model name running the tool simulator (the scenario's
+    /// simulator setting, or the server default). The simulator is the test
+    /// ENVIRONMENT; surfacing it lets a reader judge whether it was powerful
+    /// enough to render the world believably.
     sim_model: String,
-    /// The resolved thinking level the PUT ran at (the request's
-    /// `put_thinking_level`, or `None` = provider default). Recorded so
-    /// a reader of the traces knows what produced them — a reasoning
-    /// model's effort is part of its measured behavior.
-    put_thinking_level: Option<ThinkingLevel>,
-    /// The resolved thinking level the simulator ran at (the request's
-    /// `sim_thinking_level`, or `None` = provider default). Falls back
-    /// INDEPENDENTLY of `put_thinking_level` — omitting it never
-    /// inherits the PUT's level.
+    /// The resolved thinking level the simulator ran at (the scenario's
+    /// `simulation.sim_thinking_level`, or `None` = provider default). Agent
+    /// conversations carry their own per-invocation thinking level.
     sim_thinking_level: Option<ThinkingLevel>,
-    /// Resolved controls that governed the PUT and simulator conversations.
-    /// Recorded with the job so its traces can be reproduced even when server
-    /// environment defaults later change.
+    /// Resolved controls that governed the simulator and any agent conversation
+    /// that did not override them. Recorded with the job so its traces can be
+    /// reproduced even when server environment defaults later change.
     conversation_controls: ResolvedConversationControls,
     /// How many files seeded the simulation workspace (0 if no zip was
     /// uploaded). Surfaced so a reader knows whether the simulator had a
@@ -185,21 +174,20 @@ enum JobStatus {
     Failed,
 }
 
-/// EVERY request requires scenario_id AND investigation.budget; workflow does
-/// not replace these common fields. Choose EXACTLY ONE application form.
-/// Recommended: `workflow` (omit `put`,
-/// `put_model`, `put_thinking_level` and PUT conversation_controls entirely).
-/// Compatibility shorthand: `put` plus optional PUT model/controls, with NO
-/// workflow. Combining these forms returns 400; a workflow does not need a
-/// dummy PUT. Put custom prompts/models/settings inside workflow.params or
-/// directly in Lua and pass them explicitly to ctx.run_agent. Scenario tools,
-/// world and simulation configuration stay on the registered scenario.
+/// EVERY request requires scenario_id AND investigation.budget. There is ONE
+/// application form: `workflow`. There is no privileged `put_model`/
+/// `put_thinking_level` field — prompts, model names and conversation controls
+/// are ordinary `workflow.params` values that YOUR program reads and passes to
+/// ctx.run_agent. Nothing in `params` has harness meaning. Omit `workflow` (or
+/// its `lua_source`) to run the default single-stage program, whose convention
+/// is params.prompt (system text), params.model (qualified model name) and
+/// optional params.controls. Scenario tools, world and simulation
+/// configuration stay on the registered scenario.
 #[derive(Deserialize, Clone, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct InvestigateRequest {
     /// The scenario to run, BY REFERENCE. The referenced definition's tool
-    /// contracts become this run's tool surface; the prompt under test supplies
-    /// only its template and design goals.
+    /// contracts become this run's tool surface.
     scenario_id: String,
     /// Optional guard against editing races: refuse to run unless the scenario
     /// is still at this revision. The referenced scenario is pinned by this
@@ -213,160 +201,53 @@ struct InvestigateRequest {
     resolved_inputs: Option<HashMap<String, Value>>,
     investigation: Investigation,
     /// Caller-authored Lua orchestration and opaque JSON parameters. The program
-    /// belongs to this investigation, NOT to the scenario. Supply workflow OR
-    /// the legacy put/put_model/conversation_controls shorthand, never both.
-    /// Each ctx.run_agent call runs a fresh agent conversation in the same
-    /// scenario world; ctx.call_tool invokes that world's tools directly.
-    /// All work shares investigation-wide budgets and host-owned evidence.
-    /// Omitted lua_source selects the default program, whose ordinary parameter
-    /// convention is params.prompt (system text), params.model (qualified model
-    /// name) and optional params.controls. Example: workflow={params:{prompt:
-    /// "Answer carefully",model:"open_router::openai/gpt-4.1-nano"}}.
-    /// Custom source returns function(params,ctx); run_agent options include
-    /// name, prompt, model, input (string), tools (optional name subset),
-    /// controls={thinking,temperature,max_tokens}, budget={max_steps,max_tokens}.
-    /// ctx.input is the scenario user message; ctx.resolved_inputs is its sampled
-    /// input bindings. Handoffs are literal, never regenerated by the simulator.
-    /// See GET /docs/workflow for the executable contract and examples.
-    #[serde(default)]
-    workflow: Option<prompt_explore::model::workflow::WorkflowProgram>,
-    /// Single-agent shorthand, translated to the default Lua program. Omit when
-    /// supplying workflow. The shorthand's fields have no privileged meaning
-    /// inside workflow.params; custom programs interpret their own parameters.
-    #[serde(default = "empty_put")]
-    put: PromptUnderTest,
-    /// Model for the prompt under test. Omit to use the server default
-    /// (`glm-5.2`). Provider
-    /// is selected by namespace prefix, e.g. `zai_coding::glm-5.2`,
-    /// `open_router::deepseek/...`, `bedrock_sigv4::<model-id>`,
-    /// `vertex::gemini-2.5-pro`; a bare
-    /// name uses the server's default provider (`PROMPT_EXPLORE_PROVIDER`).
-    /// See `GET /api/models` for available namespaced model strings.
+    /// belongs to this investigation, NOT to the scenario. Omit it (or its
+    /// `lua_source`) to run the default single-stage program. Each ctx.run_agent
+    /// call runs a fresh agent conversation in the same scenario world;
+    /// ctx.call_tool invokes that world's tools directly. All work shares
+    /// investigation-wide budgets and host-owned evidence.
     ///
-    /// This is the model you are TESTING: when experimenting to find
-    /// which model works well for your prompt, this is the one you vary
-    /// across runs. Keep `sim_model` fixed while you do (see below), so
-    /// candidates share simulator configuration, not fixed responses. Each run
-    /// resolves inputs and renders tools afresh; inspect differences before
-    /// attributing an outcome solely to the prompt/model.
+    /// The default program's ordinary parameter convention is params.prompt
+    /// (system text, `{{input_domain}}` values filled by ctx.render),
+    /// params.model (qualified model name) and optional params.controls.
+    /// Nothing about those key names is privileged: they are simply what the
+    /// default program reads. Custom source returns function(params,ctx);
+    /// run_agent options include name, prompt, model, input (string), tools
+    /// (optional name subset), controls={thinking,temperature,max_tokens},
+    /// budget={max_steps,max_tokens}. ctx.input is the scenario user message;
+    /// ctx.resolved_inputs holds its sampled bindings; ctx.render(text) fills
+    /// `{{variable}}` placeholders from that sample. Handoffs are literal,
+    /// never regenerated by the simulator. See GET /docs/workflow for the
+    /// executable contract and examples.
     #[serde(default)]
-    put_model: Option<String>,
-    /// Migration only: the simulator's model now lives on the scenario.
-    /// Supplying it is a 400 with that guidance, never a silent override.
-    #[serde(default)]
-    sim_model: Option<Value>,
-    /// Thinking/reasoning level for the PUT runner ONLY (the agent
-    /// under test): `none` | `minimal` | `low` | `medium` | `high` |
-    /// `xhigh` | `max`. Omit to keep the provider's default (which is
-    /// what runs today — no field is sent). This pins what you are
-    /// measuring: a reasoning model's default effort is part of its
-    /// measured behavior, and without this you can neither vary it
-    /// (trade thoroughness for cost at `low`/`none`) nor tell two runs
-    /// apart. The resolved value comes back on the job view as
-    /// `put_thinking_level`. The SIMULATOR's level is the scenario's
-    /// (`simulation.sim_thinking_level`), never inherited from this.
-    #[serde(default)]
-    put_thinking_level: Option<ThinkingLevel>,
-    /// Migration only: the simulator's thinking level now lives on the
-    /// scenario (`simulation.sim_thinking_level`).
-    #[serde(default)]
-    sim_thinking_level: Option<Value>,
-    /// Per-investigation PUT conversation controls. Omit a field to use its
-    /// documented default. Simulator settings belong to the scenario.
-    #[serde(default)]
-    conversation_controls: ConversationControls,
-    /// Migration only: the inline scenario field this API no longer accepts.
-    /// Present so supplying it produces an actionable error instead of an
-    /// opaque unknown-field message.
-    #[serde(default)]
-    scenario: Option<Value>,
-    /// Migration only: the old array form. Rejected with the same guidance.
-    #[serde(default)]
-    scenarios: Option<Value>,
+    workflow: prompt_explore::model::workflow::WorkflowProgram,
     /// Caller-owned campaign attributes. This field is literally `attributes`;
     /// there is no `tags` alias and unknown fields are rejected. Keys use
     /// `^[a-z][a-z0-9_]{0,63}$`; values are strings up to 1024 UTF-8 bytes.
-    /// `label` is the special editable
-    /// display label shown by the UI. POST rejects every system-owned key:
-    /// `put_model`/`sim_model` are the resolved provider-qualified model
-    /// names; `put_thinking`/`sim_thinking` are a reasoning keyword or
-    /// `provider_default`; `prompt_hash` is SHA-256 of canonical PUT
-    /// template/tools/design_goals (not cosmetic PUT id); and
-    /// `workflow_hash` identifies custom Lua source, opaque params and limits;
-    /// for custom programs `prompt_hash` also carries this workflow identity
-    /// and there is no single put_model/put_thinking grouping attribute. The
-    /// per-invocation models/settings are in workflow evidence.
-    /// `workspace_hash` is SHA-256 of sorted uploaded workspace path/content
-    /// pairs (including the stable empty-workspace hash). `simulation_backend`
-    /// is `llm` or `lua`; `step_budget` and `token_budget` are decimal limits
-    /// (unbounded token budget is `unlimited`). All are immutable provenance;
+    /// `label` is the special editable display label shown by the UI. POST
+    /// rejects every system-owned key: `application_hash` is the content
+    /// identity of the submitted workflow (source, params and limits);
+    /// `sim_model`/`sim_thinking` are the SIMULATOR's resolved settings (the
+    /// simulator belongs to the scenario); `workspace_hash` is SHA-256 of
+    /// sorted uploaded workspace path/content pairs (including the stable
+    /// empty-workspace hash); `simulation_backend` is `llm` or `lua`;
+    /// `step_budget` and `token_budget` are decimal limits (unbounded token
+    /// budget is `unlimited`); `scenario_id`/`scenario_revision`/`scenario_hash`
+    /// identify the pinned world. There is no `put_model`: a program may invoke
+    /// several models, so record a model name as a caller-owned attribute if you
+    /// want to group by it. All system attributes are immutable provenance;
     /// group by them explicitly when comparing execution configurations.
     #[serde(default)]
     attributes: BTreeMap<String, String>,
 }
 
-fn empty_put() -> PromptUnderTest {
-    PromptUnderTest {
-        id: String::new(),
-        template: String::new(),
-        tools: Vec::new(),
-        design_goals: String::new(),
-    }
-}
-
-/// Caller-selected limits and sampling controls for an investigation's LLM
-/// conversations. Defaults: temperature 0.7; PUT/simulator output limits
-/// 32768 tokens each; 20 total JSON-reply attempts; 250 workspace turns;
-/// 5000 read lines, 1000 grep matches, 2000 characters per grep line,
-/// and 1 MiB constructed output per workspace tool call.
-#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
-struct ConversationControls {
-    /// PUT sampling temperature; omit for the documented default.
-    #[serde(default)]
-    #[schema(minimum = 0)]
-    put_temperature: Option<f32>,
-    /// Maximum output tokens per PUT completion; omit for the documented default.
-    #[serde(default)]
-    #[schema(minimum = 1)]
-    put_max_tokens: Option<u32>,
-    /// Migration only: simulator sampling temperature now lives on the
-    /// scenario definition (`simulation.temperature`). Supplying it here is a
-    /// 400 with that guidance, never a silent override.
-    #[serde(default)]
-    sim_temperature: Option<Value>,
-    /// Migration only: simulator output limit (`simulation.max_tokens`).
-    #[serde(default)]
-    sim_max_tokens: Option<Value>,
-    /// Migration only: simulator repair budget
-    /// (`simulation.max_repair_attempts`).
-    #[serde(default)]
-    sim_max_repair_attempts: Option<Value>,
-    /// Migration only: simulator workspace turns
-    /// (`simulation.max_workspace_turns`).
-    #[serde(default)]
-    max_workspace_turns: Option<Value>,
-    /// Migration only: workspace read bound (`simulation.workspace.max_read_lines`).
-    #[serde(default)]
-    workspace_max_read_lines: Option<Value>,
-    /// Migration only: workspace grep bound (`simulation.workspace.max_grep_matches`).
-    #[serde(default)]
-    workspace_max_grep_matches: Option<Value>,
-    /// Migration only: grep line length (`simulation.workspace.max_line_len`).
-    #[serde(default)]
-    workspace_max_line_len: Option<Value>,
-    /// Migration only: workspace output budget
-    /// (`simulation.workspace.max_output_bytes`).
-    #[serde(default)]
-    workspace_max_output_bytes: Option<Value>,
-}
-
-/// Actual controls after request and server defaults have been resolved. The
-/// PUT's controls come from the investigation; the simulator's come from the
 /// referenced scenario.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 struct ResolvedConversationControls {
-    put_temperature: Option<f32>,
-    put_max_tokens: Option<u32>,
+    /// Defaults inherited by a ctx.run_agent call that omits the corresponding
+    /// controls. They are execution defaults, not privileged workflow inputs.
+    agent_temperature_default: Option<f32>,
+    agent_max_tokens_default: Option<u32>,
     /// The simulator settings this run used, resolved from the scenario.
     simulator: ResolvedSimulatorSettings,
 }
@@ -408,8 +289,8 @@ impl Default for ResolvedConversationControls {
     fn default() -> Self {
         let runner = RunnerOptions::default();
         Self {
-            put_temperature: runner.put_temperature,
-            put_max_tokens: runner.put_max_tokens,
+            agent_temperature_default: runner.put_temperature,
+            agent_max_tokens_default: runner.put_max_tokens,
             simulator: ResolvedSimulatorSettings::default(),
         }
     }
@@ -510,36 +391,28 @@ struct JobView {
     /// reader should know — no strict standard). Optional; surfaced to
     /// guide reading the traces. Nothing is judged against it.
     reason: Option<String>,
-    /// For custom programs this is the display marker `workflow`, not a model:
-    /// read workflow invocation evidence for actual models and settings.
-    /// The resolved model name that ran the prompt under test (the `put_model`
-    /// from the request, or the server default). Echoed RESOLVED so a
-    /// reader knows exactly what produced the traces — including the
-    /// default, which the request leaves implicit.
-    put_model: String,
-    /// The resolved model name that ran the tool simulator (the `sim_model`
-    /// from the request, or the server default), resolved independently of
-    /// `put_model`. The simulator is the test ENVIRONMENT; a reader needs to
-    /// see it to judge whether it was powerful enough to render the
-    /// world believably.
+    /// The application under test: the submitted Lua program with its opaque
+    /// params and limits. Actual invocation settings (including each agent
+    /// model) and output are in progress.workflow and result.trace.workflow;
+    /// prefer the nonduplicated /evidence view.
+    workflow: prompt_explore::model::workflow::WorkflowProgram,
+    /// The resolved model name that ran the tool simulator (the scenario's
+    /// simulator setting, or the server default). The simulator is the test
+    /// ENVIRONMENT; a reader needs to see it to judge whether it was powerful
+    /// enough to render the world believably.
     sim_model: String,
-    /// The thinking level the PUT ran at (the request's
-    /// `put_thinking_level`; absent = the provider's default). Part of
-    /// the run's provenance: a reasoning model's effort changes cost
-    /// and behavior, so a reader comparing traces needs to know it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    put_thinking_level: Option<ThinkingLevel>,
-    /// The thinking level the simulator ran at (the request's
-    /// `sim_thinking_level`; absent = the provider's default). Resolved
-    /// independently of the PUT's — it never inherits it.
+    /// The thinking level the simulator ran at (the scenario's
+    /// `simulation.sim_thinking_level`; absent = the provider's default).
+    /// Agent conversations carry their own per-invocation level.
     #[serde(skip_serializing_if = "Option::is_none")]
     sim_thinking_level: Option<ThinkingLevel>,
-    /// Resolved controls for the PUT and simulator conversations.
+    /// Resolved controls for the simulator and any agent conversation that did
+    /// not override them.
     conversation_controls: ResolvedConversationControls,
     /// How many files seeded the simulation workspace (0 = no zip upload;
     /// the simulator answered from narrative alone). The workspace is an
     /// in-memory filesystem the SIMULATOR consults via read/write/list_dir/
-    /// grep — it is NOT the PUT's tools. See the endpoint description.
+    /// grep — it is NOT an application tool. See the endpoint description.
     workspace_files: usize,
     /// The reusable scenario this investigation pinned, with the exact revision
     /// and content hash it ran. A correction elsewhere never changes this trace;
@@ -555,12 +428,6 @@ struct JobView {
     /// Immutable provenance plus caller-owned campaign attributes. `label` is the
     /// special editable display label; reserved provenance keys cannot change.
     attributes: BTreeMap<String, String>,
-    /// Legacy single-agent prompt, empty for custom workflows.
-    put: PromptUnderTest,
-    /// Submitted orchestration, available even before execution or on failure.
-    /// Actual invocation settings and output are in progress.workflow and
-    /// result.trace.workflow; prefer the nonduplicated /evidence view.
-    workflow: Option<prompt_explore::model::workflow::WorkflowProgram>,
     /// The input scenario, by value: its narrative is the ground truth for
     /// interpreting the trace and progress.
     scenario: Scenario,
@@ -650,7 +517,7 @@ struct InvestigationPatchView {
                        scenario revision + one execution of a caller-authored Lua workflow. \
                        The single-prompt (PUT) request remains a shorthand for the default Lua \
                        program. For multi-stage composition, submit workflow instead of put and \
-                       put_model: workflow.lua_source returns function(params, ctx), and \
+                       workflow.lua_source returns function(params, ctx), and \
                        workflow.params is arbitrary JSON with no privileged keys. \
                        ctx.run_agent{prompt=...,model=...,input=...,name=...} runs one fresh \
                        agent conversation; ctx.call_tool(name,args) calls a scenario tool directly. \
@@ -713,7 +580,7 @@ struct InvestigationPatchView {
  \
                        Then SEND POST /api/frontier and READ its returned points before the next \
                        prompt edit. Example request: \
-                       {\"group_by\":[\"put_model\",\"put_thinking\",\"prompt_hash\"],\"axes\":[{\"name\":\"delivered_recall\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. \
+                       {\"group_by\":[\"application_hash\",\"scenario_id\",\"scenario_revision\"],\"axes\":[{\"name\":\"delivered_recall\",\"better\":\"higher\"},{\"name\":\"put_cost_usd\",\"better\":\"lower\"}]}. \
                        Every requested axis must exist on a run for it to contribute. Adding \
                        undefined precision to this primary comparison would exclude the no-review \
                        attempt again: inspect precision in a separate, explicitly conditional view \
@@ -754,7 +621,7 @@ struct InvestigationPatchView {
                        delegated vs errored, with `source_hash`) and `workspace_ops`. Calls in one \
                        submission run in sequence in one session, so write/read consistency is \
                        testable; each submission starts from a fresh snapshot. A probe never \
-                       invokes the PUT and never becomes a frontier candidate. You need no local \
+                       invokes the application and never becomes a frontier candidate. You need no local \
                        Lua toolchain: the server parses, sandboxes, and executes the source.
  \
                        3. Iterate: PATCH /api/scenarios/{id} with the complete new definition plus \
@@ -768,7 +635,7 @@ struct InvestigationPatchView {
  \
                        5. POST /api/investigations with `scenario_id` (plus optional \
                        `scenario_revision` as a staleness guard and optional `resolved_inputs`), \
-                       `put` (template, design goals), the PUT's model/thinking level, and the \
+                       `workflow` (program source, opaque `params` and limits) and the \
                        investigation's budget/reason/attributes. The tool surface comes from the \
                        scenario: `put.tools` is rejected here rather than silently ignored. \
                        Submission pins the scenario immediately and atomically.
@@ -777,7 +644,7 @@ struct InvestigationPatchView {
                        GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget \
                        and timing first: done means a trace was recorded, not necessarily a final \
                        answer. Read turns in order, including EVERY tool_exchanges[].call AND \
-                       response. The response is the PUT observation; workspace_ops is only \
+                       response. The response is what the application observed; workspace_ops is only \
                        supporting provenance. lua_execution=computed means code executed, NOT \
                        that the response is faithful. A final correct answer can hide invalid \
                        root listings, false-empty searches, or invented files.
@@ -799,8 +666,8 @@ struct InvestigationPatchView {
                        which traces ran the old definition and re-run only those.
  \
                        9. READ THE FRONTIER BEFORE YOU CHANGE THE PROMPT. POST /api/frontier with \
-                       `group_by` naming the variables you are comparing (put_model, put_thinking, \
-                       prompt_hash, or your own labels such as a prompt-version attribute; the reserved \
+                       `group_by` naming the variables you are comparing (application_hash, \
+                       scenario_id, scenario_revision, or your own labels such as a prompt-version attribute; the reserved \
                        provenance attributes also include scenario_id/scenario_revision/scenario_hash, \
                        simulation_backend, step_budget and token_budget) and `axes` naming the metrics you \
                        agreed with your user (your judged grades plus measured ones like put_cost_usd, \
@@ -1219,38 +1086,48 @@ fn fabricate_done_job(
                 "Tone-instruction sweep: comparing politeness vs. cost on the same scenarios."
                     .into(),
             ),
-            workflow: None,
-            put: PromptUnderTest {
-                id: put_id.into(),
-                template: template.into(),
-                tools: vec![],
-                design_goals: "Cancel orders only on explicit user request.".into(),
+            workflow: prompt_explore::model::workflow::WorkflowProgram {
+                lua_source: prompt_explore::model::workflow::DEFAULT_WORKFLOW_LUA.into(),
+                params: serde_json::json!({
+                    "prompt": template,
+                    "model": "zai_coding::glm-5.2",
+                }),
+                ..Default::default()
             },
             grades: BTreeMap::new(),
             scenario,
             scenario_id: "scn-demo".into(),
             scenario_revision: 1,
             scenario_definition_hash: "demo".into(),
-            put_model: "zai_coding::glm-5.2".into(),
             sim_model: "zai_coding::glm-5.2".into(),
-            put_thinking_level: None,
             sim_thinking_level: None,
             conversation_controls: ResolvedConversationControls::default(),
             workspace_files: 0,
-            attributes: system_attributes(
-                "zai_coding::glm-5.2",
-                "zai_coding::glm-5.2",
-                None,
-                None,
-                &PromptUnderTest {
-                    id: put_id.into(),
-                    template: template.into(),
-                    tools: vec![],
-                    design_goals: "Cancel orders only on explicit user request.".into(),
-                },
-                &attributes::workspace_hash(&Workspace::empty()),
-                BTreeMap::new(),
-            ),
+            attributes: {
+                let workflow = prompt_explore::model::workflow::WorkflowProgram {
+                    lua_source: prompt_explore::model::workflow::DEFAULT_WORKFLOW_LUA.into(),
+                    params: serde_json::json!({
+                        "prompt": template,
+                        "model": "zai_coding::glm-5.2",
+                    }),
+                    ..Default::default()
+                };
+                let mut attributes = system_attributes(
+                    "zai_coding::glm-5.2",
+                    None,
+                    &attributes::workspace_hash(&Workspace::empty()),
+                    BTreeMap::new(),
+                );
+                attributes.insert(
+                    "application_hash".into(),
+                    attributes::application_hash(&workflow),
+                );
+                attributes.insert("scenario_id".into(), "scn-demo".into());
+                attributes.insert("scenario_revision".into(), "1".into());
+                attributes.insert("scenario_hash".into(), "demo".into());
+                let _ = put_id;
+                attributes
+            },
         },
     )
 }
@@ -1358,7 +1235,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-/// Models available to put in a request's `put_model` or `sim_model` field, by provider.
+/// Models available to name in `sim_model` (scenario) or in a workflow's own params, by provider.
 ///
 /// Returns the server defaults plus a map keyed by provider namespace
 /// (`zai_coding`, `open_router`, `bedrock_sigv4`, `vertex`). Each
@@ -1377,7 +1254,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 /// fix provider funding/permissions, and do not silently switch the simulator.
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct ModelsResponse {
-    /// Model used when a request omits `put_model` (a bare name; the server
+    /// Model the server uses when nothing else names one (a bare name; the server
     /// resolves it via `server_default_provider`).
     server_default_model: String,
     /// Provider applied to bare model names when no namespace is given
@@ -1589,7 +1466,7 @@ async fn index() -> impl axum::response::IntoResponse {
 /// tools, simulator settings and optional workspace on POST /api/scenarios first;
 /// this endpoint does NOT accept inline scenarios, PUT tools or multipart uploads.
 ///
-/// Single-agent shorthand: supply put and optionally put_model/controls. This
+/// Single-agent shorthand for library callers: build the default program. This
 /// executes the default Lua program. Custom orchestration: supply workflow with
 /// lua_source and opaque params INSTEAD of those shorthand fields. Lua source
 /// returns function(params, ctx). Call ctx.run_agent for each prompt/model stage,
@@ -1685,10 +1562,12 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": format!(
-                        "body is not valid InvestigateRequest JSON: {error}. An investigation now \
-                         names its world: send {{\"scenario_id\": \"<id from POST /api/scenarios>\", \
-                         \"put\": {{\"id\", \"template\", \"design_goals\"}}, \"investigation\": \
-                         {{\"budget\": ...}}}}; the tool surface comes from the scenario"
+                        "body is not valid InvestigateRequest JSON: {error}. Send \
+                         {{\"scenario_id\":\"<id from POST /api/scenarios>\",\"investigation\": \
+                         {{\"budget\":...}},\"workflow\":{{\"params\":{{\"prompt\":...,\"model\":...}}}}}}. \
+                         There is no put/put_model shorthand: prompt, model and controls are \
+                         ordinary workflow.params values. Simulator settings and tools belong \
+                         to the scenario"
                     )
                 })),
             )
@@ -1698,9 +1577,6 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
 
     // Fail fast on migrations and on a thinking level the adapter would ignore.
     if let Some(err) = workflow_request_problem(&investigate_req)
-        .or_else(|| migrated_request_field(&investigate_req))
-        .or_else(|| thinking_level_problem(&investigate_req, &state.default_provider))
-        .or_else(|| conversation_controls_problem(&investigate_req.conversation_controls))
         .or_else(|| validate_post_attributes(&investigate_req.attributes).err())
     {
         return (
@@ -1747,15 +1623,9 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
         )
     };
 
-    // The prompt under test supplies its template and design goals; the tool
-    // surface is the scenario's.
-    let mut put = investigate_req.put.clone();
-    put.tools = runtime.tools.clone();
-
     let id = spawn_investigation(
         state.clone(),
         &investigate_req,
-        put,
         scenario_snapshot,
         scenario_revision,
         scenario_definition_hash,
@@ -1768,175 +1638,24 @@ async fn create_investigation(State(state): State<Arc<AppState>>, req: Request) 
 }
 
 fn workflow_request_problem(req: &InvestigateRequest) -> Option<String> {
-    if let Some(workflow) = &req.workflow {
-        if !req.put.id.is_empty()
-            || !req.put.template.is_empty()
-            || !req.put.design_goals.is_empty()
-            || !req.put.tools.is_empty()
-            || req.put_model.is_some()
-            || req.put_thinking_level.is_some()
-            || req.conversation_controls.put_temperature.is_some()
-            || req.conversation_controls.put_max_tokens.is_some()
-        {
-            return Some("supply workflow OR put/put_model/put_thinking_level/conversation_controls, not both; put all custom parameters in workflow.params and pass settings explicitly to ctx.run_agent".into());
-        }
-        if let Err(error) = workflow.validate() {
-            return Some(error);
-        }
-    } else if req.put.id.is_empty() {
-        return Some(
-            "supply workflow, or put with a nonempty id for the single-agent shorthand".into(),
-        );
-    }
-    None
-}
-
-/// Resolve the PUT's model (the only model this request owns; the simulator's
-/// is the scenario's).
-fn resolved_models(req: &InvestigateRequest) -> (String, String) {
-    (
-        req.put_model.clone().unwrap_or_else(|| MODEL.into()),
-        MODEL.into(),
-    )
-}
-
-/// Fail fast when the adapter would silently ignore a thinking level. Only the
-/// PUT's level is request-owned here; the scenario's simulator level is checked
-/// when the probe or run resolves it.
-fn thinking_level_problem(req: &InvestigateRequest, default_provider: &str) -> Option<String> {
-    let (put_model, _) = resolved_models(req);
-    let mut problems = Vec::new();
-    if let Some(level) = req.put_thinking_level {
-        let qualified = prompt_explore::llm::qualify_model(&put_model, default_provider);
-        if let Err(e) = prompt_explore::llm::thinking_level_supported(&qualified) {
-            problems.push(format!(
-                "put_thinking_level {level:?} on '{put_model}': {e}"
-            ));
-        }
-    }
-    (!problems.is_empty()).then(|| problems.join("; "))
-}
-
-fn conversation_controls_problem(controls: &ConversationControls) -> Option<String> {
-    let mut problems = Vec::new();
-    for (name, supplied, guidance) in [
-        (
-            "sim_temperature",
-            controls.sim_temperature.is_some(),
-            "simulation.temperature",
-        ),
-        (
-            "sim_max_tokens",
-            controls.sim_max_tokens.is_some(),
-            "simulation.max_tokens",
-        ),
-        (
-            "sim_max_repair_attempts",
-            controls.sim_max_repair_attempts.is_some(),
-            "simulation.max_repair_attempts",
-        ),
-        (
-            "max_workspace_turns",
-            controls.max_workspace_turns.is_some(),
-            "simulation.max_workspace_turns",
-        ),
-        (
-            "workspace_max_read_lines",
-            controls.workspace_max_read_lines.is_some(),
-            "simulation.workspace.max_read_lines",
-        ),
-        (
-            "workspace_max_grep_matches",
-            controls.workspace_max_grep_matches.is_some(),
-            "simulation.workspace.max_grep_matches",
-        ),
-        (
-            "workspace_max_line_len",
-            controls.workspace_max_line_len.is_some(),
-            "simulation.workspace.max_line_len",
-        ),
-        (
-            "workspace_max_output_bytes",
-            controls.workspace_max_output_bytes.is_some(),
-            "simulation.workspace.max_output_bytes",
-        ),
-    ] {
-        if supplied {
-            problems.push(format!(
-                "conversation_controls.{name} is simulator-owned and no longer accepted here: \
-                 the environment is part of the scenario, so set it at \
-                 {guidance} on the scenario definition (PATCH /api/scenarios/{{id}}, or \
-                 POST /api/scenarios/{{id}}/fork to change a pinned one)"
-            ));
-        }
-    }
-    if controls
-        .put_temperature
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-    {
-        problems
-            .push("conversation_controls.put_temperature must be finite and non-negative".into());
-    }
-    if controls.put_max_tokens == Some(0) {
-        problems.push("conversation_controls.put_max_tokens must be greater than zero".into());
-    }
-    (!problems.is_empty()).then(|| problems.join("; "))
+    req.workflow.validate().err()
 }
 
 /// Migration guidance for request fields that moved to the scenario.
-fn migrated_request_field(req: &InvestigateRequest) -> Option<String> {
-    let mut problems = Vec::new();
-    if req.scenario.is_some() || req.scenarios.is_some() {
-        problems.push(
-            "`scenario`/`scenarios` are no longer accepted inline: register the world once \
-             with POST /api/scenarios (which is also where the initial workspace, the tool \
-             surface and any Lua implementations belong), then submit investigations with \
-             `scenario_id`"
-                .to_string(),
-        );
-    }
-    if req.sim_model.is_some() {
-        problems.push(
-            "`sim_model` moved to the scenario: set simulation.sim_model on the scenario \
-             (PATCH /api/scenarios/{id}, or fork a pinned one). The simulator is the test \
-             environment, so its model is part of the test case"
-                .to_string(),
-        );
-    }
-    if req.sim_thinking_level.is_some() {
-        problems.push(
-            "`sim_thinking_level` moved to the scenario: set \
-             simulation.sim_thinking_level on the scenario"
-                .to_string(),
-        );
-    }
-    if !req.put.tools.is_empty() {
-        problems.push(
-            "`put.tools` is no longer authored per investigation: the tool surface belongs to \
-             the scenario (definition.tools). Remove `tools` from the PUT here; the referenced \
-             scenario's contracts are used"
-                .to_string(),
-        );
-    }
-    (!problems.is_empty()).then(|| problems.join("; "))
-}
 
 /// Create a job for `req`, spawn its run, and return the job id.
 /// `workspace_seed` seeds the simulator's in-memory workspace for every
 /// trace (cloned per trace; the seed is shared by Arc).
-/// Resolve the PUT's own controls (investigation-owned) and the simulator's
-/// (scenario-owned, already resolved into the runtime).
+/// Resolve the simulator's controls (scenario-owned, already in the runtime)
+/// and the defaults any agent conversation inherits when it specifies none.
 fn resolved_conversation_controls(
-    controls: &ConversationControls,
     runtime: &prompt_explore::simulate::ScenarioRuntime,
     workspace: &WorkspaceToolLimits,
 ) -> (RunnerOptions, ResolvedConversationControls) {
-    let mut runner = RunnerOptions::default();
-    runner.put_temperature = controls.put_temperature.or(runner.put_temperature);
-    runner.put_max_tokens = controls.put_max_tokens.or(runner.put_max_tokens);
+    let runner = RunnerOptions::default();
     let resolved = ResolvedConversationControls {
-        put_temperature: runner.put_temperature,
-        put_max_tokens: runner.put_max_tokens,
+        agent_temperature_default: runner.put_temperature,
+        agent_max_tokens_default: runner.put_max_tokens,
         simulator: ResolvedSimulatorSettings {
             sim_temperature: runtime.simulator.temperature,
             sim_max_tokens: runtime.simulator.max_tokens,
@@ -1993,7 +1712,6 @@ fn epoch_millis() -> u64 {
 fn spawn_investigation(
     state: Arc<AppState>,
     req: &InvestigateRequest,
-    put: PromptUnderTest,
     scenario: Scenario,
     scenario_revision: u64,
     scenario_definition_hash: String,
@@ -2003,17 +1721,9 @@ fn spawn_investigation(
     let id = Uuid::new_v4().to_string();
     let progress = Arc::new(std::sync::Mutex::new(RunProgress::default()));
     let started_at = epoch_millis();
-    // Resolve the model names now (defaults applied) so they can be
-    // surfaced on the job immediately — visible while the run is still
-    // in flight, not only after it finishes.
-    let (put_model_requested, _) = resolved_models(req);
-    let put_model = if req.workflow.is_some() {
-        "workflow".to_string()
-    } else {
-        prompt_explore::llm::qualify_model(&put_model_requested, &state.default_provider)
-    };
-    // The simulator's model is the SCENARIO's, resolved independently of the
-    // PUT's: the environment is part of the test case.
+    // The simulator's model is the SCENARIO's: the environment is part of the
+    // test case. Agent-side models belong to the workflow's own ctx.run_agent
+    // calls, so a job records no single agent model.
     let sim_model = prompt_explore::llm::qualify_model(
         runtime
             .settings
@@ -2023,82 +1733,65 @@ fn spawn_investigation(
             .as_str(),
         &state.default_provider,
     );
-    let put_thinking_level = req.put_thinking_level;
     let sim_thinking_level = runtime.settings.sim_thinking_level;
     let workspace_limits = scenario_workspace_limits(&runtime.settings);
     let (runner_options, conversation_controls) =
-        resolved_conversation_controls(&req.conversation_controls, &runtime, &workspace_limits);
+        resolved_conversation_controls(&runtime, &workspace_limits);
     let workspace_files = runtime.workspace_seed.file_count();
     let workspace_hash = attributes::workspace_hash(&runtime.workspace_seed);
-    let attributes = attributes::with_execution_attributes(
+    let mut attributes = attributes::with_execution_attributes(
         system_attributes(
-            &put_model,
             &sim_model,
-            put_thinking_level,
             sim_thinking_level,
-            &put,
             &workspace_hash,
             req.attributes.clone(),
         ),
         runtime.lua_enabled(),
         &req.investigation.budget,
     );
-    let mut attributes = attributes;
-    if let Some(workflow) = &req.workflow {
-        // A multi-model program has no single PUT model or thinking level.
-        // Default frontier grouping still distinguishes programs via prompt_hash;
-        // workflow_hash explicitly identifies source, parameters and limits.
-        attributes.remove("put_model");
-        attributes.remove("put_thinking");
-        let hash = attributes::workflow_hash(workflow);
-        attributes.insert("prompt_hash".into(), hash.clone());
-        attributes.insert("workflow_hash".into(), hash);
-    }
+    // The application's identity is the submitted program: source, opaque
+    // parameters and limits. It is always present, so the default frontier
+    // grouping never keys on an absent fact.
+    attributes.insert(
+        "application_hash".into(),
+        attributes::application_hash(&req.workflow),
+    );
     attributes.insert("scenario_id".into(), req.scenario_id.clone());
     attributes.insert("scenario_revision".into(), scenario_revision.to_string());
     attributes.insert("scenario_hash".into(), scenario_definition_hash.clone());
 
-    // One tracker per role so usage is attributable to the PUT model vs. the
-    // simulator model separately. The trackers live on the job as well as in the
-    // spawned task, so a read can report spend at any point in the run.
-    let client: Option<Arc<dyn prompt_explore::llm::LlmClient>> = state
+    // One tracker per role so usage is attributable to the agent (workflow)
+    // side vs. the simulator separately. A server with no provider client still
+    // accepts the submission: pure-Lua programs run offline, and the first
+    // agent call reports the provider failure on the job.
+    let inner: Arc<dyn prompt_explore::llm::LlmClient> = state
         .client
         .clone()
         .map(|client| client as Arc<dyn prompt_explore::llm::LlmClient>)
-        .or_else(|| {
-            req.workflow.as_ref().map(|_| {
-                Arc::new(prompt_explore::llm::UnavailableClient)
-                    as Arc<dyn prompt_explore::llm::LlmClient>
-            })
-        });
-    let trackers = client.map(|inner| {
-        (
-            Arc::new(UsageTracker::new(inner.clone())),
-            Arc::new(UsageTracker::new(inner)),
-        )
-    });
+        .unwrap_or_else(|| Arc::new(prompt_explore::llm::UnavailableClient));
+    let trackers = (
+        Arc::new(UsageTracker::new(inner.clone())),
+        Arc::new(UsageTracker::new(inner)),
+    );
     state.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
             status: JobStatus::Running,
             result: None,
             progress: progress.clone(),
-            put_tracker: trackers.as_ref().map(|(put, _)| put.clone()),
-            sim_tracker: trackers.as_ref().map(|(_, sim)| sim.clone()),
+            put_tracker: Some(trackers.0.clone()),
+            sim_tracker: Some(trackers.1.clone()),
             started_at,
             finished_at: None,
             budget: req.investigation.budget.clone(),
             assessment: None,
             reason: req.investigation.reason.clone(),
-            put: put.clone(),
             workflow: req.workflow.clone(),
             scenario: scenario.clone(),
             scenario_id: req.scenario_id.clone(),
             scenario_revision,
             scenario_definition_hash: scenario_definition_hash.clone(),
-            put_model: put_model.clone(),
             sim_model: sim_model.clone(),
-            put_thinking_level,
             sim_thinking_level,
             conversation_controls,
             workspace_files,
@@ -2124,39 +1817,15 @@ fn spawn_investigation(
     let resolved_inputs = req.resolved_inputs.clone();
     let investigation = req.investigation.clone();
     let workflow = req.workflow.clone();
+    let (put_tracker, sim_tracker) = trackers;
     tokio::spawn(async move {
-        // A server without provider credentials still accepts the submission
-        // (there is no readiness probe and no invented verdict), then reports
-        // the failure on the job instead of leaving it running forever.
-        let Some((put_tracker, sim_tracker)) = trackers else {
-            let mut jobs = state2.jobs.lock().unwrap();
-            if let Some(job) = jobs.get_mut(&id2) {
-                job.finished_at = Some(epoch_millis());
-                job.status = JobStatus::Failed;
-                job.result = Some(InvestigateResponse {
-                    trace: None,
-                    failure: Some(RunFailure {
-                        stage: "provider".into(),
-                        error: "no LLM client is configured on this server (no provider API \
-                                key): the run never started. Configure a provider, or develop the \
-                                simulation with POST /api/scenarios/{id}/simulations first"
-                            .into(),
-                    }),
-                    usage: UsageByRole {
-                        put: UsageTotals::default(),
-                        sim: UsageTotals::default(),
-                    },
-                });
-            }
-            drop(jobs);
-            state2.scenarios.lock().unwrap().finish_investigation(&id2);
-            return;
-        };
         let investigator = Investigator {
             runner_put: LlmRole {
                 client: put_tracker.clone(),
-                model: put_model.clone(),
-                thinking_level: put_thinking_level,
+                // Agent models come from each ctx.run_agent call, so the
+                // runner role carries no single model.
+                model: String::new(),
+                thinking_level: None,
             },
             runner_sim: LlmRole {
                 client: sim_tracker.clone(),
@@ -2166,28 +1835,15 @@ fn spawn_investigation(
             runner_options,
         };
 
-        let outcome = if let Some(workflow) = workflow.as_ref() {
-            investigator
-                .investigate_workflow(
-                    &investigation,
-                    &put,
-                    &runtime,
-                    resolved_inputs.as_ref(),
-                    Some(progress.clone()),
-                    workflow,
-                )
-                .await
-        } else {
-            investigator
-                .investigate(
-                    &investigation,
-                    &put,
-                    &runtime,
-                    resolved_inputs.as_ref(),
-                    Some(progress.clone()),
-                )
-                .await
-        };
+        let outcome = investigator
+            .investigate_workflow(
+                &investigation,
+                &runtime,
+                resolved_inputs.as_ref(),
+                Some(progress.clone()),
+                &workflow,
+            )
+            .await;
 
         let finished_at = epoch_millis();
         let trace = outcome.trace.as_ref().map(|trace| TraceView {
@@ -2374,9 +2030,7 @@ async fn get_investigation(
         budget: job.budget.clone(),
         assessment: job.assessment.clone(),
         reason: job.reason.clone(),
-        put_model: job.put_model.clone(),
         sim_model: job.sim_model.clone(),
-        put_thinking_level: job.put_thinking_level,
         sim_thinking_level: job.sim_thinking_level,
         conversation_controls: job.conversation_controls.clone(),
         workspace_files: job.workspace_files,
@@ -2385,7 +2039,6 @@ async fn get_investigation(
         scenario_definition_hash: job.scenario_definition_hash.clone(),
         grades: job.grades.clone(),
         attributes: job.attributes.clone(),
-        put: job.put.clone(),
         workflow: job.workflow.clone(),
         scenario: job.scenario.clone(),
         progress: progress_snapshot,
@@ -2440,7 +2093,7 @@ async fn get_investigation(
     security(("api_token" = [])),
     responses(
         (status = 200, description = "Updated full grades, attributes and assessment", body = InvestigationPatchView),
-        (status = 400, description = "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`put_model`, `sim_model`, `put_thinking`, `sim_thinking`, `prompt_hash`, `workspace_hash`, `simulation_backend`, `step_budget`, `token_budget`, `workflow_hash`) cannot change."),
+        (status = 400, description = "Invalid grades or attributes. Attribute keys use `^[a-z][a-z0-9_]{0,63}$`, values are strings ≤1024 bytes, and immutable provenance keys (`application_hash`, `sim_model`, `sim_thinking`, `workspace_hash`, `scenario_id`, `scenario_revision`, `scenario_hash`, `simulation_backend`, `step_budget`, `token_budget`) cannot change."),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "Unknown job id")
     )
@@ -2629,13 +2282,15 @@ fn snapshot_of(id: &str, job: &Job) -> InvestigationSnapshot {
             JobStatus::Done => SnapshotStatus::Done,
             JobStatus::Failed => SnapshotStatus::Failed,
         },
-        put_id: Some(job.put.id.clone()).filter(|p| !p.is_empty()),
+        // There is no PUT id any more; the caller's editable `label` attribute
+        // is the friendly display name, and its absence falls back to the uuid
+        // prefix.
+        put_id: job.attributes.get("label").cloned(),
         grades: job.grades.clone(),
         usage: result.map(|r| r.usage),
         timing: result
             .and_then(|r| r.trace.as_ref())
             .map(|t| t.execution.timing.clone()),
-        put_model: Some(job.put_model.clone()),
         sim_model: Some(job.sim_model.clone()),
         // One execution contributes one whole-investigation step count,
         // including direct orchestration tool calls outside agent turns.
@@ -2685,7 +2340,7 @@ struct FrontierQuery {
     post,
     path = "/api/frontier",
     params(("format" = Option<String>, Query, description = "`json` (default) or `svg`")),
-    request_body(content = GroupedFrontierRequest, description = "Grouping attribute keys (default [`put_model`,`put_thinking`,`prompt_hash`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display attribute; system provenance attributes describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes."),
+    request_body(content = GroupedFrontierRequest, description = "Grouping attribute keys (default [`application_hash`,`scenario_id`,`scenario_revision`]) and Pareto axes. The server considers every current job; do NOT send the legacy `investigations` selection field (unknown fields are rejected). `label` is an editable UI display attribute; system provenance attributes describe resolved provider-qualified models/settings and canonical prompt/workspace SHA-256 hashes."),
     security(("api_token" = [])),
     responses(
         (status = 200, description = "Grouped frontier and exclusion evidence, including running/failed/awaiting-grades/unavailable members. Pending groups have null coordinates; poll investigations and resubmit after they finish or receive grades.", body = GroupedFrontierResponse),
@@ -2819,15 +2474,6 @@ mod tests {
         })
     }
 
-    fn put(id: &str) -> PromptUnderTest {
-        PromptUnderTest {
-            id: id.into(),
-            template: "You cancel orders.".into(),
-            tools: vec![],
-            design_goals: "Never cancel without an explicit user request.".into(),
-        }
-    }
-
     /// Seed a DONE job with one trace of `steps` completions. A fixture job
     /// never fabricates multiple conversations.
     fn seed_done_job(state: &Arc<AppState>, id: &str, put_id: &str, out: u64, steps: usize) {
@@ -2939,7 +2585,7 @@ mod tests {
         serde_json::json!({
             "scenario_id": register_scenario(state),
             "investigation": {"budget": {"max_steps_per_trace": 1}},
-            "put": {"id": "x", "template": "t", "design_goals": "g"}
+            "workflow": {"params": {"prompt": "t", "model": "zai_coding::glm-5.2"}}
         })
     }
 
@@ -3424,7 +3070,10 @@ mod tests {
             "empty string is a stored value, not deletion"
         );
         assert_eq!(
-            view["attributes"]["prompt_hash"].as_str().unwrap().len(),
+            view["attributes"]["application_hash"]
+                .as_str()
+                .unwrap()
+                .len(),
             64
         );
         assert_eq!(
@@ -3437,7 +3086,7 @@ mod tests {
         let (code, _) = patch_job(
             &app,
             "job-1",
-            r#"{"grades":{"clarity":0.9},"attributes":{"put_model":"forged"}}"#,
+            r#"{"grades":{"clarity":0.9},"attributes":{"application_hash":"forged"}}"#,
         )
         .await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
@@ -3477,12 +3126,8 @@ mod tests {
     async fn post_rejects_immutable_attributes_before_launch() {
         let state = test_state();
         let app = build_app(state.clone());
-        let body = serde_json::json!({
-            "investigation": {"budget": {"max_steps_per_trace": 2}},
-            "put": {"id": "x", "template": "t", "design_goals": "g", "tools": []},
-            "scenario": {"world": "Fixture world."},
-            "attributes": {"put_model": "forged"}
-        });
+        let mut body = investigation_body(&state);
+        body["attributes"] = serde_json::json!({"application_hash": "forged"});
         let response = app
             .clone()
             .oneshot(
@@ -3518,31 +3163,32 @@ mod tests {
     #[test]
     fn provenance_attributes_use_resolved_settings_and_stable_empty_workspace_hash() {
         let empty = attributes::workspace_hash(&Workspace::empty());
-        let mut renamed = put("cosmetic-id-only");
         let original = system_attributes(
             "zai_coding::glm-5.2",
-            "zai_coding::glm-5.2",
-            None,
             Some(ThinkingLevel::None),
-            &renamed,
             &empty,
             BTreeMap::new(),
         );
-        renamed.id = "renamed".into();
         let again = system_attributes(
             "zai_coding::glm-5.2",
-            "zai_coding::glm-5.2",
-            None,
             Some(ThinkingLevel::None),
-            &renamed,
             &attributes::workspace_hash(&Workspace::empty()),
             BTreeMap::new(),
         );
-        assert_eq!(original["put_model"], "zai_coding::glm-5.2");
-        assert_eq!(original["put_thinking"], "provider_default");
+        assert_eq!(original["sim_model"], "zai_coding::glm-5.2");
         assert_eq!(original["sim_thinking"], "none");
-        assert_eq!(original["prompt_hash"], again["prompt_hash"]);
         assert_eq!(original["workspace_hash"], again["workspace_hash"]);
+        assert!(!original.contains_key("put_model"));
+        assert!(!original.contains_key("prompt_hash"));
+        // The application identity is the submitted program: source + params +
+        // limits, never a request-level model field.
+        let workflow = prompt_explore::model::workflow::WorkflowProgram::default();
+        assert_eq!(
+            attributes::application_hash(&workflow),
+            attributes::application_hash(
+                &prompt_explore::model::workflow::WorkflowProgram::default()
+            )
+        );
     }
 
     #[test]
@@ -3597,23 +3243,6 @@ mod tests {
         let error = unbounded.validate().unwrap_err();
         assert!(error.contains("max_duration_ms"), "{error}");
         assert!(error.contains("must not exceed"), "{error}");
-
-        // The investigation's controls no longer accept simulator knobs; the
-        // error says where they went instead of silently overriding.
-        let migrated: ConversationControls = serde_json::from_value(
-            serde_json::json!({"sim_max_repair_attempts": 3, "max_workspace_turns": 5}),
-        )
-        .unwrap();
-        let problem = conversation_controls_problem(&migrated).unwrap();
-        assert!(problem.contains("sim_max_repair_attempts"), "{problem}");
-        assert!(
-            problem.contains("simulation.max_repair_attempts"),
-            "{problem}"
-        );
-        assert!(
-            problem.contains("POST /api/scenarios/{id}/fork"),
-            "{problem}"
-        );
     }
 
     #[test]
@@ -3624,9 +3253,7 @@ mod tests {
             Workspace::empty(),
         );
         assert_eq!(runtime.simulator.max_repair_attempts, 20);
-        let controls = ConversationControls::default();
         let (_, resolved) = resolved_conversation_controls(
-            &controls,
             &runtime,
             &prompt_explore::simulate::WorkspaceToolLimits::default(),
         );
@@ -3634,39 +3261,6 @@ mod tests {
             serde_json::to_value(resolved).unwrap()["simulator"]["sim_max_repair_attempts"],
             20
         );
-    }
-
-    #[test]
-    fn put_controls_override_runner_defaults_and_invalid_values_are_refused() {
-        let definition = definition_with_tools(vec![scenario_tool("lookup", None)]);
-        let runtime = prompt_explore::simulate::ScenarioRuntime::from_definition(
-            &definition,
-            Workspace::empty(),
-        );
-        let controls = ConversationControls {
-            put_temperature: Some(0.2),
-            put_max_tokens: Some(111),
-            ..ConversationControls::default()
-        };
-        let (runner, resolved) = resolved_conversation_controls(
-            &controls,
-            &runtime,
-            &prompt_explore::simulate::WorkspaceToolLimits::default(),
-        );
-        assert_eq!(runner.put_temperature, Some(0.2));
-        assert_eq!(runner.put_max_tokens, Some(111));
-        assert_eq!(resolved.put_temperature, Some(0.2));
-        assert_eq!(resolved.put_max_tokens, Some(111));
-        assert!(conversation_controls_problem(&controls).is_none());
-
-        let invalid = ConversationControls {
-            put_max_tokens: Some(0),
-            put_temperature: Some(-1.0),
-            ..ConversationControls::default()
-        };
-        let problem = conversation_controls_problem(&invalid).unwrap();
-        assert!(problem.contains("put_max_tokens"), "{problem}");
-        assert!(problem.contains("put_temperature"), "{problem}");
     }
 
     fn scenario_tool(
@@ -3696,148 +3290,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn thinking_level_problem_checks_each_role_independently() {
-        let req = |model: &str,
-                   _sim_model: Option<&str>,
-                   put_level: Option<ThinkingLevel>,
-                   _sim_level: Option<ThinkingLevel>| {
-            InvestigateRequest {
-                investigation: Investigation {
-                    reason: None,
-                    budget: Budget {
-                        max_steps_per_trace: 2,
-                        max_tokens: None,
-                    },
-                },
-                put: put("x"),
-                workflow: None,
-                scenario_id: "scn-fixture".into(),
-                scenario_revision: None,
-                resolved_inputs: None,
-                put_model: Some(model.into()),
-                put_thinking_level: put_level,
-                conversation_controls: ConversationControls::default(),
-                scenario: None,
-                scenarios: None,
-                sim_model: None,
-                sim_thinking_level: None,
-                attributes: BTreeMap::new(),
-            }
-        };
-        let (put_model, sim_model) =
-            resolved_models(&req("open_router::custom-put", None, None, None));
-        assert_eq!(put_model, "open_router::custom-put");
-        assert_eq!(sim_model, MODEL, "put_model must not select the simulator");
-
-        // No levels set: never a problem, whatever the models.
-        assert!(
-            thinking_level_problem(
-                &req(
-                    "bedrock_sigv4::global.openai.gpt-5.6-luna",
-                    None,
-                    None,
-                    None
-                ),
-                "zai"
-            )
-            .is_none()
-        );
-        // OpenRouter PUT + zai sim: both mappable.
-        assert!(
-            thinking_level_problem(
-                &req(
-                    "open_router::openai/gpt-5.6-luna",
-                    Some("zai_coding::glm-5.3"),
-                    Some(ThinkingLevel::High),
-                    Some(ThinkingLevel::None)
-                ),
-                "zai"
-            )
-            .is_none()
-        );
-        // Bedrock OpenAI settings are mapped independently for both roles.
-        assert!(
-            thinking_level_problem(
-                &req(
-                    "bedrock_sigv4::global.openai.gpt-6-astra",
-                    Some("bedrock_sigv4::us.openai.gpt-5.6-luna"),
-                    Some(ThinkingLevel::High),
-                    Some(ThinkingLevel::None),
-                ),
-                "zai",
-            )
-            .is_none()
-        );
-        // Keyword validation belongs to the provider, not this mapping check.
-        assert!(
-            thinking_level_problem(
-                &req(
-                    "openai.gpt-6-astra",
-                    None,
-                    Some(ThinkingLevel::Minimal),
-                    None
-                ),
-                "bedrock",
-            )
-            .is_none()
-        );
-        // Sim role on a different provider is checked against ITS model:
-        // PUT fine on open_router, sim rejected on bedrock meta.*.
-        let err = thinking_level_problem(
-            &req(
-                "bedrock_sigv4::global.meta.llama3-1-70b",
-                None,
-                Some(ThinkingLevel::Low),
-                None,
-            ),
-            "zai",
-        )
-        .expect("a thinking level on a model without one must be rejected");
-        assert!(err.contains("put_thinking_level"), "{err}");
-        // Bedrock anthropic profile ids are supported (genai maps them
-        // to a thinking budget).
-        assert!(
-            thinking_level_problem(
-                &req(
-                    "bedrock_sigv4::global.anthropic.claude-opus-5",
-                    Some("bedrock_sigv4::eu.anthropic.claude-sonnet-5"),
-                    Some(ThinkingLevel::Medium),
-                    Some(ThinkingLevel::None)
-                ),
-                "zai"
-            )
-            .is_none()
-        );
-        // A bare name qualifies through the server's default provider.
-        assert!(
-            thinking_level_problem(
-                &req("openai.gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
-                "bedrock",
-            )
-            .is_none()
-        );
-        let err = thinking_level_problem(
-            &req("gpt-5.6-luna", None, Some(ThinkingLevel::High), None),
-            "bedrock",
-        )
-        .expect("bare name under bedrock default must be checked as bedrock");
-        assert!(err.contains("bedrock"), "{err}");
-    }
-
-    #[test]
-    fn unknown_thinking_level_word_is_a_parse_error() {
-        // The vocabulary fails fast at deserialization, before any
-        // provider logic runs.
-        let bad = r#"{"scenario_id": "scn-x", "investigation": {"budget": {"max_steps_per_trace": 2}}, "put": {"id": "x", "template": "t", "design_goals": "g"}, "put_thinking_level": "ultra"}"#;
-        assert!(serde_json::from_str::<InvestigateRequest>(bad).is_err());
-        let good = bad.replace("\"ultra\"", "\"xhigh\"");
-        let req: InvestigateRequest = serde_json::from_str(&good).unwrap();
-        assert_eq!(req.put_thinking_level, Some(ThinkingLevel::Xhigh));
-        // The simulator's thinking level is the scenario's, not the request's.
-        assert!(req.sim_thinking_level.is_none());
-    }
-
     #[tokio::test]
     async fn post_requires_one_scenario_and_rejects_legacy_scenarios_as_unknown() {
         let state = test_state();
@@ -3865,78 +3317,6 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("POST /api/scenarios"), "{text}");
         assert!(text.contains("scenario_id"), "{text}");
-    }
-
-    #[tokio::test]
-    async fn create_investigation_rejects_unsupported_thinking_level_with_400() {
-        let state = test_state();
-        let app = build_app(state.clone());
-        let mut body = investigation_body(&state);
-        body["put_model"] = serde_json::json!("bedrock_sigv4::global.meta.llama3-1-70b");
-        body["put_thinking_level"] = serde_json::json!("high");
-        let res = app
-            .clone()
-            .oneshot(
-                HttpRequest::post("/api/investigations")
-                    .header("content-type", "application/json")
-                    .body(serde_json::to_string(&body).unwrap())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let err = v["error"].as_str().unwrap();
-        assert!(err.contains("put_thinking_level"), "{err}");
-        assert!(err.contains("not supported"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn create_investigation_accepts_bedrock_openai_thinking_levels() {
-        let state = test_state();
-        let app = build_app(state.clone());
-        for model in [
-            "bedrock_sigv4::openai.gpt-oss-20b-1:0",
-            "bedrock_sigv4::us.openai.gpt-5.6-luna",
-            "bedrock_sigv4::global.openai.gpt-6-astra",
-        ] {
-            let mut body = investigation_body(&state);
-            body["put_model"] = serde_json::json!(model);
-            body["put_thinking_level"] = serde_json::json!("high");
-            let res = app
-                .clone()
-                .oneshot(
-                    HttpRequest::post("/api/investigations")
-                        .header("content-type", "application/json")
-                        .body(body.to_string())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::ACCEPTED, "{model}");
-            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
-                .await
-                .unwrap();
-            let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(created["attributes"]["put_model"], model);
-            // The simulator's settings come from the scenario, not the request.
-            assert_eq!(created["attributes"]["sim_thinking"], "provider_default");
-            assert_eq!(created["attributes"]["scenario_revision"], "1");
-            assert_eq!(
-                created["attributes"]["prompt_hash"].as_str().unwrap().len(),
-                64
-            );
-            assert_eq!(
-                created["attributes"]["workspace_hash"]
-                    .as_str()
-                    .unwrap()
-                    .len(),
-                64
-            );
-        }
     }
 
     #[tokio::test]
@@ -4386,29 +3766,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn investigations_require_a_registered_scenario_and_reject_put_tools() {
+    async fn investigations_require_a_registered_scenario_and_reject_legacy_put_form() {
         let state = test_state();
         let app = build_app(state.clone());
         let body = serde_json::json!({
             "scenario_id": "scn-does-not-exist",
             "investigation": {"budget": {"max_steps_per_trace": 1}},
-            "put": {"id": "x", "template": "t", "design_goals": "g"}
+            "workflow": {"params": {"prompt": "t", "model": "zai_coding::glm-5.2"}}
         });
         let (code, error) = json_request(&app, "POST", "/api/investigations", body).await;
         assert_eq!(code, StatusCode::NOT_FOUND, "{error}");
 
-        // The tool surface belongs to the scenario.
-        let mut with_tools = investigation_body(&state);
-        with_tools["put"] = serde_json::json!({
-            "id": "x",
-            "template": "t",
-            "design_goals": "g",
-            "tools": [{"name": "nope", "description": "d", "parameters": {}, "side_effect": "read"}]
-        });
-        let (code, error) = json_request(&app, "POST", "/api/investigations", with_tools).await;
+        // The legacy single-prompt form is gone; the error says where the prompt
+        // and model now live.
+        let mut legacy = investigation_body(&state);
+        legacy["put"] = serde_json::json!({"id": "x", "template": "t", "design_goals": "g"});
+        legacy["put_model"] = serde_json::json!("zai_coding::glm-5.2");
+        let (code, error) = json_request(&app, "POST", "/api/investigations", legacy).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
         assert!(
-            error["error"].as_str().unwrap().contains("scenario"),
+            error["error"].as_str().unwrap().contains("workflow.params"),
             "{error}"
         );
     }
@@ -4432,10 +3809,7 @@ mod tests {
             "lua_source": "return function(params, ctx) return params end",
             "params": {"models": {"extract": {"thinking": "high"}, "review": "max"}}
         });
-        let (code, error) = json_request(&app, "POST", "/api/investigations", body.clone()).await;
-        assert_eq!(code, StatusCode::BAD_REQUEST, "{error}");
         assert!(state.jobs.lock().unwrap().is_empty());
-        body.as_object_mut().unwrap().remove("put");
         for workflow in [
             serde_json::json!({"lua_source": "not valid Lua"}),
             serde_json::json!({"lua_source": "return function(p,c) return 1 end", "limits": {"max_host_calls": 0}}),
@@ -4449,7 +3823,7 @@ mod tests {
         }
         let (code, created) = json_request(&app, "POST", "/api/investigations", body.clone()).await;
         assert_eq!(code, StatusCode::ACCEPTED, "{created}");
-        assert!(created["attributes"]["workflow_hash"].is_string());
+        assert!(created["attributes"]["application_hash"].is_string());
         assert!(created["attributes"].get("put_model").is_none());
         let id = created["id"].as_str().unwrap();
         let view = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -4472,10 +3846,27 @@ mod tests {
         );
         assert_eq!(evidence["usage"]["put"]["llm_calls"], 0);
         assert_eq!(evidence["scenario_id"], scenario_id);
-        let (code, _) = patch_job(&app, id, r#"{"attributes":{"workflow_hash":"forged"}}"#).await;
+        let (code, _) =
+            patch_job(&app, id, r#"{"attributes":{"application_hash":"forged"}}"#).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
-        let (code, _) = get_json(&app, "/openapi.json").await;
+        let (code, spec) = get_json(&app, "/openapi.json").await;
         assert_eq!(code, StatusCode::OK);
+        let request_properties = &spec["components"]["schemas"]["InvestigateRequest"]["properties"];
+        assert!(request_properties.get("workflow").is_some());
+        for removed in [
+            "put",
+            "put_model",
+            "put_thinking_level",
+            "conversation_controls",
+        ] {
+            assert!(
+                request_properties.get(removed).is_none(),
+                "{removed} must not reappear as a privileged request field"
+            );
+        }
+        let view_properties = &spec["components"]["schemas"]["JobView"]["properties"];
+        assert!(view_properties.get("put_model").is_none());
+        assert!(view_properties.get("put").is_none());
         let response = app
             .oneshot(
                 HttpRequest::get("/docs/workflow")
@@ -4605,6 +3996,8 @@ mod tests {
     async fn frontier_typed_problems_over_http() {
         let state = test_state();
         seed_done_job(&state, "v1", "cancel-bot", 1450, 2);
+        let application_hash =
+            state.jobs.lock().unwrap()["v1"].attributes["application_hash"].clone();
         state.jobs.lock().unwrap().insert(
             "still-running".into(),
             Job {
@@ -4621,8 +4014,7 @@ mod tests {
                 },
                 assessment: None,
                 reason: None,
-                put: put("cancel-bot"),
-                workflow: None,
+                workflow: prompt_explore::model::workflow::WorkflowProgram::default(),
                 grades: BTreeMap::new(),
                 scenario_id: "scn-fixture".into(),
                 scenario_revision: 1,
@@ -4633,27 +4025,26 @@ mod tests {
                     user_message: None,
                     simulator_notes: String::new(),
                 },
-                put_model: "zai_coding::glm-5.2".into(),
                 sim_model: "zai_coding::glm-5.2".into(),
-                put_thinking_level: None,
                 sim_thinking_level: None,
                 conversation_controls: ResolvedConversationControls::default(),
                 workspace_files: 0,
-                attributes: system_attributes(
-                    "zai_coding::glm-5.2",
-                    "zai_coding::glm-5.2",
-                    None,
-                    None,
-                    &put("cancel-bot"),
-                    &attributes::workspace_hash(&Workspace::empty()),
-                    BTreeMap::new(),
-                ),
+                attributes: {
+                    let mut values = system_attributes(
+                        "zai_coding::glm-5.2",
+                        None,
+                        &attributes::workspace_hash(&Workspace::empty()),
+                        BTreeMap::new(),
+                    );
+                    values.insert("application_hash".into(), application_hash);
+                    values
+                },
             },
         );
         let app = build_app(state);
 
         let body = r#"{
-            "group_by": ["put_model"],
+            "group_by": ["application_hash"],
             "axes": [
                 {"name": "put_cost_usd", "better": "lower"},
                 {"name": "tone_of_voice", "better": "higher"}
