@@ -98,9 +98,9 @@ impl Default for WorkflowLimits {
 /// do not stitch independent investigations together. Params has no privileged
 /// keys. The default program is merely a convention using prompt/model/controls.
 ///
-/// This is NOT scenario tool-handler Lua. Its ctx has run_agent, call_tool,
-/// input and resolved_inputs; NO ctx.workspace, world state, simulator notes,
-/// or tool implementation source. To read a file, invoke the scenario tool:
+/// This is NOT scenario tool-handler Lua. Its ctx has render, run_agent,
+/// call_tool, input and resolved_inputs; NO ctx.workspace, world state,
+/// simulator notes, or tool implementation source. To read a file, invoke the scenario tool:
 /// ctx.call_tool("read_file", {path="config.json"}), not ctx.workspace.read.
 /// Read GET /docs/workflow for executable examples and the full contract.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -109,6 +109,7 @@ pub struct WorkflowProgram {
     /// Lua chunk returning function(params, ctx). Omit to run the default
     /// program with ordinary params.prompt, params.model and optional
     /// params.controls. Custom programs can loop, branch and transform data.
+    /// ctx.render(text) validates and fills `{{input_domain}}` values.
     /// ctx.run_agent{prompt=...,model=...,input=...,tools={...},controls={...}}
     /// returns ONE result table: output is nil without a final completion;
     /// failure describes an ordinary agent error; stop_reason, invocation_id,

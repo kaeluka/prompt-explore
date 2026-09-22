@@ -33,7 +33,7 @@ pub const MAX_PROBE_CALLS: usize = 200;
 pub struct ProbeRequest {
     /// The calls to render, in order. Each runs in the scenario's language:
     /// `{"name": "<tool>", "args": {...}}`. Arguments are validated against the
-    /// declared tool schema exactly as a PUT's call would be.
+    /// declared tool schema exactly as a workflow agent's call would be.
     pub tool_calls: Vec<ToolCall>,
     /// Pin the scenario's declared inputs for this probe instead of sampling
     /// them. Supply every declared key; omit to sample.

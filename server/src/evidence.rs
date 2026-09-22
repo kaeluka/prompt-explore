@@ -8,7 +8,7 @@ use super::*;
 /// this /evidence endpoint. Invocation turn_start/turn_end index the top-level
 /// turns array; invocations do not contain nested turns arrays.
 /// Read every `turns[].tool_exchanges[].response`: this is what
-/// the PUT actually observed. `workspace_ops` only shows what the simulator
+/// the workflow's agent actually observed. `workspace_ops` only shows what the simulator
 /// consulted; `lua_execution.outcome=computed` only says code ran, not that the
 /// reply was faithful. Compare replies with `scenario.world` AND the tool
 /// contracts on `scenario.tools`.
@@ -64,7 +64,7 @@ pub(super) struct InvestigationEvidence {
     user_message: Option<String>,
     resolved_inputs: HashMap<String, Value>,
     implementations: Vec<ToolImplementation>,
-    /// Complete PUT model turns, each with tool arguments AND actual responses.
+    /// Complete workflow-agent turns, each with tool arguments AND actual responses.
     /// EvidenceReference indices refer directly to this array and its exchanges.
     turns: Vec<TraceTurn>,
     /// Null until a trace completes, including budget-capped completion.

@@ -85,10 +85,10 @@ pub enum SideEffect {
     Write,
 }
 
-/// An investigation's controls: run one supplied scenario against the PUT
-/// and surface its resulting trace. Callers that want a corpus run invoke the
-/// singular operation once per scenario. Nothing is judged in-harness — the
-/// caller reads the trace and judges.
+/// An investigation's controls: run one submitted application workflow against
+/// one supplied scenario and surface its resulting trace. Callers that want a
+/// corpus run invoke the singular operation once per scenario. Nothing is judged
+/// in-harness — the caller reads the trace and judges.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Investigation {
     /// Free-form justification for the run — WHY it exists and what a
@@ -123,8 +123,8 @@ pub struct Budget {
     /// text). A
     /// completion that requests several tool calls counts as several
     /// steps but is an atomic batch: every sibling call is simulated, so
-    /// one accepted batch may cross this cap. No later PUT turn then runs.
-    /// The main cost dial for tool-loop PUTs. Reserve room for the final
+    /// one accepted batch may cross this cap. No later agent turn then runs.
+    /// The main cost dial for tool-loop applications. Reserve room for the final
     /// completion. A trace recorded at the cap can lack a final answer; inspect
     /// execution.stop_reason and counters rather than equating done with success.
     pub max_steps_per_trace: u32,

@@ -311,15 +311,16 @@ struct InvestigateResponse {
     /// Do not discard those exchanges or setup artifacts.
     #[schema(required = true)]
     failure: Option<RunFailure>,
-    /// Cumulative token usage and call counts, split by the prompt under test
-    /// (`put`) and the simulator (`sim`). Present even when `failure` is set.
+    /// Cumulative token usage and call counts, split by the workflow-agent side
+    /// (historical role key `put`) and the simulator (`sim`). Present even when
+    /// `failure` is set.
     usage: UsageByRole,
 }
 
 #[derive(Serialize, Clone, utoipa::ToSchema)]
 struct TraceView {
     /// Deterministic termination, consumed budget and monotonic execution timing.
-    /// A recorded trace need not contain a final PUT completion.
+    /// A recorded trace need not contain a final agent completion.
     execution: RunExecution,
     /// Orchestration source, parameters, returned output and invocation/handoff
     /// evidence. Flat turns below are indexed by each invocation's range.
@@ -515,10 +516,11 @@ struct InvestigationPatchView {
                        tools), develop and TEST its simulation with direct tool-call probes, \
                        and then run many investigations against it. Each investigation = one \
                        scenario revision + one execution of a caller-authored Lua workflow. \
-                       The single-prompt (PUT) request remains a shorthand for the default Lua \
-                       program. For multi-stage composition, submit workflow instead of put and \
-                       workflow.lua_source returns function(params, ctx), and \
-                       workflow.params is arbitrary JSON with no privileged keys. \
+                       There is one application form: workflow. Omit workflow.lua_source to use \
+                       the default single-agent program; its params.prompt/model/controls names \
+                       are conventions, not privileged schema fields. Custom Lua source returns \
+                       function(params, ctx), and workflow.params is arbitrary JSON. \
+                       ctx.render(text) fills sampled input_domain values; \
                        ctx.run_agent{prompt=...,model=...,input=...,name=...} runs one fresh \
                        agent conversation; ctx.call_tool(name,args) calls a scenario tool directly. \
                        Calls share world/workspace and host-enforced investigation budgets. \
@@ -637,8 +639,8 @@ struct InvestigationPatchView {
                        `scenario_revision` as a staleness guard and optional `resolved_inputs`), \
                        `workflow` (program source, opaque `params` and limits) and the \
                        investigation's budget/reason/attributes. The tool surface comes from the \
-                       scenario: `put.tools` is rejected here rather than silently ignored. \
-                       Submission pins the scenario immediately and atomically.
+                       scenario and cannot be redefined by the workflow request. Submission pins \
+                       the scenario immediately and atomically.
  \
                        6. Poll GET /api/investigations/{id}, then read \
                        GET /api/investigations/{id}/evidence. Read execution.stop_reason, budget \

@@ -34,11 +34,11 @@ pub struct UsageTotals {
     pub cost_usd: Option<f64>,
 }
 
-/// Token usage and call counts split by model role: the prompt under
-/// test (all workflow agent models) vs. the tool simulator. These roles serve
-/// very different purposes (the sim is the test ENVIRONMENT, the PUT is the thing
-/// under test), so their spend is never lumped together — a single
-/// combined total would hide which side is expensive.
+/// Token usage and call counts split by model role: the application side (all
+/// workflow agent models, serialized under the historical `put` role name) vs.
+/// the tool simulator. These roles serve very different purposes: the simulator
+/// is the test ENVIRONMENT and the workflow is the application under test, so a
+/// single combined total would hide which side is expensive.
 #[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct UsageByRole {
     /// Usage of ALL agent invocations in the system under test, including
