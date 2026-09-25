@@ -19,10 +19,12 @@ aws-sdk-bedrock = "1"
 # Multi-provider LLM client (OpenAI-format: z.ai/OpenRouter; native: Bedrock
 # Converse+SigV4). `bedrock-sigv4` pulls aws-config (heavy) for the default
 # AWS credential chain (env/profile/SSO/IMDS).
-# Temporary pin for model-specific Bedrock OpenAI reasoning fields.
+# Temporary pin for model-specific Bedrock OpenAI reasoning fields, and for
+# streamed Bedrock usage (End waited on messageStop, before the metadata
+# event that carries usage, so every streamed Bedrock reply reported 0 tokens).
 # Return to crates.io once an upstream release includes this fix:
 # https://github.com/kaeluka/rust-genai/issues/1
-genai = { git = "https://github.com/kaeluka/rust-genai.git", rev = "849d657347429fe04753a487422ab06ab4e098db", features = ["bedrock-sigv4"] }
+genai = { git = "https://github.com/kaeluka/rust-genai.git", rev = "585ab5f8789f39ba64b5bec273bea0d3a24f4ec6", features = ["bedrock-sigv4"] }
 # GCP Application Default Credentials for the Vertex AI (Gemini) provider —
 # the GCP analog of aws-config: reads the ADC file written by
 # `gcloud auth application-default login`, caches + refreshes OAuth2 tokens.
